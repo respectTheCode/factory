@@ -4,6 +4,8 @@ export type FactoryIdGenerator = () => string;
 export type FactoryApplicationOptions = {
   clock: FactoryClock;
   idGenerator: FactoryIdGenerator;
+  state?: FactoryState;
+  persist?: (state: FactoryState) => void;
 };
 
 type Project = {
@@ -51,6 +53,14 @@ type Verification = {
   createdAt: Date;
 };
 
+type FactoryState = {
+  projects: Project[];
+  tasks: Task[];
+  subtasks: Subtask[];
+  statusReports: StatusReport[];
+  verifications: Verification[];
+};
+
 export type ProjectHierarchy = {
   name: string;
   tasks: Array<{
@@ -64,15 +74,27 @@ export type ProjectHierarchy = {
 export class FactoryApplication {
   private readonly clock: FactoryClock;
   private readonly idGenerator: FactoryIdGenerator;
-  private readonly projects: Project[] = [];
-  private readonly tasks: Task[] = [];
-  private readonly subtasks: Subtask[] = [];
-  private readonly statusReports: StatusReport[] = [];
-  private readonly verifications: Verification[] = [];
+  private readonly persist?: (state: FactoryState) => void;
+  private readonly projects: Project[];
+  private readonly tasks: Task[];
+  private readonly subtasks: Subtask[];
+  private readonly statusReports: StatusReport[];
+  private readonly verifications: Verification[];
 
-  constructor({ clock, idGenerator }: FactoryApplicationOptions) {
+  constructor({
+    clock,
+    idGenerator,
+    persist,
+    state,
+  }: FactoryApplicationOptions) {
     this.clock = clock;
     this.idGenerator = idGenerator;
+    this.persist = persist;
+    this.projects = state?.projects ?? [];
+    this.tasks = state?.tasks ?? [];
+    this.subtasks = state?.subtasks ?? [];
+    this.statusReports = state?.statusReports ?? [];
+    this.verifications = state?.verifications ?? [];
   }
 
   createProject({ name }: { name: string }): Project {
@@ -83,6 +105,7 @@ export class FactoryApplication {
     };
 
     this.projects.push(project);
+    this.save();
     return project;
   }
 
@@ -99,6 +122,7 @@ export class FactoryApplication {
     };
 
     this.tasks.push(task);
+    this.save();
     return task;
   }
 
@@ -115,6 +139,7 @@ export class FactoryApplication {
     };
 
     this.subtasks.push(subtask);
+    this.save();
     return subtask;
   }
 
@@ -143,6 +168,7 @@ export class FactoryApplication {
     };
 
     this.statusReports.push(report);
+    this.save();
     return report;
   }
 
@@ -166,6 +192,7 @@ export class FactoryApplication {
       verifier,
       createdAt: this.clock(),
     });
+    this.save();
   }
 
   getTaskStatus(taskId: string): {
@@ -256,4 +283,74 @@ export class FactoryApplication {
       (verification) => verification.reportId === reportId,
     );
   }
+
+  private save(): void {
+    this.persist?.({
+      projects: this.projects,
+      statusReports: this.statusReports,
+      subtasks: this.subtasks,
+      tasks: this.tasks,
+      verifications: this.verifications,
+    });
+  }
 }
+
+export function createFactoryApplication({
+  databasePath,
+}: {
+  databasePath: string;
+}): FactoryApplication {
+  const database = new Database(databasePath);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS factory_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      state TEXT NOT NULL
+    )
+  `);
+
+  const row = database
+    .query("SELECT state FROM factory_state WHERE id = 1")
+    .get() as { state: string } | null;
+  const state = row
+    ? hydrateState(JSON.parse(row.state) as FactoryState)
+    : undefined;
+
+  return new FactoryApplication({
+    clock: () => new Date(),
+    idGenerator: () => crypto.randomUUID(),
+    persist(nextState) {
+      database
+        .query(
+          "INSERT INTO factory_state (id, state) VALUES (1, $state) ON CONFLICT(id) DO UPDATE SET state = excluded.state",
+        )
+        .run({ $state: JSON.stringify(nextState) });
+    },
+    state,
+  });
+}
+
+function hydrateState(state: FactoryState): FactoryState {
+  return {
+    projects: state.projects.map((project) => ({
+      ...project,
+      createdAt: new Date(project.createdAt),
+    })),
+    statusReports: state.statusReports.map((report) => ({
+      ...report,
+      createdAt: new Date(report.createdAt),
+    })),
+    subtasks: state.subtasks.map((subtask) => ({
+      ...subtask,
+      createdAt: new Date(subtask.createdAt),
+    })),
+    tasks: state.tasks.map((task) => ({
+      ...task,
+      createdAt: new Date(task.createdAt),
+    })),
+    verifications: state.verifications.map((verification) => ({
+      ...verification,
+      createdAt: new Date(verification.createdAt),
+    })),
+  };
+}
+import { Database } from "bun:sqlite";
