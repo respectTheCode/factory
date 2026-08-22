@@ -210,6 +210,16 @@ export class FactoryApplication {
     };
   }
 
+  getSubtaskReportHistory(subtaskId: string): StatusReport[] {
+    if (!this.subtasks.some((subtask) => subtask.id === subtaskId)) {
+      throw new Error(`Subtask ${subtaskId} does not exist.`);
+    }
+
+    return this.statusReports.filter(
+      (report) => report.subtaskId === subtaskId,
+    );
+  }
+
   getProjectHierarchy(projectId: string): ProjectHierarchy {
     const project = this.projects.find(
       (candidate) => candidate.id === projectId,
