@@ -2,6 +2,9 @@ import { Buffer } from "node:buffer";
 
 import { getWSConnectionHandler } from "@trpc/server/adapters/ws";
 import { initTRPC } from "@trpc/server";
+import { z } from "zod";
+
+import { createFactoryApplication } from "./application";
 
 type ConnectionEvent = "close" | "error" | "message";
 type ConnectionListener = (...args: unknown[]) => void;
@@ -17,15 +20,30 @@ export type FactoryServer = {
 };
 
 const trpc = initTRPC.create();
-const router = trpc.router({
-  projects: trpc.router({
-    list: trpc.procedure.query(() => []),
-  }),
-});
+function createRouter(
+  application: ReturnType<typeof createFactoryApplication>,
+) {
+  return trpc.router({
+    projects: trpc.router({
+      create: trpc.procedure
+        .input(z.object({ name: z.string().min(1) }))
+        .mutation(({ input }) => application.createProject(input)),
+      list: trpc.procedure.query(() => application.listProjects()),
+    }),
+  });
+}
 
-export type FactoryRouter = typeof router;
+export type FactoryRouter = ReturnType<typeof createRouter>;
 
-export function createFactoryServer({ port }: { port: number }): FactoryServer {
+export function createFactoryServer({
+  databasePath = "factory.sqlite",
+  port,
+}: {
+  databasePath?: string;
+  port: number;
+}): FactoryServer {
+  const application = createFactoryApplication({ databasePath });
+  const router = createRouter(application);
   const onConnection = getWSConnectionHandler({
     createContext: () => ({}),
     router,

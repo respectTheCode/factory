@@ -272,6 +272,10 @@ export class FactoryApplication {
     };
   }
 
+  listProjects(): Array<{ id: string; name: string }> {
+    return this.projects.map(({ id, name }) => ({ id, name }));
+  }
+
   private getCurrentStatusReport(subtaskId: string): StatusReport | undefined {
     return this.statusReports.findLast(
       (report) => report.subtaskId === subtaskId,
