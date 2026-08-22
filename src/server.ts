@@ -37,6 +37,21 @@ function createRouter(
       create: trpc.procedure
         .input(z.object({ name: z.string().min(1), taskId: z.string().min(1) }))
         .mutation(({ input }) => application.createSubtask(input)),
+      report: trpc.procedure
+        .input(
+          z.object({
+            evidence: z.string().optional(),
+            reportedState: z.enum([
+              "not_started",
+              "in_progress",
+              "blocked",
+              "complete",
+            ]),
+            reporter: z.string().min(1),
+            subtaskId: z.string().min(1),
+          }),
+        )
+        .mutation(({ input }) => application.reportSubtaskStatus(input)),
     }),
     tasks: trpc.router({
       create: trpc.procedure
@@ -44,6 +59,9 @@ function createRouter(
           z.object({ name: z.string().min(1), projectId: z.string().min(1) }),
         )
         .mutation(({ input }) => application.createTask(input)),
+      status: trpc.procedure
+        .input(z.object({ taskId: z.string().min(1) }))
+        .query(({ input }) => application.getTaskStatus(input.taskId)),
     }),
   });
 }
