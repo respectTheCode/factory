@@ -1,3 +1,5 @@
+import { Database } from "bun:sqlite";
+
 export type FactoryClock = () => Date;
 export type FactoryIdGenerator = () => string;
 
@@ -53,12 +55,22 @@ type Verification = {
   createdAt: Date;
 };
 
+export type TrackerLink = {
+  id: string;
+  system: "linear" | "notion";
+  stableId: string;
+  taskId: string;
+  title?: string;
+  url: string;
+};
+
 type FactoryState = {
   projects: Project[];
   tasks: Task[];
   subtasks: Subtask[];
   statusReports: StatusReport[];
   verifications: Verification[];
+  trackerLinks?: TrackerLink[];
 };
 
 export type ProjectHierarchy = {
@@ -80,6 +92,7 @@ export class FactoryApplication {
   private readonly subtasks: Subtask[];
   private readonly statusReports: StatusReport[];
   private readonly verifications: Verification[];
+  private readonly trackerLinks: TrackerLink[];
 
   constructor({
     clock,
@@ -95,6 +108,7 @@ export class FactoryApplication {
     this.subtasks = state?.subtasks ?? [];
     this.statusReports = state?.statusReports ?? [];
     this.verifications = state?.verifications ?? [];
+    this.trackerLinks = state?.trackerLinks ?? [];
   }
 
   createProject({ name }: { name: string }): Project {
@@ -276,6 +290,29 @@ export class FactoryApplication {
     return this.projects.map(({ id, name }) => ({ id, name }));
   }
 
+  addTaskTrackerLink({
+    taskId,
+    ...link
+  }: Omit<TrackerLink, "id">): TrackerLink {
+    if (!this.tasks.some((task) => task.id === taskId)) {
+      throw new Error(`Task ${taskId} does not exist.`);
+    }
+
+    const trackerLink = { id: this.idGenerator(), taskId, ...link };
+    this.trackerLinks.push(trackerLink);
+    this.save();
+    return trackerLink;
+  }
+
+  getTaskDetail(taskId: string): { name: string; trackerLinks: TrackerLink[] } {
+    const task = this.tasks.find((candidate) => candidate.id === taskId);
+    if (!task) throw new Error(`Task ${taskId} does not exist.`);
+    return {
+      name: task.name,
+      trackerLinks: this.trackerLinks.filter((link) => link.taskId === taskId),
+    };
+  }
+
   private getCurrentStatusReport(subtaskId: string): StatusReport | undefined {
     return this.statusReports.findLast(
       (report) => report.subtaskId === subtaskId,
@@ -295,6 +332,7 @@ export class FactoryApplication {
       subtasks: this.subtasks,
       tasks: this.tasks,
       verifications: this.verifications,
+      trackerLinks: this.trackerLinks,
     });
   }
 }
@@ -355,6 +393,6 @@ function hydrateState(state: FactoryState): FactoryState {
       ...verification,
       createdAt: new Date(verification.createdAt),
     })),
+    trackerLinks: state.trackerLinks ?? [],
   };
 }
-import { Database } from "bun:sqlite";
