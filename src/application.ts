@@ -27,7 +27,10 @@ type Subtask = {
 };
 
 export type ReportedState =
-  "not_started" | "in_progress" | "blocked" | "complete";
+  | "not_started"
+  | "in_progress"
+  | "blocked"
+  | "complete";
 
 export type StatusReport = {
   id: string;
