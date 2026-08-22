@@ -6,6 +6,7 @@
     "moduleResolution": "bundler",
     "noEmit": true,
     "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
     "strict": true,
     "target": "ESNext",
     "types": ["bun-types"]
