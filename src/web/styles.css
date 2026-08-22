@@ -103,6 +103,26 @@ button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
+form {
+  display: flex;
+  gap: 8px;
+}
+input {
+  background: #fff;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  font: inherit;
+  padding: 9px 10px;
+}
+.visually-hidden {
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
 
 @media (max-width: 540px) {
   main {
@@ -117,7 +137,14 @@ button:disabled {
     align-self: stretch;
     justify-content: center;
   }
+  form,
   .panel button {
+    width: 100%;
+  }
+  form {
+    flex-direction: column;
+  }
+  input {
     width: 100%;
   }
 }

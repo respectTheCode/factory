@@ -4,7 +4,7 @@ import { createFactoryServer } from "../../src/server";
 
 describe("Factory WebSocket transport", () => {
   test("upgrades /trpc and serves a projects.list query", async () => {
-    const server = createFactoryServer({ port: 0 });
+    const server = createFactoryServer({ databasePath: ":memory:", port: 0 });
     const socket = new WebSocket(new URL("/trpc", server.url));
 
     try {

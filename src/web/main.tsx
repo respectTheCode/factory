@@ -1,9 +1,10 @@
 import { createTRPCProxyClient, createWSClient, wsLink } from "@trpc/client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import type { FactoryRouter } from "../server";
 import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
+import { createProjectAndRefresh } from "./project-actions";
 import "./styles.css";
 
 function Dashboard() {
@@ -11,7 +12,14 @@ function Dashboard() {
   const [snapshot, setSnapshot] = useState<ConnectionSnapshot>(
     connection.snapshot(),
   );
-  const [projectCount, setProjectCount] = useState<number | null>(null);
+  const [projectName, setProjectName] = useState("");
+  const [projects, setProjects] = useState<Array<{
+    id: string;
+    name: string;
+  }> | null>(null);
+  const trpc = useRef<ReturnType<
+    typeof createTRPCProxyClient<FactoryRouter>
+  > | null>(null);
 
   useEffect(() => {
     const client = createWSClient({
@@ -25,12 +33,12 @@ function Dashboard() {
       },
       url: `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/trpc`,
     });
-    const trpc = createTRPCProxyClient<FactoryRouter>({
+    trpc.current = createTRPCProxyClient<FactoryRouter>({
       links: [wsLink({ client })],
     });
 
-    void trpc.projects.list.query().then((projects) => {
-      setProjectCount(projects.length);
+    void trpc.current.projects.list.query().then((nextProjects) => {
+      setProjects(nextProjects);
     });
 
     return () => {
@@ -61,14 +69,45 @@ function Dashboard() {
         <div>
           <p className="eyebrow">Projects</p>
           <h2>
-            {projectCount === null
+            {projects === null
               ? "Loading projects…"
-              : `${projectCount} projects`}
+              : `${projects.length} projects`}
           </h2>
         </div>
-        <button disabled={!snapshot.canMutate} type="button">
-          New project
-        </button>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!projectName.trim() || !trpc.current) return;
+
+            void createProjectAndRefresh({
+              actions: {
+                createProject: (input) =>
+                  trpc.current!.projects.create.mutate(input),
+                listProjects: () => trpc.current!.projects.list.query(),
+              },
+              name: projectName.trim(),
+            }).then((nextProjects) => {
+              setProjects(nextProjects);
+              setProjectName("");
+            });
+          }}
+        >
+          <label>
+            <span className="visually-hidden">Project name</span>
+            <input
+              disabled={!snapshot.canMutate}
+              onChange={(event) => setProjectName(event.target.value)}
+              placeholder="New project name"
+              value={projectName}
+            />
+          </label>
+          <button
+            disabled={!snapshot.canMutate || !projectName.trim()}
+            type="submit"
+          >
+            New project
+          </button>
+        </form>
       </section>
     </main>
   );
