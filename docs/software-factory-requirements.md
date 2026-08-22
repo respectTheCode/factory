@@ -60,6 +60,21 @@ record. A Status Report does not replace Kevin's Verification.
 - **FR-024** — A Task can be marked completed only by human verification. An agent-reported
   complete state places the relevant Subtask or Task in awaiting-verification, not completed.
 
+#### V1 report and completion rules
+
+- A Status Report's `reportedState` is one of `not_started`, `in_progress`, `blocked`, or
+  `complete`. `awaiting-verification` is a derived Factory state, never an agent report.
+- Status Reports are append-only. The current report is the most recently accepted report by
+  Factory; a newer report replaces the prior current report and reopens verification, including
+  after an earlier report was accepted.
+- A Verification targets one Status Report and records `accepted`, `rejected`, or `deferred`.
+  Verification history is append-only; the latest Verification for the current report is its
+  current decision.
+- A Task is completed only when it has at least one Subtask and every Subtask's current report
+  is `complete` with a latest Verification of `accepted`. A Task with no Subtasks remains
+  planned. Human acceptance attests that the Task's visible acceptance criteria are satisfied.
+- Task dependencies are informational in v1 and do not independently block completion.
+
 ### 3.4 Mobile web and CLI
 
 - **FR-030** — v1 must include a mobile-responsive web dashboard for creating and inspecting
@@ -132,9 +147,5 @@ record. A Status Report does not replace Kevin's Verification.
 
 ## 7. Open decisions
 
-1. What exact reported-state vocabulary should a Codex skill use, and which reported states can
-   lead to awaiting-verification?
-2. What is the minimal rule for determining whether all verified Subtasks satisfy a Task's
-   acceptance criteria?
-3. Which first Playlister Notion records and Grail Linear records should be linked in the pilot?
-4. What backup and recovery policy protects the Factory database and history on its host?
+1. Which first Playlister Notion records and Grail Linear records should be linked in the pilot?
+2. What backup and recovery policy protects the Factory database and history on its host?
