@@ -29,12 +29,22 @@ type Subtask = {
 export type ReportedState =
   "not_started" | "in_progress" | "blocked" | "complete";
 
-type StatusReport = {
+export type StatusReport = {
   id: string;
   subtaskId: string;
   reportedState: ReportedState;
   reporter: string;
   evidence?: string;
+  createdAt: Date;
+};
+
+export type VerificationDecision = "accepted" | "rejected" | "deferred";
+
+type Verification = {
+  id: string;
+  reportId: string;
+  decision: VerificationDecision;
+  verifier: string;
   createdAt: Date;
 };
 
@@ -55,6 +65,7 @@ export class FactoryApplication {
   private readonly tasks: Task[] = [];
   private readonly subtasks: Subtask[] = [];
   private readonly statusReports: StatusReport[] = [];
+  private readonly verifications: Verification[] = [];
 
   constructor({ clock, idGenerator }: FactoryApplicationOptions) {
     this.clock = clock;
@@ -114,17 +125,42 @@ export class FactoryApplication {
     reporter: string;
     reportedState: ReportedState;
     subtaskId: string;
-  }): void {
+  }): StatusReport {
     if (!this.subtasks.some((subtask) => subtask.id === subtaskId)) {
       throw new Error(`Subtask ${subtaskId} does not exist.`);
     }
 
-    this.statusReports.push({
+    const report = {
       id: this.idGenerator(),
       subtaskId,
       reportedState,
       reporter,
       evidence,
+      createdAt: this.clock(),
+    };
+
+    this.statusReports.push(report);
+    return report;
+  }
+
+  verifyStatusReport({
+    decision,
+    reportId,
+    verifier,
+  }: {
+    decision: VerificationDecision;
+    reportId: string;
+    verifier: string;
+  }): void {
+    if (!this.statusReports.some((report) => report.id === reportId)) {
+      throw new Error(`Status Report ${reportId} does not exist.`);
+    }
+
+    this.verifications.push({
+      id: this.idGenerator(),
+      reportId,
+      decision,
+      verifier,
       createdAt: this.clock(),
     });
   }
@@ -133,29 +169,44 @@ export class FactoryApplication {
     taskCompleted: boolean;
     subtasks: Array<{
       reportedState?: ReportedState;
-      verificationState: "awaiting_verification" | "unreported";
+      verificationState:
+        | "accepted"
+        | "awaiting_verification"
+        | "deferred"
+        | "rejected"
+        | "unreported";
     }>;
   } {
     if (!this.tasks.some((task) => task.id === taskId)) {
       throw new Error(`Task ${taskId} does not exist.`);
     }
 
+    const subtasks = this.subtasks
+      .filter((subtask) => subtask.taskId === taskId)
+      .map((subtask) => {
+        const report = this.getCurrentStatusReport(subtask.id);
+
+        if (!report) {
+          return { verificationState: "unreported" as const };
+        }
+
+        return {
+          reportedState: report.reportedState,
+          verificationState:
+            this.getCurrentVerification(report.id)?.decision ??
+            ("awaiting_verification" as const),
+        };
+      });
+
     return {
-      taskCompleted: false,
-      subtasks: this.subtasks
-        .filter((subtask) => subtask.taskId === taskId)
-        .map((subtask) => {
-          const report = this.getCurrentStatusReport(subtask.id);
-
-          if (!report) {
-            return { verificationState: "unreported" };
-          }
-
-          return {
-            reportedState: report.reportedState,
-            verificationState: "awaiting_verification",
-          };
-        }),
+      taskCompleted:
+        subtasks.length > 0 &&
+        subtasks.every(
+          (subtask) =>
+            subtask.reportedState === "complete" &&
+            subtask.verificationState === "accepted",
+        ),
+      subtasks,
     };
   }
 
@@ -184,6 +235,12 @@ export class FactoryApplication {
   private getCurrentStatusReport(subtaskId: string): StatusReport | undefined {
     return this.statusReports.findLast(
       (report) => report.subtaskId === subtaskId,
+    );
+  }
+
+  private getCurrentVerification(reportId: string): Verification | undefined {
+    return this.verifications.findLast(
+      (verification) => verification.reportId === reportId,
     );
   }
 }
