@@ -23,6 +23,8 @@ const router = trpc.router({
   }),
 });
 
+export type FactoryRouter = typeof router;
+
 export function createFactoryServer({ port }: { port: number }): FactoryServer {
   const onConnection = getWSConnectionHandler({
     createContext: () => ({}),
@@ -43,6 +45,11 @@ export function createFactoryServer({ port }: { port: number }): FactoryServer {
         if (upgraded) {
           return undefined;
         }
+      }
+
+      const staticFile = getStaticFile(url.pathname);
+      if (staticFile) {
+        return new Response(Bun.file(staticFile));
       }
 
       return new Response("Not Found", { status: 404 });
@@ -67,6 +74,19 @@ export function createFactoryServer({ port }: { port: number }): FactoryServer {
   });
 
   return server;
+}
+
+function getStaticFile(pathname: string): string | null {
+  const files: Record<string, string> = {
+    "/": "src/web/index.html",
+    "/icon.svg": "src/web/icon.svg",
+    "/manifest.webmanifest": "src/web/manifest.webmanifest",
+    "/main.css": "dist/main.css",
+    "/main.js": "dist/main.js",
+    "/service-worker.js": "dist/service-worker.js",
+  };
+
+  return files[pathname] ?? null;
 }
 
 function createWebSocketAdapter(socket: Bun.ServerWebSocket<SocketData>) {
@@ -117,4 +137,9 @@ function toBuffer(message: string | ArrayBuffer | Uint8Array): Buffer {
   }
 
   return Buffer.from(new Uint8Array(message));
+}
+
+if (import.meta.main) {
+  const server = createFactoryServer({ port: 3000 });
+  console.info(`Software Factory listening at ${server.url}`);
 }

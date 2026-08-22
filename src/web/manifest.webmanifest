@@ -1,0 +1,15 @@
+{
+  "background_color": "#111827",
+  "display": "standalone",
+  "icons": [
+    {
+      "sizes": "any",
+      "src": "/icon.svg",
+      "type": "image/svg+xml"
+    }
+  ],
+  "name": "Software Factory",
+  "short_name": "Factory",
+  "start_url": "/",
+  "theme_color": "#111827"
+}

@@ -1,0 +1,123 @@
+:root {
+  color: #e5e7eb;
+  background: #111827;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+main {
+  margin: 0 auto;
+  max-width: 920px;
+  padding: 24px;
+}
+
+header,
+.panel {
+  align-items: center;
+  display: flex;
+  gap: 20px;
+  justify-content: space-between;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+h1 {
+  font-size: clamp(1.75rem, 5vw, 2.5rem);
+}
+h2 {
+  font-size: clamp(1.25rem, 4vw, 1.75rem);
+}
+
+.eyebrow {
+  color: #94a3b8;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.hero,
+.panel {
+  border: 1px solid #334155;
+  border-radius: 16px;
+  margin-top: 28px;
+  padding: 24px;
+}
+.hero {
+  background: #172033;
+}
+.hero p:last-child {
+  color: #cbd5e1;
+  line-height: 1.6;
+  margin-top: 12px;
+  max-width: 620px;
+}
+.panel {
+  background: #0f172a;
+}
+
+.connection {
+  align-items: center;
+  border: 1px solid #475569;
+  border-radius: 999px;
+  display: flex;
+  font-size: 0.9rem;
+  gap: 8px;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+.connection-dot {
+  background: #fbbf24;
+  border-radius: 50%;
+  height: 9px;
+  width: 9px;
+}
+.connection.connected .connection-dot {
+  background: #34d399;
+}
+.connection.reconnecting .connection-dot {
+  background: #fb923c;
+}
+
+button {
+  background: #7dd3fc;
+  border: 0;
+  border-radius: 8px;
+  color: #082f49;
+  font: inherit;
+  font-weight: 700;
+  padding: 10px 14px;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+@media (max-width: 540px) {
+  main {
+    padding: 16px;
+  }
+  header,
+  .panel {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .connection {
+    align-self: stretch;
+    justify-content: center;
+  }
+  .panel button {
+    width: 100%;
+  }
+}
