@@ -45,6 +45,10 @@ core, never inspected directly by tests. WebSocket tests use a real local server
 the only acceptable test doubles are at a true system edge, such as time or a deliberately
 controlled network connection.
 
+The application interface owns the agent-versus-human authority rule. React, tRPC, and the CLI
+may not duplicate or weaken it. CLI machine output goes to stdout as versioned JSON; diagnostics
+go to stderr.
+
 ### Domain behavior examples
 
 - Creating a Project with a Task makes that Task retrievable through the Project.
@@ -60,11 +64,16 @@ controlled network connection.
 
 - A CLI report creates the same observable Status Report as the Factory core command.
 - A connected WebSocket client receives fresh state after a Factory mutation.
+- A real WebSocket client can query, mutate, and subscribe through a Bun-hosted tRPC server.
 - While the dashboard is `connecting`, `reconnecting`, or `disconnected`, mutation controls are
   disabled and no write is replayed later.
 - After reconnect, the dashboard displays refreshed authoritative data before enabling edits.
 - When disconnected, the dashboard visibly reports the state and the last successful connection
   time. It never presents cached mutable data as current.
+
+Connection events feed a small connection-state model that produces the four visible states and
+the mutation gate. Its tests assert event-to-user-visible-state behavior; dashboard tests assert
+the resulting text and enabled/disabled controls rather than the model's implementation.
 
 ## 4. Vertical-slice loop
 
@@ -102,6 +111,9 @@ test proving that the selected tRPC WebSocket server and client operate under Bu
 ephemeral loopback port. The test must cover one query, mutation, and subscription. It selects
 the smallest compatible adapter; it must not pull Mission Control's runtime into Factory.
 
+Also prove the PWA boundary early: the manifest is valid and the service worker caches only
+static application-shell assets. It must not serve mutable Factory records as current.
+
 Acceptance: a clean checkout runs the test suite with Bun, including the transport proof.
 
 ### Phase 2 — core planning behavior
@@ -124,7 +136,8 @@ tests; business tests never inspect tables directly.
 
 Add CLI commands for the same core operations, with stable `--json` reads. A skill-shaped,
 noninteractive command may submit a Status Report but cannot verify or complete work. Document
-the initial skill command and hook payload after the CLI contract is stable.
+the initial skill command and hook payload after the CLI contract is stable. Include a
+`schemaVersion` in machine JSON before skills depend on it.
 
 ### Phase 5 — tRPC WebSocket transport
 
