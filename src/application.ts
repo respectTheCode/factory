@@ -26,6 +26,18 @@ type Subtask = {
   createdAt: Date;
 };
 
+export type ReportedState =
+  "not_started" | "in_progress" | "blocked" | "complete";
+
+type StatusReport = {
+  id: string;
+  subtaskId: string;
+  reportedState: ReportedState;
+  reporter: string;
+  evidence?: string;
+  createdAt: Date;
+};
+
 export type ProjectHierarchy = {
   name: string;
   tasks: Array<{
@@ -42,6 +54,7 @@ export class FactoryApplication {
   private readonly projects: Project[] = [];
   private readonly tasks: Task[] = [];
   private readonly subtasks: Subtask[] = [];
+  private readonly statusReports: StatusReport[] = [];
 
   constructor({ clock, idGenerator }: FactoryApplicationOptions) {
     this.clock = clock;
@@ -91,6 +104,61 @@ export class FactoryApplication {
     return subtask;
   }
 
+  reportSubtaskStatus({
+    evidence,
+    reporter,
+    reportedState,
+    subtaskId,
+  }: {
+    evidence?: string;
+    reporter: string;
+    reportedState: ReportedState;
+    subtaskId: string;
+  }): void {
+    if (!this.subtasks.some((subtask) => subtask.id === subtaskId)) {
+      throw new Error(`Subtask ${subtaskId} does not exist.`);
+    }
+
+    this.statusReports.push({
+      id: this.idGenerator(),
+      subtaskId,
+      reportedState,
+      reporter,
+      evidence,
+      createdAt: this.clock(),
+    });
+  }
+
+  getTaskStatus(taskId: string): {
+    taskCompleted: boolean;
+    subtasks: Array<{
+      reportedState?: ReportedState;
+      verificationState: "awaiting_verification" | "unreported";
+    }>;
+  } {
+    if (!this.tasks.some((task) => task.id === taskId)) {
+      throw new Error(`Task ${taskId} does not exist.`);
+    }
+
+    return {
+      taskCompleted: false,
+      subtasks: this.subtasks
+        .filter((subtask) => subtask.taskId === taskId)
+        .map((subtask) => {
+          const report = this.getCurrentStatusReport(subtask.id);
+
+          if (!report) {
+            return { verificationState: "unreported" };
+          }
+
+          return {
+            reportedState: report.reportedState,
+            verificationState: "awaiting_verification",
+          };
+        }),
+    };
+  }
+
   getProjectHierarchy(projectId: string): ProjectHierarchy {
     const project = this.projects.find(
       (candidate) => candidate.id === projectId,
@@ -111,5 +179,11 @@ export class FactoryApplication {
             .map((subtask) => ({ name: subtask.name })),
         })),
     };
+  }
+
+  private getCurrentStatusReport(subtaskId: string): StatusReport | undefined {
+    return this.statusReports.findLast(
+      (report) => report.subtaskId === subtaskId,
+    );
   }
 }
