@@ -29,6 +29,21 @@ function createRouter(
         .input(z.object({ name: z.string().min(1) }))
         .mutation(({ input }) => application.createProject(input)),
       list: trpc.procedure.query(() => application.listProjects()),
+      detail: trpc.procedure
+        .input(z.object({ projectId: z.string().min(1) }))
+        .query(({ input }) => application.getProjectHierarchy(input.projectId)),
+    }),
+    subtasks: trpc.router({
+      create: trpc.procedure
+        .input(z.object({ name: z.string().min(1), taskId: z.string().min(1) }))
+        .mutation(({ input }) => application.createSubtask(input)),
+    }),
+    tasks: trpc.router({
+      create: trpc.procedure
+        .input(
+          z.object({ name: z.string().min(1), projectId: z.string().min(1) }),
+        )
+        .mutation(({ input }) => application.createTask(input)),
     }),
   });
 }
