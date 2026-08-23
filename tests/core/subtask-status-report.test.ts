@@ -35,6 +35,7 @@ describe("subtask status reporting", () => {
       subtasks: [
         {
           id: report.id,
+          reportId: report.id,
           reportedState: "complete",
           evidence: "bun test tests/core/project-task-hierarchy.test.ts",
           verificationState: "awaiting_verification",

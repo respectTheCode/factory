@@ -255,6 +255,7 @@ export class FactoryApplication {
         | "rejected"
         | "unreported";
       id?: string;
+      reportId?: string;
       evidence?: string;
       reporter?: string;
     }>;
@@ -274,6 +275,7 @@ export class FactoryApplication {
 
         return {
           id: report.id,
+          reportId: report.id,
           reportedState: report.reportedState,
           evidence: report.evidence,
           reporter: report.reporter,
