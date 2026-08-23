@@ -7,7 +7,8 @@ description: Use the Software Factory CLI to create and inspect project work, re
 
 Use the CLI from the Factory checkout so agent updates share the same SQLite
 state as the PWA. The CLI emits one stable JSON object per command with
-`schemaVersion: 1`.
+`schemaVersion: 1`. Each SQLite client refreshes persisted state before its operation, so a
+running PWA and a CLI/skill can share the database without requiring a server restart.
 
 Set the database explicitly when working outside the default local database:
 
@@ -25,13 +26,19 @@ Common operations:
 
 ```bash
 bun run src/cli.ts project list --json --database "$FACTORY_DB"
+bun run src/cli.ts project attention --json --database "$FACTORY_DB"
 bun run src/cli.ts project create --name "Project name" --database "$FACTORY_DB"
 bun run src/cli.ts project status --project-id PROJECT_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts project portfolio --json --database "$FACTORY_DB"
+bun run src/cli.ts project link --project-id PROJECT_ID --system notion --stable-id PRO-1412 --url "https://…" --database "$FACTORY_DB"
 bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" --database "$FACTORY_DB"
+bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
+bun run src/cli.ts task status --task-id TASK_ID --json --database "$FACTORY_DB"
+bun run src/cli.ts task link --task-id TASK_ID --system linear --stable-id GRA-143 --url "https://…" --database "$FACTORY_DB"
 bun run src/cli.ts subtask create --task-id TASK_ID --name "Subtask name" --description "What must be checked" --database "$FACTORY_DB"
 bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state in_progress --reporter codex --evidence "What changed" --database "$FACTORY_DB"
 bun run src/cli.ts subtask status --json --task-id TASK_ID --database "$FACTORY_DB"
+bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$FACTORY_DB"
 ```
 
 After taking a backup, remove a project only when its ID has been checked; removal cascades
@@ -69,6 +76,21 @@ Reports are append-only. A complete report remains `awaiting_verification`
 until a human accepts it in the Factory dashboard. The noninteractive CLI
 intentionally refuses verification so an agent cannot self-approve its work.
 
-Tracker links are currently attached through the PWA or tRPC API and remain
-references to the source item in Linear or Notion; Factory does not push
-updates to either system.
+## Agent operating loop
+
+Before choosing work, read the live Attention projection. Then inspect the Task and Subtask
+history before changing anything:
+
+```bash
+bun run src/cli.ts project attention --json --database "$FACTORY_DB"
+bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
+bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$FACTORY_DB"
+```
+
+When work starts, submit `in_progress`. Submit `blocked` with the blocker in `--evidence`, or
+submit `complete` only when the evidence is ready for Kevin to review. Reports are observations,
+not approval; never attempt to verify from an agent process. After reporting, read the Task
+status again and include the returned `report.id` in any handoff or summary.
+
+Tracker links can be attached through the CLI, PWA, or tRPC API. They remain references to the
+source item in Linear or Notion; Factory does not push updates to either system.

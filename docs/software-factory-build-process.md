@@ -143,6 +143,10 @@ project portfolio. `database check --json` provides a read-only integrity result
 record counts for the same verification step. Automated scheduling, off-host retention, and a
 one-command restore remain deployment work rather than application behavior.
 
+Independent SQLite clients refresh persisted state before reads and writes. This keeps a live
+PWA server and a CLI/skill client from silently overwriting each other when both use the same
+Factory database.
+
 Start the repository contract with an in-memory adapter, then run the same behavior suite
 against Bun's built-in SQLite adapter. Use a temporary SQLite file only for process-restart
 tests; business tests never inspect tables directly.
@@ -151,8 +155,11 @@ tests; business tests never inspect tables directly.
 
 Add CLI commands for the same core operations, with stable `--json` reads. A skill-shaped,
 noninteractive command may submit a Status Report but cannot verify or complete work. Document
-the initial skill command and hook payload after the CLI contract is stable. Include a
-`schemaVersion` in machine JSON before skills depend on it.
+the initial skill command and hook payload after the CLI contract is stable. The current agent
+loop reads `project attention`, `task detail`, and `subtask history`, then uses `subtask report`
+for `in_progress`, `blocked`, or `complete`; `subtask verify` remains human-only. Tracker links
+can be attached through the CLI without writing to Notion or Linear. Include a `schemaVersion`
+in machine JSON before skills depend on it.
 
 ### Phase 5 — tRPC WebSocket transport
 

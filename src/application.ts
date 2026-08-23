@@ -9,6 +9,7 @@ export type FactoryIdGenerator = () => string;
 export type FactoryApplicationOptions = {
   clock: FactoryClock;
   idGenerator: FactoryIdGenerator;
+  refresh?: () => FactoryState | undefined;
   state?: FactoryState;
   persist?: (state: FactoryState) => void;
 };
@@ -160,6 +161,7 @@ export class FactoryApplication {
   private readonly clock: FactoryClock;
   private readonly idGenerator: FactoryIdGenerator;
   private readonly persist?: (state: FactoryState) => void;
+  private readonly refresh?: () => FactoryState | undefined;
   private readonly projects: Project[];
   private readonly tasks: Task[];
   private readonly subtasks: Subtask[];
@@ -171,11 +173,13 @@ export class FactoryApplication {
     clock,
     idGenerator,
     persist,
+    refresh,
     state,
   }: FactoryApplicationOptions) {
     this.clock = clock;
     this.idGenerator = idGenerator;
     this.persist = persist;
+    this.refresh = refresh;
     this.projects = state?.projects ?? [];
     this.tasks = state?.tasks ?? [];
     this.subtasks = state?.subtasks ?? [];
@@ -185,6 +189,7 @@ export class FactoryApplication {
   }
 
   createProject({ name }: { name: string }): Project {
+    this.refreshFromPersistence();
     const project = {
       id: this.idGenerator(),
       name,
@@ -197,6 +202,7 @@ export class FactoryApplication {
   }
 
   removeProject(projectId: string): void {
+    this.refreshFromPersistence();
     const projectIndex = this.projects.findIndex(
       (project) => project.id === projectId,
     );
@@ -255,6 +261,7 @@ export class FactoryApplication {
     dependencies?: string[];
     repositoryLinks?: string[];
   }): Task {
+    this.refreshFromPersistence();
     if (!this.projects.some((project) => project.id === projectId)) {
       throw new Error(`Project ${projectId} does not exist.`);
     }
@@ -286,6 +293,7 @@ export class FactoryApplication {
     name: string;
     taskId: string;
   }): Subtask {
+    this.refreshFromPersistence();
     if (!this.tasks.some((task) => task.id === taskId)) {
       throw new Error(`Task ${taskId} does not exist.`);
     }
@@ -314,6 +322,7 @@ export class FactoryApplication {
     reportedState: ReportedState;
     subtaskId: string;
   }): StatusReport {
+    this.refreshFromPersistence();
     if (!this.subtasks.some((subtask) => subtask.id === subtaskId)) {
       throw new Error(`Subtask ${subtaskId} does not exist.`);
     }
@@ -341,6 +350,7 @@ export class FactoryApplication {
     reportId: string;
     verifier: string;
   }): void {
+    this.refreshFromPersistence();
     if (!this.statusReports.some((report) => report.id === reportId)) {
       throw new Error(`Status Report ${reportId} does not exist.`);
     }
@@ -356,6 +366,7 @@ export class FactoryApplication {
   }
 
   getTaskStatus(taskId: string): TaskStatus {
+    this.refreshFromPersistence();
     if (!this.tasks.some((task) => task.id === taskId)) {
       throw new Error(`Task ${taskId} does not exist.`);
     }
@@ -402,6 +413,7 @@ export class FactoryApplication {
     totalTasks: number;
     counts: ProjectWorkCounts;
   } {
+    this.refreshFromPersistence();
     const project = this.projects.find(
       (candidate) => candidate.id === projectId,
     );
@@ -433,6 +445,7 @@ export class FactoryApplication {
       counts: ProjectWorkCounts;
     }>;
   } {
+    this.refreshFromPersistence();
     const counts = emptyProjectWorkCounts();
     const projects = this.projects.map((project) => {
       const status = this.getProjectStatus(project.id);
@@ -453,6 +466,7 @@ export class FactoryApplication {
   }
 
   getAttentionProjection(): AttentionItem[] {
+    this.refreshFromPersistence();
     const stateOrder: Record<AttentionItem["state"], number> = {
       planned: 0,
       active: 1,
@@ -491,6 +505,7 @@ export class FactoryApplication {
   }
 
   getSubtaskReportHistory(subtaskId: string): StatusReport[] {
+    this.refreshFromPersistence();
     if (!this.subtasks.some((subtask) => subtask.id === subtaskId)) {
       throw new Error(`Subtask ${subtaskId} does not exist.`);
     }
@@ -501,6 +516,7 @@ export class FactoryApplication {
   }
 
   getSubtaskVerificationHistory(subtaskId: string): Verification[] {
+    this.refreshFromPersistence();
     if (!this.subtasks.some((subtask) => subtask.id === subtaskId)) {
       throw new Error(`Subtask ${subtaskId} does not exist.`);
     }
@@ -516,6 +532,7 @@ export class FactoryApplication {
   }
 
   getProjectHierarchy(projectId: string): ProjectHierarchy {
+    this.refreshFromPersistence();
     const project = this.projects.find(
       (candidate) => candidate.id === projectId,
     );
@@ -548,6 +565,7 @@ export class FactoryApplication {
   }
 
   listProjects(): Array<{ id: string; name: string }> {
+    this.refreshFromPersistence();
     return this.projects.map(({ id, name }) => ({ id, name }));
   }
 
@@ -555,6 +573,7 @@ export class FactoryApplication {
     taskId,
     ...link
   }: TrackerLinkFields & { taskId: string }): TrackerLink {
+    this.refreshFromPersistence();
     if (!this.tasks.some((task) => task.id === taskId)) {
       throw new Error(`Task ${taskId} does not exist.`);
     }
@@ -569,6 +588,7 @@ export class FactoryApplication {
     projectId,
     ...link
   }: TrackerLinkFields & { projectId: string }): TrackerLink {
+    this.refreshFromPersistence();
     if (!this.projects.some((project) => project.id === projectId)) {
       throw new Error(`Project ${projectId} does not exist.`);
     }
@@ -584,6 +604,7 @@ export class FactoryApplication {
     name: string;
     trackerLinks: TrackerLink[];
   } {
+    this.refreshFromPersistence();
     const project = this.projects.find(
       (candidate) => candidate.id === projectId,
     );
@@ -610,6 +631,7 @@ export class FactoryApplication {
     repositoryLinks: string[];
     trackerLinks: TrackerLink[];
   } {
+    this.refreshFromPersistence();
     const task = this.tasks.find((candidate) => candidate.id === taskId);
     if (!task) throw new Error(`Task ${taskId} does not exist.`);
     return {
@@ -683,6 +705,30 @@ export class FactoryApplication {
     );
   }
 
+  private refreshFromPersistence(): void {
+    const state = this.refresh?.();
+    if (!state) return;
+
+    this.projects.splice(0, this.projects.length, ...state.projects);
+    this.tasks.splice(0, this.tasks.length, ...state.tasks);
+    this.subtasks.splice(0, this.subtasks.length, ...state.subtasks);
+    this.statusReports.splice(
+      0,
+      this.statusReports.length,
+      ...state.statusReports,
+    );
+    this.verifications.splice(
+      0,
+      this.verifications.length,
+      ...state.verifications,
+    );
+    this.trackerLinks.splice(
+      0,
+      this.trackerLinks.length,
+      ...(state.trackerLinks ?? []),
+    );
+  }
+
   private save(): void {
     this.persist?.({
       projects: this.projects,
@@ -724,6 +770,14 @@ export function createFactoryApplication({
           "INSERT INTO factory_state (id, state) VALUES (1, $state) ON CONFLICT(id) DO UPDATE SET state = excluded.state",
         )
         .run({ $state: JSON.stringify(nextState) });
+    },
+    refresh() {
+      const currentRow = database
+        .query("SELECT state FROM factory_state WHERE id = 1")
+        .get() as { state: string } | null;
+      return currentRow
+        ? hydrateState(JSON.parse(currentRow.state) as FactoryState)
+        : undefined;
     },
     state,
   });

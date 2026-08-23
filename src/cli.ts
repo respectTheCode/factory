@@ -55,6 +55,49 @@ function listFlag(flags: Map<string, string>, name: string): string[] {
     .filter(Boolean);
 }
 
+function trackerSystem(flags: Map<string, string>): "linear" | "notion" {
+  const value = requiredFlag(flags, "system");
+  if (value !== "linear" && value !== "notion") {
+    throw new Error("--system must be either linear or notion.");
+  }
+  return value;
+}
+
+function priorityFlag(
+  flags: Map<string, string>,
+): "low" | "medium" | "high" | "urgent" | undefined {
+  const value = flags.get("priority")?.trim();
+  if (!value) return undefined;
+  if (!(["low", "medium", "high", "urgent"] as string[]).includes(value)) {
+    throw new Error("--priority must be low, medium, high, or urgent.");
+  }
+  return value as "low" | "medium" | "high" | "urgent";
+}
+
+function reportedStateFlag(flags: Map<string, string>): ReportedState {
+  const value = requiredFlag(flags, "state");
+  if (
+    !(
+      ["not_started", "in_progress", "blocked", "complete"] as string[]
+    ).includes(value)
+  ) {
+    throw new Error(
+      "--state must be not_started, in_progress, blocked, or complete.",
+    );
+  }
+  return value as ReportedState;
+}
+
+function urlFlag(flags: Map<string, string>): string {
+  const value = requiredFlag(flags, "url");
+  try {
+    new URL(value);
+  } catch {
+    throw new Error("--url must be a valid URL.");
+  }
+  return value;
+}
+
 function output(value: unknown): void {
   console.log(
     JSON.stringify({ schemaVersion: SCHEMA_VERSION, ...asRecord(value) }),
@@ -138,6 +181,23 @@ function main(args: string[]): void {
     return;
   }
 
+  if (resource === "project" && action === "attention") {
+    output({ attention: application.getAttentionProjection() });
+    return;
+  }
+
+  if (resource === "project" && action === "link") {
+    const link = application.addProjectTrackerLink({
+      projectId: requiredFlag(parsed.flags, "project-id"),
+      stableId: requiredFlag(parsed.flags, "stable-id"),
+      system: trackerSystem(parsed.flags),
+      title: parsed.flags.get("title")?.trim() || undefined,
+      url: urlFlag(parsed.flags),
+    });
+    output({ link });
+    return;
+  }
+
   if (resource === "task" && action === "create") {
     const task = application.createTask({
       acceptanceCriteria: listFlag(parsed.flags, "acceptance-criteria"),
@@ -145,16 +205,37 @@ function main(args: string[]): void {
       name: requiredFlag(parsed.flags, "name"),
       objective: parsed.flags.get("objective")?.trim() || undefined,
       owner: parsed.flags.get("owner")?.trim() || undefined,
-      priority: parsed.flags.get("priority") as
-        | "low"
-        | "medium"
-        | "high"
-        | "urgent"
-        | undefined,
+      priority: priorityFlag(parsed.flags),
       projectId: requiredFlag(parsed.flags, "project-id"),
       repositoryLinks: listFlag(parsed.flags, "repository-links"),
     });
     output({ task });
+    return;
+  }
+
+  if (resource === "task" && action === "detail") {
+    output({
+      task: application.getTaskDetail(requiredFlag(parsed.flags, "task-id")),
+    });
+    return;
+  }
+
+  if (resource === "task" && action === "status") {
+    output({
+      status: application.getTaskStatus(requiredFlag(parsed.flags, "task-id")),
+    });
+    return;
+  }
+
+  if (resource === "task" && action === "link") {
+    const link = application.addTaskTrackerLink({
+      stableId: requiredFlag(parsed.flags, "stable-id"),
+      system: trackerSystem(parsed.flags),
+      taskId: requiredFlag(parsed.flags, "task-id"),
+      title: parsed.flags.get("title")?.trim() || undefined,
+      url: urlFlag(parsed.flags),
+    });
+    output({ link });
     return;
   }
 
@@ -171,7 +252,7 @@ function main(args: string[]): void {
   if (resource === "subtask" && action === "report") {
     const report = application.reportSubtaskStatus({
       evidence: parsed.flags.get("evidence"),
-      reportedState: requiredFlag(parsed.flags, "state") as ReportedState,
+      reportedState: reportedStateFlag(parsed.flags),
       reporter: requiredFlag(parsed.flags, "reporter"),
       subtaskId: requiredFlag(parsed.flags, "subtask-id"),
     });
@@ -185,6 +266,17 @@ function main(args: string[]): void {
     return;
   }
 
+  if (resource === "subtask" && action === "history") {
+    const subtaskId = requiredFlag(parsed.flags, "subtask-id");
+    output({
+      history: {
+        reports: application.getSubtaskReportHistory(subtaskId),
+        verifications: application.getSubtaskVerificationHistory(subtaskId),
+      },
+    });
+    return;
+  }
+
   if (resource === "subtask" && action === "verify") {
     void (requiredFlag(parsed.flags, "decision") as VerificationDecision);
     throw new Error(
@@ -193,7 +285,7 @@ function main(args: string[]): void {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|list|remove|status|portfolio, task create, subtask create|report|status|verify",
+    "Usage: database backup|check, project create|list|remove|status|portfolio|attention|link, task create|detail|status|link, subtask create|report|status|history|verify",
   );
 }
 
