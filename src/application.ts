@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+
 import { Database } from "bun:sqlite";
 
 export type FactoryClock = () => Date;
@@ -629,6 +632,70 @@ export function createFactoryApplication({
     },
     state,
   });
+}
+
+export type FactoryDatabaseBackup = {
+  sourcePath: string;
+  destinationPath: string;
+  sizeBytes: number;
+};
+
+/**
+ * Create a consistent SQLite snapshot without changing the live Factory database.
+ *
+ * The destination is intentionally write-once by default. An operator must opt in
+ * to replacement so a mistyped backup path cannot silently destroy an older copy.
+ */
+export function backupFactoryDatabase({
+  allowOverwrite = false,
+  databasePath,
+  destinationPath,
+}: {
+  allowOverwrite?: boolean;
+  databasePath: string;
+  destinationPath: string;
+}): FactoryDatabaseBackup {
+  const sourcePath = resolve(databasePath);
+  const resolvedDestinationPath = resolve(destinationPath);
+
+  if (sourcePath === resolvedDestinationPath) {
+    throw new Error(
+      "Backup destination must be different from the source database.",
+    );
+  }
+  if (!existsSync(sourcePath)) {
+    throw new Error(`Source database does not exist: ${sourcePath}`);
+  }
+  if (existsSync(resolvedDestinationPath) && !allowOverwrite) {
+    throw new Error(
+      `Backup destination already exists; pass --overwrite to replace it: ${resolvedDestinationPath}`,
+    );
+  }
+
+  const database = new Database(sourcePath, { readonly: true });
+  try {
+    const factoryStateTable = database
+      .query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'factory_state'",
+      )
+      .get();
+    if (!factoryStateTable) {
+      throw new Error(`Not a Factory database: ${sourcePath}`);
+    }
+
+    const serialized = database.serialize();
+    mkdirSync(dirname(resolvedDestinationPath), { recursive: true });
+    writeFileSync(resolvedDestinationPath, serialized, {
+      flag: allowOverwrite ? "w" : "wx",
+    });
+    return {
+      destinationPath: resolvedDestinationPath,
+      sizeBytes: statSync(resolvedDestinationPath).size,
+      sourcePath,
+    };
+  } finally {
+    database.close();
+  }
 }
 
 function hydrateState(state: FactoryState): FactoryState {

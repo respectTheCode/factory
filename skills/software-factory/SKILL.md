@@ -28,6 +28,18 @@ bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state in_prog
 bun run src/cli.ts subtask status --json --task-id TASK_ID --database "$FACTORY_DB"
 ```
 
+Create a point-in-time SQLite backup before maintenance or any larger batch of updates:
+
+```bash
+bun run src/cli.ts database backup --database "$FACTORY_DB" \
+  --output "backups/factory-$(date +%Y-%m-%d).sqlite" --json
+```
+
+Backups refuse to replace an existing file unless `--overwrite` is explicit. The command
+creates missing parent directories and leaves the live database unchanged. Keep backups on
+storage separate from the live checkout; restore is an operator action after stopping the
+Factory server.
+
 Task planning lists use a pipe separator when passed through one shell flag:
 
 ```bash

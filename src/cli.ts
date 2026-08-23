@@ -1,4 +1,5 @@
 import {
+  backupFactoryDatabase,
   createFactoryApplication,
   type ReportedState,
   type VerificationDecision,
@@ -22,7 +23,7 @@ function parseArgs(args: string[]): ParsedArgs {
       const flag = value.slice(2);
       const next = args[index + 1];
       if (!next || next.startsWith("--")) {
-        if (flag === "json") {
+        if (flag === "json" || flag === "overwrite") {
           flags.set(flag, "true");
           continue;
         }
@@ -72,9 +73,21 @@ function projectSummary(project: { id: string; name: string }) {
 
 function main(args: string[]): void {
   const parsed = parseArgs(args);
+  const [resource, action] = parsed.command;
+
+  if (resource === "database" && action === "backup") {
+    output({
+      backup: backupFactoryDatabase({
+        allowOverwrite: parsed.flags.get("overwrite") === "true",
+        databasePath: parsed.flags.get("database") ?? "factory.sqlite",
+        destinationPath: requiredFlag(parsed.flags, "output"),
+      }),
+    });
+    return;
+  }
+
   const databasePath = parsed.flags.get("database") ?? "factory.sqlite";
   const application = createFactoryApplication({ databasePath });
-  const [resource, action] = parsed.command;
 
   if (resource === "project" && action === "create") {
     const project = application.createProject({
@@ -158,7 +171,7 @@ function main(args: string[]): void {
   }
 
   throw new Error(
-    "Usage: project create|list|status|portfolio, task create, subtask create|report|status|verify",
+    "Usage: database backup, project create|list|status|portfolio, task create, subtask create|report|status|verify",
   );
 }
 

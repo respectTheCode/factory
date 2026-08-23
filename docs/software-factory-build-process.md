@@ -126,7 +126,21 @@ reported state and verified state before any UI or agent integration can blur it
 
 Add persistent storage and migrations behind the existing Factory core seam. Test through
 restart: records remain retrievable, report and verification history remain append-preserving,
-and invalid transitions are rejected. Document backup and recovery before relying on the data.
+and invalid transitions are rejected. The current SQLite adapter supports a consistent,
+write-once snapshot through the CLI:
+
+```bash
+bun run src/cli.ts database backup --database "$FACTORY_DB" \
+  --output "backups/factory-$(date +%Y-%m-%d).sqlite" --json
+```
+
+The backup command reads the live database without changing it, creates missing destination
+directories, and refuses to replace an existing backup unless `--overwrite` is explicit. A
+backup is a recovery artifact, not a second system of record. Before restoring, stop the
+Factory server, preserve the current database under a timestamped name, copy the selected
+backup into the configured database path, and verify it by starting the server and reading the
+project portfolio. Automated scheduling, off-host retention, and a one-command restore remain
+deployment work rather than application behavior.
 
 Start the repository contract with an in-memory adapter, then run the same behavior suite
 against Bun's built-in SQLite adapter. Use a temporary SQLite file only for process-restart
