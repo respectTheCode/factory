@@ -74,11 +74,16 @@ type FactoryState = {
 };
 
 export type ProjectHierarchy = {
+  id: string;
   name: string;
   tasks: Array<{
+    id: string;
     name: string;
+    projectId: string;
     subtasks: Array<{
+      id: string;
       name: string;
+      taskId: string;
     }>;
   }>;
 };
@@ -274,14 +279,21 @@ export class FactoryApplication {
     }
 
     return {
+      id: project.id,
       name: project.name,
       tasks: this.tasks
         .filter((task) => task.projectId === project.id)
         .map((task) => ({
+          id: task.id,
           name: task.name,
+          projectId: task.projectId,
           subtasks: this.subtasks
             .filter((subtask) => subtask.taskId === task.id)
-            .map((subtask) => ({ name: subtask.name })),
+            .map((subtask) => ({
+              id: subtask.id,
+              name: subtask.name,
+              taskId: subtask.taskId,
+            })),
         })),
     };
   }

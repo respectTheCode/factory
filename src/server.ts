@@ -74,6 +74,20 @@ function createRouter(
       status: trpc.procedure
         .input(z.object({ taskId: z.string().min(1) }))
         .query(({ input }) => application.getTaskStatus(input.taskId)),
+      detail: trpc.procedure
+        .input(z.object({ taskId: z.string().min(1) }))
+        .query(({ input }) => application.getTaskDetail(input.taskId)),
+      link: trpc.procedure
+        .input(
+          z.object({
+            system: z.enum(["linear", "notion"]),
+            stableId: z.string().min(1),
+            taskId: z.string().min(1),
+            title: z.string().optional(),
+            url: z.string().url(),
+          }),
+        )
+        .mutation(({ input }) => application.addTaskTrackerLink(input)),
     }),
   });
 }

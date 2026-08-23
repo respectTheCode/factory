@@ -352,4 +352,95 @@ describe("Factory planning WebSocket transport", () => {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }
   });
+
+  test("adds a Linear tracker link and observes it on task detail", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-tracker-transport-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+    const server = createFactoryServer({ port: 0, databasePath });
+    const socket = new WebSocket(new URL("/trpc", server.url));
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener(
+          "error",
+          () => reject(new Error("WebSocket connection failed")),
+          { once: true },
+        );
+      });
+
+      const projectResponse = await sendRawTRPCRequest(socket, {
+        id: 31,
+        method: "mutation",
+        params: {
+          input: { name: "Grail roadmap" },
+          path: "projects.create",
+        },
+      });
+      const project = responseData(projectResponse);
+
+      const taskResponse = await sendRawTRPCRequest(socket, {
+        id: 32,
+        method: "mutation",
+        params: {
+          input: {
+            name: "Publish the refreshed site",
+            projectId: project.id,
+          },
+          path: "tasks.create",
+        },
+      });
+      const task = responseData(taskResponse);
+
+      const linkResponse = await sendRawTRPCRequest(socket, {
+        id: 33,
+        method: "mutation",
+        params: {
+          input: {
+            system: "linear",
+            stableId: "GRA-123",
+            taskId: task.id,
+            title: "Publish the refreshed site",
+            url: "https://linear.app/grail/issue/GRA-123",
+          },
+          path: "tasks.link",
+        },
+      });
+
+      expect(linkResponse.result?.type).toBe("data");
+
+      const detailResponse = await sendRawTRPCRequest(socket, {
+        id: 34,
+        method: "query",
+        params: {
+          input: { taskId: task.id },
+          path: "tasks.detail",
+        },
+      });
+
+      expect(detailResponse).toMatchObject({
+        id: 34,
+        result: {
+          type: "data",
+          data: {
+            name: "Publish the refreshed site",
+            trackerLinks: [
+              {
+                system: "linear",
+                stableId: "GRA-123",
+                title: "Publish the refreshed site",
+                url: "https://linear.app/grail/issue/GRA-123",
+              },
+            ],
+          },
+        },
+      });
+    } finally {
+      socket.close();
+      server.stop();
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
 });

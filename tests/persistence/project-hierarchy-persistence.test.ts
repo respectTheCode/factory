@@ -22,19 +22,28 @@ describe("project persistence", () => {
         name: "Publish the refreshed site",
         projectId: project.id,
       });
-      firstApplication.createSubtask({
+      const subtask = firstApplication.createSubtask({
         name: "Verify the production build",
         taskId: task.id,
       });
 
       const reopenedApplication = createFactoryApplication({ databasePath });
 
-      expect(reopenedApplication.getProjectHierarchy(project.id)).toEqual({
+      expect(reopenedApplication.getProjectHierarchy(project.id)).toMatchObject({
+        id: project.id,
         name: "Website refresh",
         tasks: [
           {
+            id: task.id,
             name: "Publish the refreshed site",
-            subtasks: [{ name: "Verify the production build" }],
+            projectId: project.id,
+            subtasks: [
+              {
+                id: subtask.id,
+                name: "Verify the production build",
+                taskId: task.id,
+              },
+            ],
           },
         ],
       });
