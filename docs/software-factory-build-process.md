@@ -1,7 +1,7 @@
 # Software Factory Build Process
 
 **Status:** Working agreement for the v1 build
-**Related:** [requirements](software-factory-requirements.md) · [domain glossary](../CONTEXT.md)
+**Related:** [requirements](software-factory-requirements.md) · [Tailscale runbook](software-factory-tailscale.md) · [domain glossary](../CONTEXT.md)
 
 ## 1. Purpose
 
