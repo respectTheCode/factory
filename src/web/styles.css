@@ -90,6 +90,19 @@ h2 {
   flex-shrink: 0;
 }
 
+.project-link-form {
+  align-items: center;
+  border-bottom: 1px solid #334155;
+  flex-wrap: wrap;
+  margin-top: 18px;
+  padding-bottom: 18px;
+}
+
+.project-link-form input,
+.project-link-form select {
+  flex: 1 1 150px;
+}
+
 .task-create-main {
   align-items: center;
   display: flex;
@@ -149,11 +162,28 @@ textarea {
   text-transform: capitalize;
 }
 
+.status-pill.completed,
 .status-pill.complete {
   background: #064e3b;
   color: #a7f3d0;
 }
 
+.status-pill.active {
+  background: #0c4a6e;
+  color: #bae6fd;
+}
+
+.status-pill.awaiting_verification {
+  background: #713f12;
+  color: #fde68a;
+}
+
+.status-pill.blocked {
+  background: #7f1d1d;
+  color: #fecaca;
+}
+
+.status-pill.planned,
 .status-pill.pending {
   background: #334155;
   color: #cbd5e1;
@@ -230,6 +260,13 @@ select {
   text-transform: capitalize;
 }
 
+.subtask-description {
+  color: #cbd5e1;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin-top: 6px;
+}
+
 .evidence {
   color: #cbd5e1;
   font-size: 0.85rem;
@@ -296,6 +333,14 @@ button.danger {
 }
 .panel {
   background: #0f172a;
+}
+
+.portfolio-summary,
+.project-summary {
+  color: #94a3b8;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin-top: 8px;
 }
 
 .connection {

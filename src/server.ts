@@ -65,10 +65,33 @@ function createRouter(
       create: trpc.procedure
         .input(z.object({ name: z.string().min(1) }))
         .mutation(({ input }) => application.createProject(input)),
+      link: trpc.procedure
+        .input(
+          z.object({
+            projectId: z.string().min(1),
+            stableId: z.string().min(1),
+            system: z.enum(["linear", "notion"]),
+            title: z.string().optional(),
+            url: z.string().url(),
+          }),
+        )
+        .mutation(({ input }) => {
+          const link = application.addProjectTrackerLink(input);
+          projectUpdates.publish(input.projectId);
+          return link;
+        }),
       list: trpc.procedure.query(() => application.listProjects()),
+      portfolio: trpc.procedure.query(() => application.getPortfolioStatus()),
+      status: trpc.procedure
+        .input(z.object({ projectId: z.string().min(1) }))
+        .query(({ input }) => application.getProjectStatus(input.projectId)),
       detail: trpc.procedure
         .input(z.object({ projectId: z.string().min(1) }))
-        .query(({ input }) => application.getProjectHierarchy(input.projectId)),
+        .query(({ input }) => ({
+          ...application.getProjectHierarchy(input.projectId),
+          trackerLinks: application.getProjectDetail(input.projectId)
+            .trackerLinks,
+        })),
       updates: trpc.procedure
         .input(z.object({ projectId: z.string().min(1) }))
         .subscription(({ input }) =>
@@ -81,7 +104,13 @@ function createRouter(
     }),
     subtasks: trpc.router({
       create: trpc.procedure
-        .input(z.object({ name: z.string().min(1), taskId: z.string().min(1) }))
+        .input(
+          z.object({
+            description: z.string().optional(),
+            name: z.string().min(1),
+            taskId: z.string().min(1),
+          }),
+        )
         .mutation(({ input }) => {
           const subtask = application.createSubtask(input);
           projectUpdates.publishAll();

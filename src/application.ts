@@ -33,6 +33,7 @@ type Subtask = {
   id: string;
   name: string;
   taskId: string;
+  description?: string;
   createdAt: Date;
 };
 
@@ -61,14 +62,44 @@ export type Verification = {
   createdAt: Date;
 };
 
+export type ProjectWorkState =
+  | "planned"
+  | "active"
+  | "awaiting_verification"
+  | "completed"
+  | "blocked";
+
+export type ProjectWorkCounts = Record<ProjectWorkState, number>;
+
+export type TaskStatus = {
+  taskCompleted: boolean;
+  taskState: ProjectWorkState;
+  subtasks: Array<{
+    reportedState?: ReportedState;
+    verificationState:
+      | "accepted"
+      | "awaiting_verification"
+      | "deferred"
+      | "rejected"
+      | "unreported";
+    id?: string;
+    reportId?: string;
+    evidence?: string;
+    reporter?: string;
+  }>;
+};
+
 export type TrackerLink = {
   id: string;
   system: "linear" | "notion";
   stableId: string;
-  taskId: string;
+  projectId?: string;
+  taskId?: string;
   title?: string;
   url: string;
 };
+
+type TrackerLinkFields = Omit<TrackerLink, "id" | "projectId" | "taskId">;
 
 type FactoryState = {
   projects: Project[];
@@ -78,6 +109,16 @@ type FactoryState = {
   verifications: Verification[];
   trackerLinks?: TrackerLink[];
 };
+
+function emptyProjectWorkCounts(): ProjectWorkCounts {
+  return {
+    planned: 0,
+    active: 0,
+    awaiting_verification: 0,
+    completed: 0,
+    blocked: 0,
+  };
+}
 
 export type ProjectHierarchy = {
   id: string;
@@ -90,6 +131,7 @@ export type ProjectHierarchy = {
       id: string;
       name: string;
       taskId: string;
+      description?: string;
     }>;
   }>;
 };
@@ -175,7 +217,15 @@ export class FactoryApplication {
     return task;
   }
 
-  createSubtask({ name, taskId }: { name: string; taskId: string }): Subtask {
+  createSubtask({
+    description,
+    name,
+    taskId,
+  }: {
+    description?: string;
+    name: string;
+    taskId: string;
+  }): Subtask {
     if (!this.tasks.some((task) => task.id === taskId)) {
       throw new Error(`Task ${taskId} does not exist.`);
     }
@@ -184,6 +234,7 @@ export class FactoryApplication {
       id: this.idGenerator(),
       name,
       taskId,
+      ...(description?.trim() ? { description: description.trim() } : {}),
       createdAt: this.clock(),
     };
 
@@ -244,22 +295,7 @@ export class FactoryApplication {
     this.save();
   }
 
-  getTaskStatus(taskId: string): {
-    taskCompleted: boolean;
-    subtasks: Array<{
-      reportedState?: ReportedState;
-      verificationState:
-        | "accepted"
-        | "awaiting_verification"
-        | "deferred"
-        | "rejected"
-        | "unreported";
-      id?: string;
-      reportId?: string;
-      evidence?: string;
-      reporter?: string;
-    }>;
-  } {
+  getTaskStatus(taskId: string): TaskStatus {
     if (!this.tasks.some((task) => task.id === taskId)) {
       throw new Error(`Task ${taskId} does not exist.`);
     }
@@ -285,15 +321,74 @@ export class FactoryApplication {
         };
       });
 
+    const taskCompleted =
+      subtasks.length > 0 &&
+      subtasks.every(
+        (subtask) =>
+          subtask.reportedState === "complete" &&
+          subtask.verificationState === "accepted",
+      );
+
     return {
-      taskCompleted:
-        subtasks.length > 0 &&
-        subtasks.every(
-          (subtask) =>
-            subtask.reportedState === "complete" &&
-            subtask.verificationState === "accepted",
-        ),
+      taskCompleted,
+      taskState: this.deriveTaskWorkState(taskCompleted, subtasks),
       subtasks,
+    };
+  }
+
+  getProjectStatus(projectId: string): {
+    projectId: string;
+    projectName: string;
+    totalTasks: number;
+    counts: ProjectWorkCounts;
+  } {
+    const project = this.projects.find(
+      (candidate) => candidate.id === projectId,
+    );
+    if (!project) {
+      throw new Error(`Project ${projectId} does not exist.`);
+    }
+
+    const counts = emptyProjectWorkCounts();
+    const tasks = this.tasks.filter((task) => task.projectId === projectId);
+    for (const task of tasks) {
+      counts[this.getTaskWorkState(task.id)] += 1;
+    }
+
+    return {
+      projectId,
+      projectName: project.name,
+      totalTasks: tasks.length,
+      counts,
+    };
+  }
+
+  getPortfolioStatus(): {
+    totalTasks: number;
+    counts: ProjectWorkCounts;
+    projects: Array<{
+      projectId: string;
+      projectName: string;
+      totalTasks: number;
+      counts: ProjectWorkCounts;
+    }>;
+  } {
+    const counts = emptyProjectWorkCounts();
+    const projects = this.projects.map((project) => {
+      const status = this.getProjectStatus(project.id);
+      for (const state of Object.keys(counts) as ProjectWorkState[]) {
+        counts[state] += status.counts[state];
+      }
+      return status;
+    });
+
+    return {
+      totalTasks: projects.reduce(
+        (total, project) => total + project.totalTasks,
+        0,
+      ),
+      counts,
+      projects,
     };
   }
 
@@ -346,6 +441,9 @@ export class FactoryApplication {
               id: subtask.id,
               name: subtask.name,
               taskId: subtask.taskId,
+              ...(subtask.description !== undefined
+                ? { description: subtask.description }
+                : {}),
             })),
         })),
     };
@@ -358,7 +456,7 @@ export class FactoryApplication {
   addTaskTrackerLink({
     taskId,
     ...link
-  }: Omit<TrackerLink, "id">): TrackerLink {
+  }: TrackerLinkFields & { taskId: string }): TrackerLink {
     if (!this.tasks.some((task) => task.id === taskId)) {
       throw new Error(`Task ${taskId} does not exist.`);
     }
@@ -367,6 +465,39 @@ export class FactoryApplication {
     this.trackerLinks.push(trackerLink);
     this.save();
     return trackerLink;
+  }
+
+  addProjectTrackerLink({
+    projectId,
+    ...link
+  }: TrackerLinkFields & { projectId: string }): TrackerLink {
+    if (!this.projects.some((project) => project.id === projectId)) {
+      throw new Error(`Project ${projectId} does not exist.`);
+    }
+
+    const trackerLink = { id: this.idGenerator(), projectId, ...link };
+    this.trackerLinks.push(trackerLink);
+    this.save();
+    return trackerLink;
+  }
+
+  getProjectDetail(projectId: string): {
+    id: string;
+    name: string;
+    trackerLinks: TrackerLink[];
+  } {
+    const project = this.projects.find(
+      (candidate) => candidate.id === projectId,
+    );
+    if (!project) throw new Error(`Project ${projectId} does not exist.`);
+
+    return {
+      id: project.id,
+      name: project.name,
+      trackerLinks: this.trackerLinks.filter(
+        (link) => link.projectId === projectId,
+      ),
+    };
   }
 
   getTaskDetail(taskId: string): {
@@ -401,6 +532,51 @@ export class FactoryApplication {
     return this.statusReports.findLast(
       (report) => report.subtaskId === subtaskId,
     );
+  }
+
+  private getTaskWorkState(taskId: string): ProjectWorkState {
+    const status = this.getTaskStatus(taskId);
+    return status.taskState;
+  }
+
+  private deriveTaskWorkState(
+    taskCompleted: boolean,
+    subtasks: TaskStatus["subtasks"],
+  ): ProjectWorkState {
+    if (taskCompleted) return "completed";
+
+    if (
+      subtasks.some(
+        (subtask) =>
+          subtask.reportedState === "blocked" ||
+          subtask.verificationState === "rejected" ||
+          subtask.verificationState === "deferred",
+      )
+    ) {
+      return "blocked";
+    }
+
+    if (
+      subtasks.some(
+        (subtask) =>
+          subtask.verificationState === "awaiting_verification" &&
+          subtask.reportedState === "complete",
+      )
+    ) {
+      return "awaiting_verification";
+    }
+
+    if (
+      subtasks.some(
+        (subtask) =>
+          subtask.reportedState === "in_progress" ||
+          subtask.verificationState === "accepted",
+      )
+    ) {
+      return "active";
+    }
+
+    return "planned";
   }
 
   private getCurrentVerification(reportId: string): Verification | undefined {

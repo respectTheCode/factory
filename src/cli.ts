@@ -22,6 +22,10 @@ function parseArgs(args: string[]): ParsedArgs {
       const flag = value.slice(2);
       const next = args[index + 1];
       if (!next || next.startsWith("--")) {
+        if (flag === "json") {
+          flags.set(flag, "true");
+          continue;
+        }
         throw new Error(`Flag --${flag} requires a value.`);
       }
       flags.set(flag, next);
@@ -38,6 +42,15 @@ function requiredFlag(flags: Map<string, string>, name: string): string {
   const value = flags.get(name)?.trim();
   if (!value) throw new Error(`Missing required --${name}.`);
   return value;
+}
+
+function listFlag(flags: Map<string, string>, name: string): string[] {
+  const value = flags.get(name);
+  if (!value) return [];
+  return value
+    .split("|")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function output(value: unknown): void {
@@ -76,10 +89,35 @@ function main(args: string[]): void {
     return;
   }
 
+  if (resource === "project" && action === "status") {
+    output({
+      status: application.getProjectStatus(
+        requiredFlag(parsed.flags, "project-id"),
+      ),
+    });
+    return;
+  }
+
+  if (resource === "project" && action === "portfolio") {
+    output({ portfolio: application.getPortfolioStatus() });
+    return;
+  }
+
   if (resource === "task" && action === "create") {
     const task = application.createTask({
+      acceptanceCriteria: listFlag(parsed.flags, "acceptance-criteria"),
+      dependencies: listFlag(parsed.flags, "dependencies"),
       name: requiredFlag(parsed.flags, "name"),
+      objective: parsed.flags.get("objective")?.trim() || undefined,
+      owner: parsed.flags.get("owner")?.trim() || undefined,
+      priority: parsed.flags.get("priority") as
+        | "low"
+        | "medium"
+        | "high"
+        | "urgent"
+        | undefined,
       projectId: requiredFlag(parsed.flags, "project-id"),
+      repositoryLinks: listFlag(parsed.flags, "repository-links"),
     });
     output({ task });
     return;
@@ -87,6 +125,7 @@ function main(args: string[]): void {
 
   if (resource === "subtask" && action === "create") {
     const subtask = application.createSubtask({
+      description: parsed.flags.get("description")?.trim() || undefined,
       name: requiredFlag(parsed.flags, "name"),
       taskId: requiredFlag(parsed.flags, "task-id"),
     });
@@ -119,7 +158,7 @@ function main(args: string[]): void {
   }
 
   throw new Error(
-    "Usage: project create|list, task create, subtask create|report|status|verify",
+    "Usage: project create|list|status|portfolio, task create, subtask create|report|status|verify",
   );
 }
 

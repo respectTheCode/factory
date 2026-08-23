@@ -20,12 +20,26 @@ type ProjectListOutput = {
   }>;
 };
 
+type ProjectStatusOutput = {
+  schemaVersion: 1;
+  status: {
+    totalTasks: number;
+    counts: Record<string, number>;
+  };
+};
+
 type TaskCreateOutput = {
   schemaVersion: 1;
   task: {
+    acceptanceCriteria: string[];
+    dependencies: string[];
     id: string;
     name: string;
+    objective?: string;
+    owner?: string;
+    priority?: string;
     projectId: string;
+    repositoryLinks: string[];
   };
 };
 
@@ -35,6 +49,7 @@ type SubtaskCreateOutput = {
     id: string;
     name: string;
     taskId: string;
+    description?: string;
   };
 };
 
@@ -117,6 +132,197 @@ describe("project CLI", () => {
       const listed = JSON.parse(listResult.stdout) as ProjectListOutput;
       expect(listed).toMatchObject({ schemaVersion: 1 });
       expect(listed.projects).toContainEqual(created.project);
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test("accepts --json on a read command without adding human prose", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-cli-json-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+
+    try {
+      const createResult = await runCli([
+        "project",
+        "create",
+        "--name",
+        "Website refresh",
+        "--database",
+        databasePath,
+      ]);
+      expect(createResult.exitCode).toBe(0);
+
+      const listResult = await runCli([
+        "project",
+        "list",
+        "--json",
+        "--database",
+        databasePath,
+      ]);
+
+      expect(listResult.exitCode).toBe(0);
+      expect(listResult.stderr).toBe("");
+      const listed = JSON.parse(listResult.stdout) as ProjectListOutput;
+      expect(listed).toMatchObject({
+        schemaVersion: 1,
+        projects: [{ name: "Website refresh" }],
+      });
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test("creates a task with planning metadata from flags", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-cli-task-metadata-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+
+    try {
+      const projectResult = await runCli([
+        "project",
+        "create",
+        "--name",
+        "Factory V1",
+        "--database",
+        databasePath,
+      ]);
+      const project = (JSON.parse(projectResult.stdout) as ProjectCreateOutput)
+        .project;
+
+      const taskResult = await runCli([
+        "task",
+        "create",
+        "--name",
+        "Ship the mobile planning loop",
+        "--project-id",
+        project.id,
+        "--objective",
+        "Make progress inspectable from a phone",
+        "--acceptance-criteria",
+        "Metadata is visible|Human verification is recorded",
+        "--priority",
+        "high",
+        "--owner",
+        "kevin",
+        "--dependencies",
+        "Tailscale access|PWA install",
+        "--repository-links",
+        "https://github.com/app-press/factory|https://github.com/app-press/hermes",
+        "--database",
+        databasePath,
+      ]);
+
+      expect(taskResult.exitCode).toBe(0);
+      expect(JSON.parse(taskResult.stdout) as TaskCreateOutput).toMatchObject({
+        schemaVersion: 1,
+        task: {
+          acceptanceCriteria: [
+            "Metadata is visible",
+            "Human verification is recorded",
+          ],
+          dependencies: ["Tailscale access", "PWA install"],
+          name: "Ship the mobile planning loop",
+          objective: "Make progress inspectable from a phone",
+          owner: "kevin",
+          priority: "high",
+          projectId: project.id,
+          repositoryLinks: [
+            "https://github.com/app-press/factory",
+            "https://github.com/app-press/hermes",
+          ],
+        },
+      });
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test("reads project status projections as stable JSON", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-cli-project-status-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+
+    try {
+      const projectResult = await runCli([
+        "project",
+        "create",
+        "--name",
+        "Factory V1",
+        "--database",
+        databasePath,
+      ]);
+      const project = (JSON.parse(projectResult.stdout) as ProjectCreateOutput)
+        .project;
+      const taskResult = await runCli([
+        "task",
+        "create",
+        "--name",
+        "Ship the loop",
+        "--project-id",
+        project.id,
+        "--database",
+        databasePath,
+      ]);
+      const task = (JSON.parse(taskResult.stdout) as TaskCreateOutput).task;
+      const subtaskResult = await runCli([
+        "subtask",
+        "create",
+        "--description",
+        "Confirm the production build is healthy",
+        "--name",
+        "Verify the loop",
+        "--task-id",
+        task.id,
+        "--database",
+        databasePath,
+      ]);
+      const subtask = (JSON.parse(subtaskResult.stdout) as SubtaskCreateOutput)
+        .subtask;
+      expect(subtask.description).toBe(
+        "Confirm the production build is healthy",
+      );
+      await runCli([
+        "subtask",
+        "report",
+        "--subtask-id",
+        subtask.id,
+        "--state",
+        "in_progress",
+        "--reporter",
+        "codex",
+        "--database",
+        databasePath,
+      ]);
+
+      const statusResult = await runCli([
+        "project",
+        "status",
+        "--project-id",
+        project.id,
+        "--json",
+        "--database",
+        databasePath,
+      ]);
+      expect(statusResult.exitCode).toBe(0);
+      expect(
+        JSON.parse(statusResult.stdout) as ProjectStatusOutput,
+      ).toMatchObject({
+        schemaVersion: 1,
+        status: {
+          totalTasks: 1,
+          counts: {
+            planned: 0,
+            active: 1,
+            awaiting_verification: 0,
+            completed: 0,
+            blocked: 0,
+          },
+        },
+      });
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }

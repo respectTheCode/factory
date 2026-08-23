@@ -99,6 +99,7 @@ describe("Factory planning WebSocket transport", () => {
         method: "mutation",
         params: {
           input: {
+            description: "Confirm the production build is healthy",
             name: "Verify the production build",
             taskId: task.id,
           },
@@ -124,7 +125,12 @@ describe("Factory planning WebSocket transport", () => {
             tasks: [
               {
                 name: "Publish the refreshed site",
-                subtasks: [{ name: "Verify the production build" }],
+                subtasks: [
+                  {
+                    description: "Confirm the production build is healthy",
+                    name: "Verify the production build",
+                  },
+                ],
               },
             ],
           },

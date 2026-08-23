@@ -18,12 +18,25 @@ FACTORY_DB=factory.sqlite
 Common operations:
 
 ```bash
-bun run src/cli.ts project list --database "$FACTORY_DB"
+bun run src/cli.ts project list --json --database "$FACTORY_DB"
 bun run src/cli.ts project create --name "Project name" --database "$FACTORY_DB"
+bun run src/cli.ts project status --project-id PROJECT_ID --json --database "$FACTORY_DB"
+bun run src/cli.ts project portfolio --json --database "$FACTORY_DB"
 bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" --database "$FACTORY_DB"
-bun run src/cli.ts subtask create --task-id TASK_ID --name "Subtask name" --database "$FACTORY_DB"
-bun run src/cli.ts subtask report --subtask-id SUBTASK_ID --state in_progress --reporter codex --evidence "What changed" --database "$FACTORY_DB"
-bun run src/cli.ts subtask status --task-id TASK_ID --database "$FACTORY_DB"
+bun run src/cli.ts subtask create --task-id TASK_ID --name "Subtask name" --description "What must be checked" --database "$FACTORY_DB"
+bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state in_progress --reporter codex --evidence "What changed" --database "$FACTORY_DB"
+bun run src/cli.ts subtask status --json --task-id TASK_ID --database "$FACTORY_DB"
+```
+
+Task planning lists use a pipe separator when passed through one shell flag:
+
+```bash
+bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" \
+  --objective "What success looks like" --priority high --owner kevin \
+  --acceptance-criteria "First check|Second check" \
+  --dependencies "Prerequisite A|Prerequisite B" \
+  --repository-links "https://github.com/app-press/factory" \
+  --database "$FACTORY_DB"
 ```
 
 Agents may report `not_started`, `in_progress`, `blocked`, or `complete`.

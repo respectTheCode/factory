@@ -8,18 +8,53 @@ import { createProjectAndRefresh } from "./project-actions";
 import "./styles.css";
 
 type ProjectSummary = { id: string; name: string };
+type WorkCounts = {
+  planned: number;
+  active: number;
+  awaiting_verification: number;
+  completed: number;
+  blocked: number;
+};
+type PortfolioStatus = {
+  totalTasks: number;
+  counts: WorkCounts;
+  projects: Array<{
+    projectId: string;
+    projectName: string;
+    totalTasks: number;
+    counts: WorkCounts;
+  }>;
+};
 type ProjectDetail = {
   id: string;
   name: string;
+  trackerLinks: Array<{
+    id: string;
+    system: "linear" | "notion";
+    stableId: string;
+    title?: string;
+    url: string;
+  }>;
   tasks: Array<{
     id: string;
     name: string;
     projectId: string;
-    subtasks: Array<{ id: string; name: string; taskId: string }>;
+    subtasks: Array<{
+      id: string;
+      name: string;
+      taskId: string;
+      description?: string;
+    }>;
   }>;
 };
 type TaskStatus = {
   taskCompleted: boolean;
+  taskState:
+    | "planned"
+    | "active"
+    | "awaiting_verification"
+    | "completed"
+    | "blocked";
   subtasks: Array<{
     reportedState?: "not_started" | "in_progress" | "blocked" | "complete";
     verificationState:
@@ -84,6 +119,9 @@ function Dashboard() {
   const [taskDependencies, setTaskDependencies] = useState("");
   const [taskRepositoryLinks, setTaskRepositoryLinks] = useState("");
   const [subtaskNames, setSubtaskNames] = useState<Record<string, string>>({});
+  const [subtaskDescriptions, setSubtaskDescriptions] = useState<
+    Record<string, string>
+  >({});
   const [projectLinkInputs, setProjectLinkInputs] = useState<
     Record<
       string,
@@ -95,8 +133,16 @@ function Dashboard() {
       }
     >
   >({});
+  const [projectTrackerInput, setProjectTrackerInput] = useState({
+    system: "linear" as "linear" | "notion",
+    stableId: "",
+    title: "",
+    url: "",
+  });
   const [evidence, setEvidence] = useState<Record<string, string>>({});
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
+  const [portfolioStatus, setPortfolioStatus] =
+    useState<PortfolioStatus | null>(null);
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(
     null,
   );
@@ -120,6 +166,7 @@ function Dashboard() {
         subscriptionCleanup.current = null;
         connection.markDisconnected();
         setProjects(null);
+        setPortfolioStatus(null);
         setProjectDetail(null);
         setTaskDetails({});
         setTaskStatuses({});
@@ -129,8 +176,13 @@ function Dashboard() {
       onOpen: () => {
         connection.markConnected(new Date());
         setSnapshot(connection.snapshot());
-        void trpc.current?.projects.list.query().then((nextProjects) => {
+        void Promise.all([
+          trpc.current?.projects.list.query(),
+          trpc.current?.projects.portfolio.query(),
+        ]).then(([nextProjects, nextPortfolio]) => {
+          if (!nextProjects || !nextPortfolio) return;
           setProjects(nextProjects);
+          setPortfolioStatus(nextPortfolio);
           connection.markAuthoritativeRefresh();
           setSnapshot(connection.snapshot());
         });
@@ -151,9 +203,11 @@ function Dashboard() {
   const refreshProject = async (projectId: string) => {
     const client = trpc.current;
     if (!client) return;
-    const detail = (await client.projects.detail.query({
-      projectId,
-    })) as ProjectDetail;
+    const [detail, nextPortfolio] = await Promise.all([
+      client.projects.detail.query({ projectId }) as Promise<ProjectDetail>,
+      client.projects.portfolio.query(),
+    ]);
+    setPortfolioStatus(nextPortfolio);
     const [details, statuses] = await Promise.all([
       Promise.all(
         detail.tasks.map(
@@ -280,6 +334,16 @@ function Dashboard() {
               ? "Loading projects…"
               : `${projects.length} projects`}
           </h2>
+          {portfolioStatus && (
+            <p className="portfolio-summary">
+              {portfolioStatus.totalTasks} tasks ·{" "}
+              {portfolioStatus.counts.planned} planned ·{" "}
+              {portfolioStatus.counts.active} active ·{" "}
+              {portfolioStatus.counts.awaiting_verification} awaiting
+              verification · {portfolioStatus.counts.completed} completed ·{" "}
+              {portfolioStatus.counts.blocked} blocked
+            </p>
+          )}
         </div>
         <form
           onSubmit={(event) => {
@@ -296,6 +360,9 @@ function Dashboard() {
             }).then((nextProjects) => {
               setProjects(nextProjects);
               setProjectName("");
+              void trpc.current?.projects.portfolio
+                .query()
+                .then(setPortfolioStatus);
             });
           }}
         >
@@ -340,6 +407,21 @@ function Dashboard() {
             <div>
               <p className="eyebrow">Project detail</p>
               <h2 id="project-detail-title">{projectDetail.name}</h2>
+              {portfolioStatus &&
+                (() => {
+                  const status = portfolioStatus.projects.find(
+                    (candidate) => candidate.projectId === projectDetail.id,
+                  );
+                  return status ? (
+                    <p className="project-summary">
+                      {status.totalTasks} tasks · {status.counts.planned}{" "}
+                      planned · {status.counts.active} active ·{" "}
+                      {status.counts.awaiting_verification} awaiting
+                      verification · {status.counts.completed} completed ·{" "}
+                      {status.counts.blocked} blocked
+                    </p>
+                  ) : null;
+                })()}
             </div>
             <form onSubmit={createTask}>
               <div className="task-create-main">
@@ -427,6 +509,111 @@ function Dashboard() {
             </form>
           </div>
 
+          <form
+            className="project-link-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (
+                !projectTrackerInput.stableId.trim() ||
+                !projectTrackerInput.url.trim() ||
+                !trpc.current
+              )
+                return;
+              void mutateAndRefresh(async () => {
+                await trpc.current!.projects.link.mutate({
+                  ...projectTrackerInput,
+                  projectId: projectDetail.id,
+                  stableId: projectTrackerInput.stableId.trim(),
+                  title: projectTrackerInput.title.trim() || undefined,
+                  url: projectTrackerInput.url.trim(),
+                });
+                setProjectTrackerInput({
+                  system: projectTrackerInput.system,
+                  stableId: "",
+                  title: "",
+                  url: "",
+                });
+              });
+            }}
+          >
+            <select
+              aria-label="Project tracker system"
+              disabled={!snapshot.canMutate || busy}
+              onChange={(event) =>
+                setProjectTrackerInput((current) => ({
+                  ...current,
+                  system: event.target.value as "linear" | "notion",
+                }))
+              }
+              value={projectTrackerInput.system}
+            >
+              <option value="linear">Linear project</option>
+              <option value="notion">Notion project</option>
+            </select>
+            <input
+              aria-label="Project tracker ID"
+              disabled={!snapshot.canMutate || busy}
+              onChange={(event) =>
+                setProjectTrackerInput((current) => ({
+                  ...current,
+                  stableId: event.target.value,
+                }))
+              }
+              placeholder="Project ID"
+              value={projectTrackerInput.stableId}
+            />
+            <input
+              aria-label="Project tracker URL"
+              disabled={!snapshot.canMutate || busy}
+              onChange={(event) =>
+                setProjectTrackerInput((current) => ({
+                  ...current,
+                  url: event.target.value,
+                }))
+              }
+              placeholder="https://…"
+              value={projectTrackerInput.url}
+            />
+            <input
+              aria-label="Project tracker title"
+              disabled={!snapshot.canMutate || busy}
+              onChange={(event) =>
+                setProjectTrackerInput((current) => ({
+                  ...current,
+                  title: event.target.value,
+                }))
+              }
+              placeholder="Display title (optional)"
+              value={projectTrackerInput.title}
+            />
+            <button
+              disabled={
+                !snapshot.canMutate ||
+                busy ||
+                !projectTrackerInput.stableId.trim() ||
+                !projectTrackerInput.url.trim()
+              }
+              type="submit"
+            >
+              Link project
+            </button>
+          </form>
+
+          {projectDetail.trackerLinks.length > 0 && (
+            <div className="links" aria-label="Project tracker links">
+              {projectDetail.trackerLinks.map((link) => (
+                <a
+                  href={link.url}
+                  key={link.id}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {link.system}: {link.title ?? link.stableId}
+                </a>
+              ))}
+            </div>
+          )}
+
           {projectDetail.tasks.length === 0 ? (
             <p className="empty">
               No tasks yet. Add the first piece of work above.
@@ -448,9 +635,9 @@ function Dashboard() {
                       <div>
                         <h3>{task.name}</h3>
                         <span
-                          className={`status-pill ${status?.taskCompleted ? "complete" : "pending"}`}
+                          className={`status-pill ${status?.taskState ?? "planned"}`}
                         >
-                          {status?.taskCompleted ? "Complete" : "In progress"}
+                          {formatWorkState(status?.taskState ?? "planned")}
                         </span>
                       </div>
                       <form
@@ -564,6 +751,7 @@ function Dashboard() {
                     {taskDetail &&
                     (taskDetail.objective ||
                       taskDetail.acceptanceCriteria.length > 0 ||
+                      taskDetail.priority ||
                       taskDetail.owner ||
                       taskDetail.dependencies.length > 0 ||
                       taskDetail.repositoryLinks.length > 0) ? (
@@ -576,6 +764,11 @@ function Dashboard() {
                         {taskDetail.owner && (
                           <p>
                             <strong>Owner:</strong> {taskDetail.owner}
+                          </p>
+                        )}
+                        {taskDetail.priority && (
+                          <p>
+                            <strong>Priority:</strong> {taskDetail.priority}
                           </p>
                         )}
                         {taskDetail.acceptanceCriteria.length > 0 && (
@@ -616,6 +809,11 @@ function Dashboard() {
                           <div className="subtask" key={subtask.id}>
                             <div>
                               <strong>{subtask.name}</strong>
+                              {subtask.description && (
+                                <p className="subtask-description">
+                                  {subtask.description}
+                                </p>
+                              )}
                               <span className="subtask-state">
                                 {subtaskStatus?.reportedState ?? "not_started"}{" "}
                                 ·{" "}
@@ -753,10 +951,16 @@ function Dashboard() {
                         if (!name || !trpc.current) return;
                         void mutateAndRefresh(async () => {
                           await trpc.current!.subtasks.create.mutate({
+                            description:
+                              subtaskDescriptions[task.id]?.trim() || undefined,
                             name,
                             taskId: task.id,
                           });
                           setSubtaskNames((current) => ({
+                            ...current,
+                            [task.id]: "",
+                          }));
+                          setSubtaskDescriptions((current) => ({
                             ...current,
                             [task.id]: "",
                           }));
@@ -774,6 +978,18 @@ function Dashboard() {
                         }
                         placeholder="New subtask"
                         value={subtaskNames[task.id] ?? ""}
+                      />
+                      <input
+                        aria-label={`Description for new subtask of ${task.name}`}
+                        disabled={!snapshot.canMutate || busy}
+                        onChange={(event) =>
+                          setSubtaskDescriptions((current) => ({
+                            ...current,
+                            [task.id]: event.target.value,
+                          }))
+                        }
+                        placeholder="Description (optional)"
+                        value={subtaskDescriptions[task.id] ?? ""}
                       />
                       <button
                         disabled={
@@ -816,6 +1032,12 @@ function ConnectionIndicator({ snapshot }: { snapshot: ConnectionSnapshot }) {
       </span>
     </div>
   );
+}
+
+function formatWorkState(state: string): string {
+  return state
+    .replaceAll("_", " ")
+    .replace(/(^| )\w/g, (character) => character.toUpperCase());
 }
 
 createRoot(document.getElementById("root")!).render(<Dashboard />);
