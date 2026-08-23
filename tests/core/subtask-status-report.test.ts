@@ -7,7 +7,7 @@ describe("subtask status reporting", () => {
     const app = new FactoryApplication({
       clock: () => new Date("2026-08-22T12:00:00.000Z"),
       idGenerator: (() => {
-        const ids = ["project-1", "task-1", "subtask-1"];
+        const ids = ["project-1", "task-1", "subtask-1", "report-1"];
         return () => ids.shift() ?? "unexpected-id";
       })(),
     });
@@ -22,7 +22,7 @@ describe("subtask status reporting", () => {
       taskId: task.id,
     });
 
-    app.reportSubtaskStatus({
+    const report = app.reportSubtaskStatus({
       evidence: "bun test tests/core/project-task-hierarchy.test.ts",
       reporter: "codex",
       reportedState: "complete",
@@ -34,7 +34,9 @@ describe("subtask status reporting", () => {
     expect(status).toMatchObject({
       subtasks: [
         {
+          id: report.id,
           reportedState: "complete",
+          evidence: "bun test tests/core/project-task-hierarchy.test.ts",
           verificationState: "awaiting_verification",
         },
       ],

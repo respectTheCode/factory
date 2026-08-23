@@ -224,6 +224,9 @@ export class FactoryApplication {
         | "deferred"
         | "rejected"
         | "unreported";
+      id?: string;
+      evidence?: string;
+      reporter?: string;
     }>;
   } {
     if (!this.tasks.some((task) => task.id === taskId)) {
@@ -240,7 +243,10 @@ export class FactoryApplication {
         }
 
         return {
+          id: report.id,
           reportedState: report.reportedState,
+          evidence: report.evidence,
+          reporter: report.reporter,
           verificationState:
             this.getCurrentVerification(report.id)?.decision ??
             ("awaiting_verification" as const),

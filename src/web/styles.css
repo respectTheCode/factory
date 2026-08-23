@@ -54,6 +54,169 @@ h2 {
   margin-top: 28px;
   padding: 24px;
 }
+
+.project-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.secondary {
+  background: #1e293b;
+  color: #cbd5e1;
+}
+
+.selected {
+  background: #38bdf8;
+}
+
+.detail {
+  border: 1px solid #334155;
+  border-radius: 16px;
+  margin-top: 18px;
+  padding: 24px;
+}
+
+.detail-heading,
+.task-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.detail-heading form {
+  flex-shrink: 0;
+}
+
+.task-list {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.task-card {
+  background: #172033;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.task-heading h3 {
+  margin: 0 0 8px;
+}
+
+.status-pill {
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 0.78rem;
+  padding: 4px 9px;
+  text-transform: capitalize;
+}
+
+.status-pill.complete {
+  background: #064e3b;
+  color: #a7f3d0;
+}
+
+.status-pill.pending {
+  background: #334155;
+  color: #cbd5e1;
+}
+
+.inline-form {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+select {
+  background: #fff;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  font: inherit;
+  padding: 9px 10px;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.links a {
+  background: #0c4a6e;
+  border-radius: 999px;
+  color: #bae6fd;
+  font-size: 0.85rem;
+  padding: 5px 10px;
+  text-decoration: none;
+}
+
+.subtask-list {
+  border-top: 1px solid #334155;
+  margin-top: 14px;
+}
+
+.subtask {
+  align-items: flex-start;
+  border-bottom: 1px solid #334155;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 14px 0;
+}
+
+.subtask-state {
+  color: #94a3b8;
+  display: block;
+  font-size: 0.82rem;
+  margin-top: 4px;
+  text-transform: capitalize;
+}
+
+.evidence {
+  color: #cbd5e1;
+  font-size: 0.85rem;
+  margin-top: 8px;
+}
+
+.subtask-actions {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.subtask-actions input {
+  min-width: 180px;
+}
+
+.subtask-actions button,
+.subtask-create button {
+  font-size: 0.82rem;
+  padding: 8px 10px;
+}
+
+button.verify {
+  background: #34d399;
+}
+
+button.danger {
+  background: #fca5a5;
+  color: #450a0a;
+}
+
+.subtask-create {
+  margin-top: 14px;
+}
+
+.empty {
+  color: #94a3b8;
+  margin-top: 18px;
+}
 .hero {
   background: #172033;
 }
@@ -88,6 +251,10 @@ h2 {
 }
 .connection.reconnecting .connection-dot {
   background: #fb923c;
+}
+
+.connection.disconnected .connection-dot {
+  background: #f87171;
 }
 
 button {
@@ -143,6 +310,25 @@ input {
   }
   form {
     flex-direction: column;
+  }
+  .detail-heading,
+  .task-heading,
+  .subtask {
+    flex-direction: column;
+  }
+  .detail-heading form,
+  .inline-form,
+  .subtask-actions,
+  .subtask-create {
+    width: 100%;
+  }
+  .inline-form input,
+  .inline-form select,
+  .subtask-actions input,
+  .subtask-create input,
+  .subtask-actions button,
+  .subtask-create button {
+    width: 100%;
   }
   input {
     width: 100%;

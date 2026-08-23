@@ -29,24 +29,26 @@ describe("project persistence", () => {
 
       const reopenedApplication = createFactoryApplication({ databasePath });
 
-      expect(reopenedApplication.getProjectHierarchy(project.id)).toMatchObject({
-        id: project.id,
-        name: "Website refresh",
-        tasks: [
-          {
-            id: task.id,
-            name: "Publish the refreshed site",
-            projectId: project.id,
-            subtasks: [
-              {
-                id: subtask.id,
-                name: "Verify the production build",
-                taskId: task.id,
-              },
-            ],
-          },
-        ],
-      });
+      expect(reopenedApplication.getProjectHierarchy(project.id)).toMatchObject(
+        {
+          id: project.id,
+          name: "Website refresh",
+          tasks: [
+            {
+              id: task.id,
+              name: "Publish the refreshed site",
+              projectId: project.id,
+              subtasks: [
+                {
+                  id: subtask.id,
+                  name: "Verify the production build",
+                  taskId: task.id,
+                },
+              ],
+            },
+          ],
+        },
+      );
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }

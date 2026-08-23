@@ -27,7 +27,7 @@ describe("connection state", () => {
     expect(connection.snapshot()).toEqual({
       canMutate: false,
       lastSuccessfulConnection: firstConnection,
-      state: "reconnecting",
+      state: "disconnected",
     });
 
     connection.markConnected(secondConnection);

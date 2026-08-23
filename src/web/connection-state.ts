@@ -1,7 +1,7 @@
 export type ConnectionSnapshot = {
   canMutate: boolean;
   lastSuccessfulConnection: Date | null;
-  state: "connected" | "connecting" | "reconnecting";
+  state: "connected" | "connecting" | "reconnecting" | "disconnected";
 };
 
 export class ConnectionState {
@@ -14,7 +14,7 @@ export class ConnectionState {
   }
 
   markDisconnected(): void {
-    this.state = "reconnecting";
+    this.state = "disconnected";
   }
 
   snapshot(): ConnectionSnapshot {
