@@ -237,4 +237,119 @@ describe("Factory planning WebSocket transport", () => {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }
   });
+
+  test("accepts a reported subtask and observes completed task status", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-verification-transport-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+    const server = createFactoryServer({ port: 0, databasePath });
+    const socket = new WebSocket(new URL("/trpc", server.url));
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener(
+          "error",
+          () => reject(new Error("WebSocket connection failed")),
+          { once: true },
+        );
+      });
+
+      const projectResponse = await sendRawTRPCRequest(socket, {
+        id: 21,
+        method: "mutation",
+        params: {
+          input: { name: "Website refresh" },
+          path: "projects.create",
+        },
+      });
+      const project = responseData(projectResponse);
+
+      const taskResponse = await sendRawTRPCRequest(socket, {
+        id: 22,
+        method: "mutation",
+        params: {
+          input: {
+            name: "Publish the refreshed site",
+            projectId: project.id,
+          },
+          path: "tasks.create",
+        },
+      });
+      const task = responseData(taskResponse);
+
+      const subtaskResponse = await sendRawTRPCRequest(socket, {
+        id: 23,
+        method: "mutation",
+        params: {
+          input: {
+            name: "Verify the production build",
+            taskId: task.id,
+          },
+          path: "subtasks.create",
+        },
+      });
+      const subtask = responseData(subtaskResponse);
+
+      const reportResponse = await sendRawTRPCRequest(socket, {
+        id: 24,
+        method: "mutation",
+        params: {
+          input: {
+            evidence: "Build 2026-08-22 passed in CI.",
+            reportedState: "complete",
+            reporter: "codex",
+            subtaskId: subtask.id,
+          },
+          path: "subtasks.report",
+        },
+      });
+      const report = responseData(reportResponse);
+
+      const verifyResponse = await sendRawTRPCRequest(socket, {
+        id: 25,
+        method: "mutation",
+        params: {
+          input: {
+            decision: "accepted",
+            reportId: report.id,
+            verifier: "kevin",
+          },
+          path: "subtasks.verify",
+        },
+      });
+
+      expect(verifyResponse.result?.type).toBe("data");
+
+      const statusResponse = await sendRawTRPCRequest(socket, {
+        id: 26,
+        method: "query",
+        params: {
+          input: { taskId: task.id },
+          path: "tasks.status",
+        },
+      });
+
+      expect(statusResponse).toMatchObject({
+        id: 26,
+        result: {
+          type: "data",
+          data: {
+            taskCompleted: true,
+            subtasks: [
+              {
+                reportedState: "complete",
+                verificationState: "accepted",
+              },
+            ],
+          },
+        },
+      });
+    } finally {
+      socket.close();
+      server.stop();
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
 });

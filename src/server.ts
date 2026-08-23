@@ -52,6 +52,18 @@ function createRouter(
           }),
         )
         .mutation(({ input }) => application.reportSubtaskStatus(input)),
+      verify: trpc.procedure
+        .input(
+          z.object({
+            decision: z.enum(["accepted", "rejected", "deferred"]),
+            reportId: z.string().min(1),
+            verifier: z.string().min(1),
+          }),
+        )
+        .mutation(({ input }) => {
+          application.verifyStatusReport(input);
+          return { ok: true };
+        }),
     }),
     tasks: trpc.router({
       create: trpc.procedure
