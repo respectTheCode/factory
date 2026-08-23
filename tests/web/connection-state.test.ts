@@ -33,6 +33,14 @@ describe("connection state", () => {
     connection.markConnected(secondConnection);
 
     expect(connection.snapshot()).toEqual({
+      canMutate: false,
+      lastSuccessfulConnection: secondConnection,
+      state: "connected",
+    });
+
+    connection.markAuthoritativeRefresh();
+
+    expect(connection.snapshot()).toEqual({
       canMutate: true,
       lastSuccessfulConnection: secondConnection,
       state: "connected",

@@ -83,11 +83,20 @@ function Dashboard() {
     const client = createWSClient({
       onClose: () => {
         connection.markDisconnected();
+        setProjects(null);
+        setProjectDetail(null);
+        setTaskDetails({});
+        setTaskStatuses({});
         setSnapshot(connection.snapshot());
       },
       onOpen: () => {
         connection.markConnected(new Date());
         setSnapshot(connection.snapshot());
+        void trpc.current?.projects.list.query().then((nextProjects) => {
+          setProjects(nextProjects);
+          connection.markAuthoritativeRefresh();
+          setSnapshot(connection.snapshot());
+        });
       },
       url: `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/trpc`,
     });
@@ -95,7 +104,6 @@ function Dashboard() {
       links: [wsLink({ client })],
     });
 
-    void trpc.current.projects.list.query().then(setProjects);
     return () => {
       void client.close();
     };
