@@ -1,4 +1,4 @@
-const cacheName = "software-factory-shell-v2";
+const cacheName = "software-factory-shell-v3";
 const appShell = ["/", "/main.js", "/main.css", "/icon.svg"];
 const worker = self as unknown as {
   addEventListener: (
