@@ -1,5 +1,6 @@
 import {
   backupFactoryDatabase,
+  checkFactoryDatabase,
   createFactoryApplication,
   type ReportedState,
   type VerificationDecision,
@@ -81,6 +82,15 @@ function main(args: string[]): void {
         allowOverwrite: parsed.flags.get("overwrite") === "true",
         databasePath: parsed.flags.get("database") ?? "factory.sqlite",
         destinationPath: requiredFlag(parsed.flags, "output"),
+      }),
+    });
+    return;
+  }
+
+  if (resource === "database" && action === "check") {
+    output({
+      check: checkFactoryDatabase({
+        databasePath: parsed.flags.get("database") ?? "factory.sqlite",
       }),
     });
     return;
@@ -171,7 +181,7 @@ function main(args: string[]): void {
   }
 
   throw new Error(
-    "Usage: database backup, project create|list|status|portfolio, task create, subtask create|report|status|verify",
+    "Usage: database backup|check, project create|list|status|portfolio, task create, subtask create|report|status|verify",
   );
 }
 

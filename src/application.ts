@@ -640,6 +640,70 @@ export type FactoryDatabaseBackup = {
   sizeBytes: number;
 };
 
+export type FactoryDatabaseCheck = {
+  databasePath: string;
+  integrity: "ok";
+  counts: {
+    projects: number;
+    tasks: number;
+    subtasks: number;
+    statusReports: number;
+    verifications: number;
+    trackerLinks: number;
+  };
+};
+
+export function checkFactoryDatabase({
+  databasePath,
+}: {
+  databasePath: string;
+}): FactoryDatabaseCheck {
+  const resolvedDatabasePath = resolve(databasePath);
+  if (!existsSync(resolvedDatabasePath)) {
+    throw new Error(`Database does not exist: ${resolvedDatabasePath}`);
+  }
+
+  const database = new Database(resolvedDatabasePath, { readonly: true });
+  try {
+    const factoryStateTable = database
+      .query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'factory_state'",
+      )
+      .get();
+    if (!factoryStateTable) {
+      throw new Error(`Not a Factory database: ${resolvedDatabasePath}`);
+    }
+
+    const integrityResult = database.query("PRAGMA integrity_check").get() as {
+      integrity_check: string;
+    } | null;
+    if (integrityResult?.integrity_check !== "ok") {
+      throw new Error(
+        `SQLite integrity check failed: ${integrityResult?.integrity_check ?? "no result"}`,
+      );
+    }
+
+    const row = database
+      .query("SELECT state FROM factory_state WHERE id = 1")
+      .get() as { state: string } | null;
+    const state = row ? (JSON.parse(row.state) as FactoryState) : undefined;
+    return {
+      counts: {
+        projects: state?.projects.length ?? 0,
+        statusReports: state?.statusReports.length ?? 0,
+        subtasks: state?.subtasks.length ?? 0,
+        tasks: state?.tasks.length ?? 0,
+        trackerLinks: state?.trackerLinks?.length ?? 0,
+        verifications: state?.verifications.length ?? 0,
+      },
+      databasePath: resolvedDatabasePath,
+      integrity: "ok",
+    };
+  } finally {
+    database.close();
+  }
+}
+
 /**
  * Create a consistent SQLite snapshot without changing the live Factory database.
  *

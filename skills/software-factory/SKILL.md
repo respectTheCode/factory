@@ -15,6 +15,12 @@ Set the database explicitly when working outside the default local database:
 FACTORY_DB=factory.sqlite
 ```
 
+Check database integrity and persisted record counts before or after maintenance:
+
+```bash
+bun run src/cli.ts database check --database "$FACTORY_DB" --json
+```
+
 Common operations:
 
 ```bash

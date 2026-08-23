@@ -139,8 +139,9 @@ directories, and refuses to replace an existing backup unless `--overwrite` is e
 backup is a recovery artifact, not a second system of record. Before restoring, stop the
 Factory server, preserve the current database under a timestamped name, copy the selected
 backup into the configured database path, and verify it by starting the server and reading the
-project portfolio. Automated scheduling, off-host retention, and a one-command restore remain
-deployment work rather than application behavior.
+project portfolio. `database check --json` provides a read-only integrity result and persisted
+record counts for the same verification step. Automated scheduling, off-host retention, and a
+one-command restore remain deployment work rather than application behavior.
 
 Start the repository contract with an in-memory adapter, then run the same behavior suite
 against Bun's built-in SQLite adapter. Use a temporary SQLite file only for process-restart
