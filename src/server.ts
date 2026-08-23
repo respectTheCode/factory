@@ -110,6 +110,7 @@ export function createFactoryServer({
   });
 
   const server = Bun.serve<SocketData>({
+    hostname: "127.0.0.1",
     port,
     fetch(request, bunServer) {
       const url = new URL(request.url);
