@@ -443,4 +443,137 @@ describe("Factory planning WebSocket transport", () => {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }
   });
+
+  test("observes subtask report and verification history", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-history-transport-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+    const server = createFactoryServer({ port: 0, databasePath });
+    const socket = new WebSocket(new URL("/trpc", server.url));
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener(
+          "error",
+          () => reject(new Error("WebSocket connection failed")),
+          { once: true },
+        );
+      });
+
+      const projectResponse = await sendRawTRPCRequest(socket, {
+        id: 41,
+        method: "mutation",
+        params: {
+          input: { name: "Website refresh" },
+          path: "projects.create",
+        },
+      });
+      const project = responseData(projectResponse);
+
+      const taskResponse = await sendRawTRPCRequest(socket, {
+        id: 42,
+        method: "mutation",
+        params: {
+          input: {
+            name: "Publish the refreshed site",
+            projectId: project.id,
+          },
+          path: "tasks.create",
+        },
+      });
+      const task = responseData(taskResponse);
+
+      const subtaskResponse = await sendRawTRPCRequest(socket, {
+        id: 43,
+        method: "mutation",
+        params: {
+          input: {
+            name: "Verify the production build",
+            taskId: task.id,
+          },
+          path: "subtasks.create",
+        },
+      });
+      const subtask = responseData(subtaskResponse);
+
+      const firstReportResponse = await sendRawTRPCRequest(socket, {
+        id: 44,
+        method: "mutation",
+        params: {
+          input: {
+            evidence: "The production build is ready for verification.",
+            reportedState: "in_progress",
+            reporter: "codex",
+            subtaskId: subtask.id,
+          },
+          path: "subtasks.report",
+        },
+      });
+      const firstReport = responseData(firstReportResponse);
+
+      const secondReportResponse = await sendRawTRPCRequest(socket, {
+        id: 45,
+        method: "mutation",
+        params: {
+          input: {
+            evidence: "Build 2026-08-23 passed in CI.",
+            reportedState: "complete",
+            reporter: "codex",
+            subtaskId: subtask.id,
+          },
+          path: "subtasks.report",
+        },
+      });
+      const secondReport = responseData(secondReportResponse);
+
+      const verifyResponse = await sendRawTRPCRequest(socket, {
+        id: 46,
+        method: "mutation",
+        params: {
+          input: {
+            decision: "accepted",
+            reportId: secondReport.id,
+            verifier: "kevin",
+          },
+          path: "subtasks.verify",
+        },
+      });
+      expect(verifyResponse.result?.type).toBe("data");
+
+      const historyResponse = await sendRawTRPCRequest(socket, {
+        id: 47,
+        method: "query",
+        params: {
+          input: { subtaskId: subtask.id },
+          path: "subtasks.history",
+        },
+      });
+      expect(responseData(historyResponse)).toMatchObject([
+        { id: firstReport.id, reportedState: "in_progress" },
+        { id: secondReport.id, reportedState: "complete" },
+      ]);
+
+      const verificationsResponse = await sendRawTRPCRequest(socket, {
+        id: 48,
+        method: "query",
+        params: {
+          input: { subtaskId: subtask.id },
+          path: "subtasks.verifications",
+        },
+      });
+      expect(responseData(verificationsResponse)).toMatchObject([
+        {
+          decision: "accepted",
+          reportId: secondReport.id,
+          verifier: "kevin",
+        },
+      ]);
+    } finally {
+      socket.close();
+      server.stop();
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
 });

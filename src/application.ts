@@ -20,6 +20,12 @@ type Task = {
   id: string;
   name: string;
   projectId: string;
+  objective?: string;
+  acceptanceCriteria: string[];
+  priority?: "low" | "medium" | "high" | "urgent";
+  owner?: string;
+  dependencies: string[];
+  repositoryLinks: string[];
   createdAt: Date;
 };
 
@@ -47,7 +53,7 @@ export type StatusReport = {
 
 export type VerificationDecision = "accepted" | "rejected" | "deferred";
 
-type Verification = {
+export type Verification = {
   id: string;
   reportId: string;
   decision: VerificationDecision;
@@ -128,7 +134,25 @@ export class FactoryApplication {
     return project;
   }
 
-  createTask({ name, projectId }: { name: string; projectId: string }): Task {
+  createTask({
+    name,
+    projectId,
+    objective,
+    acceptanceCriteria = [],
+    priority,
+    owner,
+    dependencies = [],
+    repositoryLinks = [],
+  }: {
+    name: string;
+    projectId: string;
+    objective?: string;
+    acceptanceCriteria?: string[];
+    priority?: "low" | "medium" | "high" | "urgent";
+    owner?: string;
+    dependencies?: string[];
+    repositoryLinks?: string[];
+  }): Task {
     if (!this.projects.some((project) => project.id === projectId)) {
       throw new Error(`Project ${projectId} does not exist.`);
     }
@@ -137,6 +161,12 @@ export class FactoryApplication {
       id: this.idGenerator(),
       name,
       projectId,
+      objective,
+      acceptanceCriteria,
+      priority,
+      owner,
+      dependencies,
+      repositoryLinks,
       createdAt: this.clock(),
     };
 
@@ -275,6 +305,21 @@ export class FactoryApplication {
     );
   }
 
+  getSubtaskVerificationHistory(subtaskId: string): Verification[] {
+    if (!this.subtasks.some((subtask) => subtask.id === subtaskId)) {
+      throw new Error(`Subtask ${subtaskId} does not exist.`);
+    }
+
+    const reportIds = new Set(
+      this.statusReports
+        .filter((report) => report.subtaskId === subtaskId)
+        .map((report) => report.id),
+    );
+    return this.verifications.filter((verification) =>
+      reportIds.has(verification.reportId),
+    );
+  }
+
   getProjectHierarchy(projectId: string): ProjectHierarchy {
     const project = this.projects.find(
       (candidate) => candidate.id === projectId,
@@ -322,11 +367,30 @@ export class FactoryApplication {
     return trackerLink;
   }
 
-  getTaskDetail(taskId: string): { name: string; trackerLinks: TrackerLink[] } {
+  getTaskDetail(taskId: string): {
+    id: string;
+    name: string;
+    projectId: string;
+    objective?: string;
+    acceptanceCriteria: string[];
+    priority?: "low" | "medium" | "high" | "urgent";
+    owner?: string;
+    dependencies: string[];
+    repositoryLinks: string[];
+    trackerLinks: TrackerLink[];
+  } {
     const task = this.tasks.find((candidate) => candidate.id === taskId);
     if (!task) throw new Error(`Task ${taskId} does not exist.`);
     return {
+      id: task.id,
       name: task.name,
+      projectId: task.projectId,
+      objective: task.objective,
+      acceptanceCriteria: task.acceptanceCriteria,
+      priority: task.priority,
+      owner: task.owner,
+      dependencies: task.dependencies,
+      repositoryLinks: task.repositoryLinks,
       trackerLinks: this.trackerLinks.filter((link) => link.taskId === taskId),
     };
   }
@@ -405,6 +469,9 @@ function hydrateState(state: FactoryState): FactoryState {
     })),
     tasks: state.tasks.map((task) => ({
       ...task,
+      acceptanceCriteria: task.acceptanceCriteria ?? [],
+      dependencies: task.dependencies ?? [],
+      repositoryLinks: task.repositoryLinks ?? [],
       createdAt: new Date(task.createdAt),
     })),
     verifications: state.verifications.map((verification) => ({

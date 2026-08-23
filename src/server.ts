@@ -2,9 +2,10 @@ import { Buffer } from "node:buffer";
 
 import { getWSConnectionHandler } from "@trpc/server/adapters/ws";
 import { initTRPC } from "@trpc/server";
+import { observable } from "@trpc/server/observable";
 import { z } from "zod";
 
-import { createFactoryApplication } from "./application";
+import { createFactoryApplication, type ProjectHierarchy } from "./application";
 
 type ConnectionEvent = "close" | "error" | "message";
 type ConnectionListener = (...args: unknown[]) => void;
@@ -20,9 +21,45 @@ export type FactoryServer = {
 };
 
 const trpc = initTRPC.create();
+
+class ProjectUpdateBus {
+  private readonly listeners = new Map<
+    string,
+    Set<(detail: ProjectHierarchy) => void>
+  >();
+
+  constructor(
+    private readonly application: ReturnType<typeof createFactoryApplication>,
+  ) {}
+
+  subscribe(
+    projectId: string,
+    listener: (detail: ProjectHierarchy) => void,
+  ): () => void {
+    const listeners = this.listeners.get(projectId) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(projectId, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.listeners.delete(projectId);
+    };
+  }
+
+  publish(projectId: string): void {
+    const detail = this.application.getProjectHierarchy(projectId);
+    this.listeners.get(projectId)?.forEach((listener) => listener(detail));
+  }
+
+  publishAll(): void {
+    this.application.listProjects().forEach(({ id }) => this.publish(id));
+  }
+}
+
 function createRouter(
   application: ReturnType<typeof createFactoryApplication>,
 ) {
+  const projectUpdates = new ProjectUpdateBus(application);
+
   return trpc.router({
     projects: trpc.router({
       create: trpc.procedure
@@ -32,11 +69,24 @@ function createRouter(
       detail: trpc.procedure
         .input(z.object({ projectId: z.string().min(1) }))
         .query(({ input }) => application.getProjectHierarchy(input.projectId)),
+      updates: trpc.procedure
+        .input(z.object({ projectId: z.string().min(1) }))
+        .subscription(({ input }) =>
+          observable<ProjectHierarchy>((emit) =>
+            projectUpdates.subscribe(input.projectId, (detail) =>
+              emit.next(detail),
+            ),
+          ),
+        ),
     }),
     subtasks: trpc.router({
       create: trpc.procedure
         .input(z.object({ name: z.string().min(1), taskId: z.string().min(1) }))
-        .mutation(({ input }) => application.createSubtask(input)),
+        .mutation(({ input }) => {
+          const subtask = application.createSubtask(input);
+          projectUpdates.publishAll();
+          return subtask;
+        }),
       report: trpc.procedure
         .input(
           z.object({
@@ -51,7 +101,11 @@ function createRouter(
             subtaskId: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => application.reportSubtaskStatus(input)),
+        .mutation(({ input }) => {
+          const report = application.reportSubtaskStatus(input);
+          projectUpdates.publishAll();
+          return report;
+        }),
       verify: trpc.procedure
         .input(
           z.object({
@@ -62,15 +116,30 @@ function createRouter(
         )
         .mutation(({ input }) => {
           application.verifyStatusReport(input);
+          projectUpdates.publishAll();
           return { ok: true };
         }),
+      history: trpc.procedure
+        .input(z.object({ subtaskId: z.string().min(1) }))
+        .query(({ input }) =>
+          application.getSubtaskReportHistory(input.subtaskId),
+        ),
+      verifications: trpc.procedure
+        .input(z.object({ subtaskId: z.string().min(1) }))
+        .query(({ input }) =>
+          application.getSubtaskVerificationHistory(input.subtaskId),
+        ),
     }),
     tasks: trpc.router({
       create: trpc.procedure
         .input(
           z.object({ name: z.string().min(1), projectId: z.string().min(1) }),
         )
-        .mutation(({ input }) => application.createTask(input)),
+        .mutation(({ input }) => {
+          const task = application.createTask(input);
+          projectUpdates.publish(input.projectId);
+          return task;
+        }),
       status: trpc.procedure
         .input(z.object({ taskId: z.string().min(1) }))
         .query(({ input }) => application.getTaskStatus(input.taskId)),
@@ -87,7 +156,11 @@ function createRouter(
             url: z.string().url(),
           }),
         )
-        .mutation(({ input }) => application.addTaskTrackerLink(input)),
+        .mutation(({ input }) => {
+          const link = application.addTaskTrackerLink(input);
+          projectUpdates.publishAll();
+          return link;
+        }),
     }),
   });
 }
