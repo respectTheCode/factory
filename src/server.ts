@@ -133,7 +133,16 @@ function createRouter(
     tasks: trpc.router({
       create: trpc.procedure
         .input(
-          z.object({ name: z.string().min(1), projectId: z.string().min(1) }),
+          z.object({
+            acceptanceCriteria: z.array(z.string()).default([]),
+            dependencies: z.array(z.string()).default([]),
+            name: z.string().min(1),
+            objective: z.string().optional(),
+            owner: z.string().optional(),
+            priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
+            projectId: z.string().min(1),
+            repositoryLinks: z.array(z.string().url()).default([]),
+          }),
         )
         .mutation(({ input }) => {
           const task = application.createTask(input);

@@ -34,13 +34,35 @@ type TaskStatus = {
   }>;
 };
 type TaskDetail = {
+  id: string;
   name: string;
+  projectId: string;
+  objective?: string;
+  acceptanceCriteria: string[];
+  priority?: "low" | "medium" | "high" | "urgent";
+  owner?: string;
+  dependencies: string[];
+  repositoryLinks: string[];
   trackerLinks: Array<{
     id: string;
     system: "linear" | "notion";
     stableId: string;
     title?: string;
     url: string;
+  }>;
+};
+type SubtaskHistory = {
+  reports: Array<{
+    id: string;
+    reportedState: string;
+    reporter: string;
+    evidence?: string;
+  }>;
+  verifications: Array<{
+    id: string;
+    reportId: string;
+    decision: string;
+    verifier: string;
   }>;
 };
 
@@ -53,6 +75,14 @@ function Dashboard() {
   );
   const [projectName, setProjectName] = useState("");
   const [taskName, setTaskName] = useState("");
+  const [taskObjective, setTaskObjective] = useState("");
+  const [taskAcceptanceCriteria, setTaskAcceptanceCriteria] = useState("");
+  const [taskPriority, setTaskPriority] = useState<
+    "low" | "medium" | "high" | "urgent"
+  >("medium");
+  const [taskOwner, setTaskOwner] = useState("");
+  const [taskDependencies, setTaskDependencies] = useState("");
+  const [taskRepositoryLinks, setTaskRepositoryLinks] = useState("");
   const [subtaskNames, setSubtaskNames] = useState<Record<string, string>>({});
   const [projectLinkInputs, setProjectLinkInputs] = useState<
     Record<
@@ -76,17 +106,24 @@ function Dashboard() {
   const [taskStatuses, setTaskStatuses] = useState<Record<string, TaskStatus>>(
     {},
   );
+  const [subtaskHistories, setSubtaskHistories] = useState<
+    Record<string, SubtaskHistory>
+  >({});
   const [busy, setBusy] = useState(false);
   const trpc = useRef<TRPCClient | null>(null);
+  const subscriptionCleanup = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const client = createWSClient({
       onClose: () => {
+        subscriptionCleanup.current?.();
+        subscriptionCleanup.current = null;
         connection.markDisconnected();
         setProjects(null);
         setProjectDetail(null);
         setTaskDetails({});
         setTaskStatuses({});
+        setSubtaskHistories({});
         setSnapshot(connection.snapshot());
       },
       onOpen: () => {
@@ -105,6 +142,8 @@ function Dashboard() {
     });
 
     return () => {
+      subscriptionCleanup.current?.();
+      subscriptionCleanup.current = null;
       void client.close();
     };
   }, [connection]);
@@ -155,15 +194,62 @@ function Dashboard() {
     }
   };
 
+  const openProject = async (projectId: string) => {
+    await refreshProject(projectId);
+    subscriptionCleanup.current?.();
+    const subscription = trpc.current?.projects.updates.subscribe(
+      { projectId },
+      {
+        onData: () => {
+          void refreshProject(projectId);
+        },
+      },
+    );
+    subscriptionCleanup.current = subscription
+      ? () => subscription.unsubscribe()
+      : null;
+  };
+
+  const lines = (value: string) =>
+    value
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+  const loadSubtaskHistory = async (subtaskId: string) => {
+    const client = trpc.current;
+    if (!client) return;
+    const [reports, verifications] = await Promise.all([
+      client.subtasks.history.query({ subtaskId }),
+      client.subtasks.verifications.query({ subtaskId }),
+    ]);
+    setSubtaskHistories((current) => ({
+      ...current,
+      [subtaskId]: { reports, verifications },
+    }));
+  };
+
   const createTask = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!taskName.trim() || !projectDetail || !trpc.current) return;
     await mutateAndRefresh(async () => {
       await trpc.current!.tasks.create.mutate({
+        acceptanceCriteria: lines(taskAcceptanceCriteria),
+        dependencies: lines(taskDependencies),
         name: taskName.trim(),
+        objective: taskObjective.trim() || undefined,
+        owner: taskOwner.trim() || undefined,
+        priority: taskPriority,
         projectId: projectDetail.id,
+        repositoryLinks: lines(taskRepositoryLinks),
       });
       setTaskName("");
+      setTaskObjective("");
+      setTaskAcceptanceCriteria("");
+      setTaskPriority("medium");
+      setTaskOwner("");
+      setTaskDependencies("");
+      setTaskRepositoryLinks("");
     });
   };
 
@@ -239,7 +325,7 @@ function Dashboard() {
                 project.id === projectDetail?.id ? "selected" : "secondary"
               }
               key={project.id}
-              onClick={() => void refreshProject(project.id)}
+              onClick={() => void openProject(project.id)}
               type="button"
             >
               {project.name}
@@ -256,21 +342,88 @@ function Dashboard() {
               <h2 id="project-detail-title">{projectDetail.name}</h2>
             </div>
             <form onSubmit={createTask}>
-              <label>
-                <span className="visually-hidden">Task name</span>
-                <input
-                  disabled={!snapshot.canMutate || busy}
-                  onChange={(event) => setTaskName(event.target.value)}
-                  placeholder="New task"
-                  value={taskName}
-                />
-              </label>
-              <button
-                disabled={!snapshot.canMutate || busy || !taskName.trim()}
-                type="submit"
-              >
-                Add task
-              </button>
+              <div className="task-create-main">
+                <label>
+                  <span className="visually-hidden">Task name</span>
+                  <input
+                    disabled={!snapshot.canMutate || busy}
+                    onChange={(event) => setTaskName(event.target.value)}
+                    placeholder="New task"
+                    value={taskName}
+                  />
+                </label>
+                <button
+                  disabled={!snapshot.canMutate || busy || !taskName.trim()}
+                  type="submit"
+                >
+                  Add task
+                </button>
+              </div>
+              <details className="task-planning">
+                <summary>Planning metadata</summary>
+                <div className="planning-grid">
+                  <textarea
+                    aria-label="Task objective"
+                    disabled={!snapshot.canMutate || busy}
+                    onChange={(event) => setTaskObjective(event.target.value)}
+                    placeholder="Objective"
+                    value={taskObjective}
+                  />
+                  <textarea
+                    aria-label="Acceptance criteria"
+                    disabled={!snapshot.canMutate || busy}
+                    onChange={(event) =>
+                      setTaskAcceptanceCriteria(event.target.value)
+                    }
+                    placeholder="Acceptance criteria (one per line)"
+                    value={taskAcceptanceCriteria}
+                  />
+                  <select
+                    aria-label="Task priority"
+                    disabled={!snapshot.canMutate || busy}
+                    onChange={(event) =>
+                      setTaskPriority(
+                        event.target.value as
+                          | "low"
+                          | "medium"
+                          | "high"
+                          | "urgent",
+                      )
+                    }
+                    value={taskPriority}
+                  >
+                    <option value="low">Low priority</option>
+                    <option value="medium">Medium priority</option>
+                    <option value="high">High priority</option>
+                    <option value="urgent">Urgent priority</option>
+                  </select>
+                  <input
+                    aria-label="Task owner"
+                    disabled={!snapshot.canMutate || busy}
+                    onChange={(event) => setTaskOwner(event.target.value)}
+                    placeholder="Owner"
+                    value={taskOwner}
+                  />
+                  <textarea
+                    aria-label="Task dependencies"
+                    disabled={!snapshot.canMutate || busy}
+                    onChange={(event) =>
+                      setTaskDependencies(event.target.value)
+                    }
+                    placeholder="Dependencies (one per line)"
+                    value={taskDependencies}
+                  />
+                  <textarea
+                    aria-label="Repository links"
+                    disabled={!snapshot.canMutate || busy}
+                    onChange={(event) =>
+                      setTaskRepositoryLinks(event.target.value)
+                    }
+                    placeholder="Repository links (one URL per line)"
+                    value={taskRepositoryLinks}
+                  />
+                </div>
+              </details>
             </form>
           </div>
 
@@ -408,9 +561,57 @@ function Dashboard() {
                       </div>
                     ) : null}
 
+                    {taskDetail &&
+                    (taskDetail.objective ||
+                      taskDetail.acceptanceCriteria.length > 0 ||
+                      taskDetail.owner ||
+                      taskDetail.dependencies.length > 0 ||
+                      taskDetail.repositoryLinks.length > 0) ? (
+                      <div className="task-metadata">
+                        {taskDetail.objective && (
+                          <p>
+                            <strong>Objective:</strong> {taskDetail.objective}
+                          </p>
+                        )}
+                        {taskDetail.owner && (
+                          <p>
+                            <strong>Owner:</strong> {taskDetail.owner}
+                          </p>
+                        )}
+                        {taskDetail.acceptanceCriteria.length > 0 && (
+                          <p>
+                            <strong>Acceptance:</strong>{" "}
+                            {taskDetail.acceptanceCriteria.join(" · ")}
+                          </p>
+                        )}
+                        {taskDetail.dependencies.length > 0 && (
+                          <p>
+                            <strong>Dependencies:</strong>{" "}
+                            {taskDetail.dependencies.join(" · ")}
+                          </p>
+                        )}
+                        {taskDetail.repositoryLinks.length > 0 && (
+                          <p>
+                            <strong>Repositories:</strong>{" "}
+                            {taskDetail.repositoryLinks.map((link) => (
+                              <a
+                                href={link}
+                                key={link}
+                                rel="noreferrer"
+                                target="_blank"
+                              >
+                                {link}
+                              </a>
+                            ))}
+                          </p>
+                        )}
+                      </div>
+                    ) : null}
+
                     <div className="subtask-list">
                       {task.subtasks.map((subtask, index) => {
                         const subtaskStatus = status?.subtasks[index];
+                        const history = subtaskHistories[subtask.id];
                         return (
                           <div className="subtask" key={subtask.id}>
                             <div>
@@ -472,6 +673,15 @@ function Dashboard() {
                               >
                                 Report complete
                               </button>
+                              <button
+                                className="secondary"
+                                onClick={() =>
+                                  void loadSubtaskHistory(subtask.id)
+                                }
+                                type="button"
+                              >
+                                History
+                              </button>
                               {subtaskStatus?.reportId &&
                                 subtaskStatus.verificationState ===
                                   "awaiting_verification" && (
@@ -511,6 +721,25 @@ function Dashboard() {
                                   </>
                                 )}
                             </div>
+                            {history && (
+                              <div className="history">
+                                <strong>History</strong>
+                                {history.reports.map((report) => (
+                                  <p key={report.id}>
+                                    {report.reportedState} by {report.reporter}
+                                    {report.evidence
+                                      ? " · " + report.evidence
+                                      : ""}
+                                  </p>
+                                ))}
+                                {history.verifications.map((verification) => (
+                                  <p key={verification.id}>
+                                    {verification.decision} by{" "}
+                                    {verification.verifier}
+                                  </p>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         );
                       })}

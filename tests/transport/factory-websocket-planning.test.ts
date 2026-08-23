@@ -137,6 +137,91 @@ describe("Factory planning WebSocket transport", () => {
     }
   });
 
+  test("creates a task with planning metadata and observes it through task detail", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-task-metadata-transport-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+    const server = createFactoryServer({ port: 0, databasePath });
+    const socket = new WebSocket(new URL("/trpc", server.url));
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener(
+          "error",
+          () => reject(new Error("WebSocket connection failed")),
+          { once: true },
+        );
+      });
+
+      const projectResponse = await sendRawTRPCRequest(socket, {
+        id: 5,
+        method: "mutation",
+        params: {
+          input: { name: "Factory V1" },
+          path: "projects.create",
+        },
+      });
+      const project = responseData(projectResponse);
+
+      const taskResponse = await sendRawTRPCRequest(socket, {
+        id: 6,
+        method: "mutation",
+        params: {
+          input: {
+            acceptanceCriteria: [
+              "A user can inspect the task hierarchy",
+              "A user can verify a completed subtask",
+            ],
+            dependencies: ["Tailscale access"],
+            name: "Ship the mobile planning loop",
+            objective: "Make project progress inspectable from a phone",
+            owner: "kevin",
+            priority: "high",
+            projectId: project.id,
+            repositoryLinks: ["https://github.com/app-press/factory"],
+          },
+          path: "tasks.create",
+        },
+      });
+      const task = responseData(taskResponse);
+
+      const detailResponse = await sendRawTRPCRequest(socket, {
+        id: 7,
+        method: "query",
+        params: {
+          input: { taskId: task.id },
+          path: "tasks.detail",
+        },
+      });
+
+      expect(detailResponse).toMatchObject({
+        id: 7,
+        result: {
+          type: "data",
+          data: {
+            acceptanceCriteria: [
+              "A user can inspect the task hierarchy",
+              "A user can verify a completed subtask",
+            ],
+            dependencies: ["Tailscale access"],
+            name: "Ship the mobile planning loop",
+            objective: "Make project progress inspectable from a phone",
+            owner: "kevin",
+            priority: "high",
+            projectId: project.id,
+            repositoryLinks: ["https://github.com/app-press/factory"],
+          },
+        },
+      });
+    } finally {
+      socket.close();
+      server.stop();
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
   test("reports a complete subtask and observes task verification status", async () => {
     const temporaryDirectory = mkdtempSync(
       join(tmpdir(), "software-factory-status-transport-"),
