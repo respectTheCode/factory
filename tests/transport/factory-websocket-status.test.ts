@@ -147,4 +147,123 @@ describe("Factory status WebSocket transport", () => {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }
   });
+
+  test("exposes non-completed work through the attention projection", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-attention-transport-"),
+    );
+    const server = createFactoryServer({
+      databasePath: join(temporaryDirectory, "factory.sqlite"),
+      port: 0,
+    });
+    const socket = new WebSocket(new URL("/trpc", server.url));
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener(
+          "error",
+          () => reject(new Error("WebSocket connection failed")),
+          { once: true },
+        );
+      });
+
+      const alpha = data(
+        await request(socket, {
+          id: 11,
+          method: "mutation",
+          params: { input: { name: "Alpha roadmap" }, path: "projects.create" },
+        }),
+      );
+      const plannedTask = data(
+        await request(socket, {
+          id: 12,
+          method: "mutation",
+          params: {
+            input: { name: "Draft release", projectId: alpha.id },
+            path: "tasks.create",
+          },
+        }),
+      );
+      const zeta = data(
+        await request(socket, {
+          id: 13,
+          method: "mutation",
+          params: { input: { name: "Zeta launch" }, path: "projects.create" },
+        }),
+      );
+      const activeTask = data(
+        await request(socket, {
+          id: 14,
+          method: "mutation",
+          params: {
+            input: {
+              name: "Build deployment",
+              owner: "sam",
+              priority: "high",
+              projectId: zeta.id,
+            },
+            path: "tasks.create",
+          },
+        }),
+      );
+      const subtask = data(
+        await request(socket, {
+          id: 15,
+          method: "mutation",
+          params: {
+            input: { name: "Build subtask", taskId: activeTask.id },
+            path: "subtasks.create",
+          },
+        }),
+      );
+      await request(socket, {
+        id: 16,
+        method: "mutation",
+        params: {
+          input: {
+            reportedState: "in_progress",
+            reporter: "codex",
+            subtaskId: subtask.id,
+          },
+          path: "subtasks.report",
+        },
+      });
+
+      const attention = await request(socket, {
+        id: 17,
+        method: "query",
+        params: { input: null, path: "projects.attention" },
+      });
+
+      expect(attention).toMatchObject({
+        id: 17,
+        result: {
+          type: "data",
+          data: [
+            {
+              projectId: alpha.id,
+              projectName: "Alpha roadmap",
+              state: "planned",
+              taskId: plannedTask.id,
+              taskName: "Draft release",
+            },
+            {
+              owner: "sam",
+              priority: "high",
+              projectId: zeta.id,
+              projectName: "Zeta launch",
+              state: "active",
+              taskId: activeTask.id,
+              taskName: "Build deployment",
+            },
+          ],
+        },
+      });
+    } finally {
+      socket.close();
+      server.stop();
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
 });

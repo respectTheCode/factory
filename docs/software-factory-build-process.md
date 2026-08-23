@@ -166,7 +166,9 @@ Build the smallest responsive dashboard for project/task lists, task detail, sub
 human verification, and Tracker Links. It must surface `connecting`, `connected`,
 `reconnecting`, and `disconnected`, including the last successful connection time when not
 connected. The manifest, standalone mode, icons, and app-shell-only service-worker cache belong
-here; mutable data remains network-fetched.
+here; mutable data remains network-fetched. The dashboard also exposes an Attention projection
+of non-completed Tasks, grouped by blocked, awaiting-verification, active, and planned state,
+with a direct path into the owning Project.
 
 ### Phase 7 — private mobile delivery
 

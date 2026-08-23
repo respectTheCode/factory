@@ -25,6 +25,15 @@ type PortfolioStatus = {
     counts: WorkCounts;
   }>;
 };
+type AttentionItem = {
+  projectId: string;
+  projectName: string;
+  taskId: string;
+  taskName: string;
+  state: "planned" | "active" | "awaiting_verification" | "blocked";
+  priority?: "low" | "medium" | "high" | "urgent";
+  owner?: string;
+};
 type ProjectDetail = {
   id: string;
   name: string;
@@ -143,6 +152,7 @@ function Dashboard() {
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [portfolioStatus, setPortfolioStatus] =
     useState<PortfolioStatus | null>(null);
+  const [attention, setAttention] = useState<AttentionItem[] | null>(null);
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(
     null,
   );
@@ -167,6 +177,7 @@ function Dashboard() {
         connection.markDisconnected();
         setProjects(null);
         setPortfolioStatus(null);
+        setAttention(null);
         setProjectDetail(null);
         setTaskDetails({});
         setTaskStatuses({});
@@ -179,10 +190,12 @@ function Dashboard() {
         void Promise.all([
           trpc.current?.projects.list.query(),
           trpc.current?.projects.portfolio.query(),
-        ]).then(([nextProjects, nextPortfolio]) => {
-          if (!nextProjects || !nextPortfolio) return;
+          trpc.current?.projects.attention.query(),
+        ]).then(([nextProjects, nextPortfolio, nextAttention]) => {
+          if (!nextProjects || !nextPortfolio || !nextAttention) return;
           setProjects(nextProjects);
           setPortfolioStatus(nextPortfolio);
+          setAttention(nextAttention);
           connection.markAuthoritativeRefresh();
           setSnapshot(connection.snapshot());
         });
@@ -203,11 +216,13 @@ function Dashboard() {
   const refreshProject = async (projectId: string) => {
     const client = trpc.current;
     if (!client) return;
-    const [detail, nextPortfolio] = await Promise.all([
+    const [detail, nextPortfolio, nextAttention] = await Promise.all([
       client.projects.detail.query({ projectId }) as Promise<ProjectDetail>,
       client.projects.portfolio.query(),
+      client.projects.attention.query(),
     ]);
     setPortfolioStatus(nextPortfolio);
+    setAttention(nextAttention);
     const [details, statuses] = await Promise.all([
       Promise.all(
         detail.tasks.map(
@@ -324,6 +339,78 @@ function Dashboard() {
           Factory keeps native work, agent reports, and Kevin’s verification
           visible without replacing Notion or Linear.
         </p>
+      </section>
+
+      <section
+        className="panel attention-panel"
+        aria-labelledby="attention-title"
+      >
+        <div>
+          <p className="eyebrow">Attention</p>
+          <h2 id="attention-title">
+            {attention === null
+              ? "Loading work…"
+              : attention.length === 0
+                ? "Nothing needs attention"
+                : `${attention.length} open tasks`}
+          </h2>
+          <p className="attention-summary">
+            Start with blocked or awaiting-verification work, then pick the next
+            planned task.
+          </p>
+        </div>
+        {attention && attention.length > 0 && (
+          <div className="attention-groups">
+            {(
+              [
+                ["blocked", "Blocked"],
+                ["awaiting_verification", "Awaiting verification"],
+                ["active", "Active"],
+                ["planned", "Planned"],
+              ] as const
+            ).map(([state, label]) => {
+              const items = attention.filter((item) => item.state === state);
+              if (items.length === 0) return null;
+              return (
+                <section className="attention-group" key={state}>
+                  <div className="attention-group-heading">
+                    <h3>{label}</h3>
+                    <span className={`status-pill ${state}`}>
+                      {items.length}
+                    </span>
+                  </div>
+                  <div className="attention-items">
+                    {items.map((item) => (
+                      <article className="attention-item" key={item.taskId}>
+                        <div>
+                          <strong>{item.taskName}</strong>
+                          <p>{item.projectName}</p>
+                          {(item.owner || item.priority) && (
+                            <small>
+                              {item.owner ? `Owner: ${item.owner}` : ""}
+                              {item.owner && item.priority ? " · " : ""}
+                              {item.priority
+                                ? `Priority: ${item.priority}`
+                                : ""}
+                            </small>
+                          )}
+                        </div>
+                        <button
+                          className="secondary"
+                          disabled={snapshot.state !== "connected"}
+                          onClick={() => void openProject(item.projectId)}
+                          type="button"
+                        >
+                          Open
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       <section className="panel" aria-live="polite">

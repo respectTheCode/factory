@@ -65,6 +65,18 @@ function createRouter(
       create: trpc.procedure
         .input(z.object({ name: z.string().min(1) }))
         .mutation(({ input }) => application.createProject(input)),
+      remove: trpc.procedure
+        .input(
+          z.object({
+            confirm: z.literal(true),
+            projectId: z.string().min(1),
+          }),
+        )
+        .mutation(({ input }) => {
+          application.removeProject(input.projectId);
+          projectUpdates.publishAll();
+          return { projectId: input.projectId };
+        }),
       link: trpc.procedure
         .input(
           z.object({
@@ -81,6 +93,9 @@ function createRouter(
           return link;
         }),
       list: trpc.procedure.query(() => application.listProjects()),
+      attention: trpc.procedure.query(() =>
+        application.getAttentionProjection(),
+      ),
       portfolio: trpc.procedure.query(() => application.getPortfolioStatus()),
       status: trpc.procedure
         .input(z.object({ projectId: z.string().min(1) }))

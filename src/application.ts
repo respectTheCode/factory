@@ -74,6 +74,16 @@ export type ProjectWorkState =
 
 export type ProjectWorkCounts = Record<ProjectWorkState, number>;
 
+export type AttentionItem = {
+  projectId: string;
+  projectName: string;
+  taskId: string;
+  taskName: string;
+  state: Exclude<ProjectWorkState, "completed">;
+  priority?: "low" | "medium" | "high" | "urgent";
+  owner?: string;
+};
+
 export type TaskStatus = {
   taskCompleted: boolean;
   taskState: ProjectWorkState;
@@ -121,6 +131,13 @@ function emptyProjectWorkCounts(): ProjectWorkCounts {
     completed: 0,
     blocked: 0,
   };
+}
+
+function removeMatching<T>(items: T[], matches: (item: T) => boolean): void {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item !== undefined && matches(item)) items.splice(index, 1);
+  }
 }
 
 export type ProjectHierarchy = {
@@ -177,6 +194,46 @@ export class FactoryApplication {
     this.projects.push(project);
     this.save();
     return project;
+  }
+
+  removeProject(projectId: string): void {
+    const projectIndex = this.projects.findIndex(
+      (project) => project.id === projectId,
+    );
+    if (projectIndex === -1) {
+      throw new Error(`Project ${projectId} does not exist.`);
+    }
+
+    const taskIds = new Set(
+      this.tasks
+        .filter((task) => task.projectId === projectId)
+        .map((task) => task.id),
+    );
+    const subtaskIds = new Set(
+      this.subtasks
+        .filter((subtask) => taskIds.has(subtask.taskId))
+        .map((subtask) => subtask.id),
+    );
+    const reportIds = new Set(
+      this.statusReports
+        .filter((report) => subtaskIds.has(report.subtaskId))
+        .map((report) => report.id),
+    );
+
+    this.projects.splice(projectIndex, 1);
+    removeMatching(this.tasks, (task) => taskIds.has(task.id));
+    removeMatching(this.subtasks, (subtask) => subtaskIds.has(subtask.id));
+    removeMatching(this.statusReports, (report) => reportIds.has(report.id));
+    removeMatching(this.verifications, (verification) =>
+      reportIds.has(verification.reportId),
+    );
+    removeMatching(
+      this.trackerLinks,
+      (link) =>
+        link.projectId === projectId ||
+        (link.taskId !== undefined && taskIds.has(link.taskId)),
+    );
+    this.save();
   }
 
   createTask({
@@ -393,6 +450,44 @@ export class FactoryApplication {
       counts,
       projects,
     };
+  }
+
+  getAttentionProjection(): AttentionItem[] {
+    const stateOrder: Record<AttentionItem["state"], number> = {
+      planned: 0,
+      active: 1,
+      blocked: 2,
+      awaiting_verification: 3,
+    };
+
+    return this.tasks
+      .flatMap((task) => {
+        const state = this.getTaskStatus(task.id).taskState;
+        if (state === "completed") return [];
+
+        const project = this.projects.find(
+          (candidate) => candidate.id === task.projectId,
+        );
+        if (!project) return [];
+
+        return [
+          {
+            projectId: project.id,
+            projectName: project.name,
+            taskId: task.id,
+            taskName: task.name,
+            state,
+            ...(task.priority ? { priority: task.priority } : {}),
+            ...(task.owner ? { owner: task.owner } : {}),
+          },
+        ];
+      })
+      .sort(
+        (left, right) =>
+          left.projectName.localeCompare(right.projectName) ||
+          stateOrder[left.state] - stateOrder[right.state] ||
+          left.taskName.localeCompare(right.taskName),
+      );
   }
 
   getSubtaskReportHistory(subtaskId: string): StatusReport[] {

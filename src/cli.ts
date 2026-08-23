@@ -24,7 +24,7 @@ function parseArgs(args: string[]): ParsedArgs {
       const flag = value.slice(2);
       const next = args[index + 1];
       if (!next || next.startsWith("--")) {
-        if (flag === "json" || flag === "overwrite") {
+        if (flag === "confirm" || flag === "json" || flag === "overwrite") {
           flags.set(flag, "true");
           continue;
         }
@@ -98,6 +98,18 @@ function main(args: string[]): void {
 
   const databasePath = parsed.flags.get("database") ?? "factory.sqlite";
   const application = createFactoryApplication({ databasePath });
+
+  if (resource === "project" && action === "remove") {
+    if (parsed.flags.get("confirm") !== "true") {
+      throw new Error(
+        "Project removal is destructive; pass --confirm after checking the project ID.",
+      );
+    }
+    const projectId = requiredFlag(parsed.flags, "project-id");
+    application.removeProject(projectId);
+    output({ removed: { projectId } });
+    return;
+  }
 
   if (resource === "project" && action === "create") {
     const project = application.createProject({
@@ -181,7 +193,7 @@ function main(args: string[]): void {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|list|status|portfolio, task create, subtask create|report|status|verify",
+    "Usage: database backup|check, project create|list|remove|status|portfolio, task create, subtask create|report|status|verify",
   );
 }
 

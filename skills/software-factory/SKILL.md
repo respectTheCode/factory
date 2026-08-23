@@ -34,6 +34,13 @@ bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state in_prog
 bun run src/cli.ts subtask status --json --task-id TASK_ID --database "$FACTORY_DB"
 ```
 
+After taking a backup, remove a project only when its ID has been checked; removal cascades
+its Tasks, Subtasks, Status Reports, Verifications, and Tracker Links:
+
+```bash
+bun run src/cli.ts project remove --project-id PROJECT_ID --confirm --database "$FACTORY_DB"
+```
+
 Create a point-in-time SQLite backup before maintenance or any larger batch of updates:
 
 ```bash
