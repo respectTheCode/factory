@@ -74,6 +74,9 @@ go to stderr.
 - After reconnect, the dashboard displays refreshed authoritative data before enabling edits.
 - When disconnected, the dashboard visibly reports the state and the last successful connection
   time. It never presents cached mutable data as current.
+- The home dashboard provides Attention plus direct Project links; a Project opens a task-focused
+  page with a quick Project switcher, collapsible Subtasks, and an Edit Project page for Tracker
+  Links and planning metadata. Form controls remain legible in the dark theme.
 
 Connection events feed a small connection-state model that produces the four visible states and
 the mutation gate. Its tests assert event-to-user-visible-state behavior; dashboard tests assert

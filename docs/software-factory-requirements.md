@@ -112,6 +112,14 @@ record. A Status Report does not replace Kevin's Verification.
 - **FR-040** — Mobile readiness must be verified through the actual Tailscale Serve URL, not
   only localhost: a phone on the tailnet must establish a tRPC WebSocket, observe a reconnect,
   and complete a fresh mutation after reconnecting.
+- **FR-041** — The home dashboard must keep Attention visible and provide direct links into each
+  Project's task page. Project task pages must retain a quick switcher for moving between
+  Projects.
+- **FR-042** — Project task pages must allow Tasks to collapse or expand their Subtasks without
+  hiding the Task's own status, metadata, or quick disposition controls.
+- **FR-043** — Project settings, external Project Tracker Links, and new-Task planning metadata
+  must live on a dedicated Project edit page. Text inputs, text areas, and dropdowns must use
+  the dark dashboard theme rather than browser light-mode defaults.
 
 ## 4. V1 constraints and non-goals
 

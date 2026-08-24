@@ -110,6 +110,26 @@ h2 {
   flex-shrink: 0;
 }
 
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.task-editor {
+  border-top: 1px solid #334155;
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+}
+
+.task-editor h3 {
+  font-size: 1rem;
+  margin: 4px 0 0;
+}
+
 .project-link-form {
   align-items: center;
   border-bottom: 1px solid #334155;
@@ -142,6 +162,29 @@ h2 {
   margin-bottom: 6px;
 }
 
+.project-links {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin: 12px 0;
+  width: 100%;
+}
+
+.project-link {
+  align-items: center;
+  background: #172033;
+  border: 1px solid #334155;
+  color: #e0f2fe;
+  display: flex;
+  justify-content: space-between;
+  text-align: left;
+}
+
+.project-link:hover {
+  background: #1e293b;
+  border-color: #38bdf8;
+}
+
 .planning-grid {
   display: grid;
   gap: 6px;
@@ -149,9 +192,10 @@ h2 {
 }
 
 textarea {
-  background: #fff;
+  background: #0f172a;
   border: 1px solid #475569;
   border-radius: 6px;
+  color: #e5e7eb;
   font: inherit;
   min-height: 44px;
   padding: 7px 8px;
@@ -236,11 +280,17 @@ textarea {
 }
 
 select {
-  background: #fff;
+  background: #0f172a;
   border: 1px solid #475569;
   border-radius: 6px;
+  color: #e5e7eb;
   font: inherit;
   padding: 7px 8px;
+}
+
+option {
+  background: #0f172a;
+  color: #e5e7eb;
 }
 
 .links {
@@ -508,11 +558,25 @@ form {
   gap: 8px;
 }
 input {
-  background: #fff;
+  background: #0f172a;
   border: 1px solid #475569;
   border-radius: 6px;
+  color: #e5e7eb;
   font: inherit;
   padding: 7px 8px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #94a3b8;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: #38bdf8;
+  outline: 2px solid #0c4a6e;
+  outline-offset: 1px;
 }
 .visually-hidden {
   clip: rect(0 0 0 0);
@@ -539,6 +603,10 @@ input {
 
   .detail-heading > form {
     width: 100%;
+  }
+
+  .detail-actions {
+    justify-content: flex-start;
   }
 }
 
@@ -637,9 +705,14 @@ input {
   }
 
   .detail-heading form,
+  .detail-actions,
   .project-link-form,
   .inline-form {
     width: 100%;
+  }
+
+  .detail-actions button {
+    flex: 1;
   }
 
   .inline-form {
@@ -705,6 +778,10 @@ input {
   .project-link-form {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .project-links {
+    grid-template-columns: 1fr;
   }
 
   .project-link-form button {

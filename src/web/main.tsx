@@ -4,6 +4,12 @@ import { createRoot } from "react-dom/client";
 
 import type { FactoryRouter } from "../server";
 import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
+import {
+  editProjectView,
+  homeView,
+  projectView,
+  type DashboardView,
+} from "./navigation";
 import { createProjectAndRefresh } from "./project-actions";
 import "./styles.css";
 
@@ -127,6 +133,7 @@ function Dashboard() {
     connection.snapshot(),
   );
   const [projectName, setProjectName] = useState("");
+  const [view, setView] = useState<DashboardView>(() => homeView());
   const [taskName, setTaskName] = useState("");
   const [taskObjective, setTaskObjective] = useState("");
   const [taskAcceptanceCriteria, setTaskAcceptanceCriteria] = useState("");
@@ -174,6 +181,9 @@ function Dashboard() {
   const [subtaskHistories, setSubtaskHistories] = useState<
     Record<string, SubtaskHistory>
   >({});
+  const [collapsedTasks, setCollapsedTasks] = useState<Record<string, boolean>>(
+    {},
+  );
   const [busy, setBusy] = useState(false);
   const trpc = useRef<TRPCClient | null>(null);
   const subscriptionCleanup = useRef<(() => void) | null>(null);
@@ -191,6 +201,7 @@ function Dashboard() {
         setTaskDetails({});
         setTaskStatuses({});
         setSubtaskHistories({});
+        setView(homeView());
         setSnapshot(connection.snapshot());
       },
       onOpen: () => {
@@ -273,8 +284,10 @@ function Dashboard() {
   };
 
   const openProject = async (projectId: string) => {
-    await refreshProject(projectId);
     subscriptionCleanup.current?.();
+    subscriptionCleanup.current = null;
+    setView(projectView(projectId));
+    await refreshProject(projectId);
     const subscription = trpc.current?.projects.updates.subscribe(
       { projectId },
       {
@@ -286,6 +299,16 @@ function Dashboard() {
     subscriptionCleanup.current = subscription
       ? () => subscription.unsubscribe()
       : null;
+  };
+
+  const openHome = () => {
+    subscriptionCleanup.current?.();
+    subscriptionCleanup.current = null;
+    setView(homeView());
+  };
+
+  const openProjectEditor = (projectId: string) => {
+    setView(editProjectView(projectId));
   };
 
   const lines = (value: string) =>
@@ -341,154 +364,177 @@ function Dashboard() {
         <ConnectionIndicator snapshot={snapshot} />
       </header>
 
-      <section className="hero" aria-labelledby="portfolio-title">
-        <p className="eyebrow">Portfolio</p>
-        <h2 id="portfolio-title">Your project work, in one clear place.</h2>
-        <p>
-          Factory keeps native work, agent reports, and Kevin’s verification
-          visible without replacing Notion or Linear.
-        </p>
-      </section>
-
-      <section
-        className="panel attention-panel"
-        aria-labelledby="attention-title"
-      >
-        <div>
-          <p className="eyebrow">Attention</p>
-          <h2 id="attention-title">
-            {attention === null
-              ? "Loading work…"
-              : attention.length === 0
-                ? "Nothing needs attention"
-                : `${attention.length} open tasks`}
-          </h2>
-          <p className="attention-summary">
-            Start with blocked or awaiting-verification work, then pick the next
-            planned task.
-          </p>
-        </div>
-        {attention && attention.length > 0 && (
-          <div className="attention-groups">
-            {(
-              [
-                ["blocked", "Blocked"],
-                ["awaiting_verification", "Awaiting verification"],
-                ["active", "Active"],
-                ["planned", "Planned"],
-              ] as const
-            ).map(([state, label]) => {
-              const items = attention.filter((item) => item.state === state);
-              if (items.length === 0) return null;
-              return (
-                <section className="attention-group" key={state}>
-                  <div className="attention-group-heading">
-                    <h3>{label}</h3>
-                    <span className={`status-pill ${state}`}>
-                      {items.length}
-                    </span>
-                  </div>
-                  <div className="attention-items">
-                    {items.map((item) => (
-                      <article className="attention-item" key={item.taskId}>
-                        <div>
-                          <strong>{item.taskName}</strong>
-                          <p>{item.projectName}</p>
-                          {(item.owner || item.priority) && (
-                            <small>
-                              {item.owner ? `Owner: ${item.owner}` : ""}
-                              {item.owner && item.priority ? " · " : ""}
-                              {item.priority
-                                ? `Priority: ${item.priority}`
-                                : ""}
-                            </small>
-                          )}
-                        </div>
-                        <button
-                          className="secondary"
-                          disabled={snapshot.state !== "connected"}
-                          onClick={() => void openProject(item.projectId)}
-                          type="button"
-                        >
-                          Open
-                        </button>
-                      </article>
-                    ))}
-                  </div>
-                </section>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      <section className="panel" aria-live="polite">
-        <div>
-          <p className="eyebrow">Projects</p>
-          <h2>
-            {projects === null
-              ? "Loading projects…"
-              : `${projects.length} projects`}
-          </h2>
-          {portfolioStatus && (
-            <p className="portfolio-summary">
-              {portfolioStatus.totalTasks} tasks ·{" "}
-              {portfolioStatus.counts.planned} planned ·{" "}
-              {portfolioStatus.counts.active} active ·{" "}
-              {portfolioStatus.counts.awaiting_verification} awaiting
-              verification · {portfolioStatus.counts.completed} completed ·{" "}
-              {portfolioStatus.counts.blocked} blocked ·{" "}
-              {portfolioStatus.counts.released} released ·{" "}
-              {portfolioStatus.counts.wont_do} won't do
+      {view.screen === "home" && (
+        <>
+          <section className="hero" aria-labelledby="portfolio-title">
+            <p className="eyebrow">Portfolio</p>
+            <h2 id="portfolio-title">Your project work, in one clear place.</h2>
+            <p>
+              Factory keeps native work, agent reports, and Kevin’s verification
+              visible without replacing Notion or Linear.
             </p>
-          )}
-        </div>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!projectName.trim() || !trpc.current || !snapshot.canMutate)
-              return;
-            void createProjectAndRefresh({
-              actions: {
-                createProject: (input) =>
-                  trpc.current!.projects.create.mutate(input),
-                listProjects: () => trpc.current!.projects.list.query(),
-              },
-              name: projectName.trim(),
-            }).then((nextProjects) => {
-              setProjects(nextProjects);
-              setProjectName("");
-              void trpc.current?.projects.portfolio
-                .query()
-                .then(setPortfolioStatus);
-            });
-          }}
-        >
-          <label>
-            <span className="visually-hidden">Project name</span>
-            <input
-              disabled={!snapshot.canMutate}
-              onChange={(event) => setProjectName(event.target.value)}
-              placeholder="New project name"
-              value={projectName}
-            />
-          </label>
-          <button
-            disabled={!snapshot.canMutate || !projectName.trim()}
-            type="submit"
-          >
-            New project
-          </button>
-        </form>
-      </section>
+          </section>
 
-      {projects && projects.length > 0 && (
+          <section
+            className="panel attention-panel"
+            aria-labelledby="attention-title"
+          >
+            <div>
+              <p className="eyebrow">Attention</p>
+              <h2 id="attention-title">
+                {attention === null
+                  ? "Loading work…"
+                  : attention.length === 0
+                    ? "Nothing needs attention"
+                    : `${attention.length} open tasks`}
+              </h2>
+              <p className="attention-summary">
+                Start with blocked or awaiting-verification work, then pick the
+                next planned task.
+              </p>
+            </div>
+            {attention && attention.length > 0 && (
+              <div className="attention-groups">
+                {(
+                  [
+                    ["blocked", "Blocked"],
+                    ["awaiting_verification", "Awaiting verification"],
+                    ["active", "Active"],
+                    ["planned", "Planned"],
+                  ] as const
+                ).map(([state, label]) => {
+                  const items = attention.filter(
+                    (item) => item.state === state,
+                  );
+                  if (items.length === 0) return null;
+                  return (
+                    <section className="attention-group" key={state}>
+                      <div className="attention-group-heading">
+                        <h3>{label}</h3>
+                        <span className={`status-pill ${state}`}>
+                          {items.length}
+                        </span>
+                      </div>
+                      <div className="attention-items">
+                        {items.map((item) => (
+                          <article className="attention-item" key={item.taskId}>
+                            <div>
+                              <strong>{item.taskName}</strong>
+                              <p>{item.projectName}</p>
+                              {(item.owner || item.priority) && (
+                                <small>
+                                  {item.owner ? `Owner: ${item.owner}` : ""}
+                                  {item.owner && item.priority ? " · " : ""}
+                                  {item.priority
+                                    ? `Priority: ${item.priority}`
+                                    : ""}
+                                </small>
+                              )}
+                            </div>
+                            <button
+                              className="secondary"
+                              disabled={snapshot.state !== "connected"}
+                              onClick={() => void openProject(item.projectId)}
+                              type="button"
+                            >
+                              Open
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          <section className="panel projects-panel" aria-live="polite">
+            <div>
+              <p className="eyebrow">Projects</p>
+              <h2>
+                {projects === null
+                  ? "Loading projects…"
+                  : `${projects.length} projects`}
+              </h2>
+              {portfolioStatus && (
+                <p className="portfolio-summary">
+                  {portfolioStatus.totalTasks} tasks ·{" "}
+                  {portfolioStatus.counts.planned} planned ·{" "}
+                  {portfolioStatus.counts.active} active ·{" "}
+                  {portfolioStatus.counts.awaiting_verification} awaiting
+                  verification · {portfolioStatus.counts.completed} completed ·{" "}
+                  {portfolioStatus.counts.blocked} blocked ·{" "}
+                  {portfolioStatus.counts.released} released ·{" "}
+                  {portfolioStatus.counts.wont_do} won&apos;t do
+                </p>
+              )}
+            </div>
+            {projects && projects.length > 0 && (
+              <div aria-label="Project links" className="project-links">
+                {projects.map((project) => (
+                  <button
+                    className="project-link"
+                    disabled={snapshot.state !== "connected"}
+                    key={project.id}
+                    onClick={() => void openProject(project.id)}
+                    type="button"
+                  >
+                    <span>{project.name}</span>
+                    <span aria-hidden="true">→</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!projectName.trim() || !trpc.current || !snapshot.canMutate)
+                  return;
+                void createProjectAndRefresh({
+                  actions: {
+                    createProject: (input) =>
+                      trpc.current!.projects.create.mutate(input),
+                    listProjects: () => trpc.current!.projects.list.query(),
+                  },
+                  name: projectName.trim(),
+                }).then((nextProjects) => {
+                  setProjects(nextProjects);
+                  setProjectName("");
+                  void trpc.current?.projects.portfolio
+                    .query()
+                    .then(setPortfolioStatus);
+                });
+              }}
+            >
+              <label>
+                <span className="visually-hidden">Project name</span>
+                <input
+                  disabled={!snapshot.canMutate}
+                  onChange={(event) => setProjectName(event.target.value)}
+                  placeholder="New project name"
+                  value={projectName}
+                />
+              </label>
+              <button
+                disabled={!snapshot.canMutate || !projectName.trim()}
+                type="submit"
+              >
+                New project
+              </button>
+            </form>
+          </section>
+        </>
+      )}
+
+      {projects && projects.length > 0 && view.screen !== "home" && (
         <nav aria-label="Projects" className="project-tabs">
           {projects.map((project) => (
             <button
               className={
-                project.id === projectDetail?.id ? "selected" : "secondary"
+                project.id === view.projectId ? "selected" : "secondary"
               }
+              disabled={snapshot.state !== "connected"}
               key={project.id}
               onClick={() => void openProject(project.id)}
               type="button"
@@ -499,37 +545,149 @@ function Dashboard() {
         </nav>
       )}
 
-      {projectDetail && (
-        <section className="detail" aria-labelledby="project-detail-title">
-          <div className="detail-heading">
-            <div>
-              <p className="eyebrow">Project detail</p>
-              <h2 id="project-detail-title">{projectDetail.name}</h2>
-              {portfolioStatus &&
-                (() => {
-                  const status = portfolioStatus.projects.find(
-                    (candidate) => candidate.projectId === projectDetail.id,
-                  );
-                  return status ? (
-                    <p className="project-summary">
-                      {status.totalTasks} tasks · {status.counts.planned}{" "}
-                      planned · {status.counts.active} active ·{" "}
-                      {status.counts.awaiting_verification} awaiting
-                      verification · {status.counts.completed} completed ·{" "}
-                      {status.counts.blocked} blocked · {status.counts.released}{" "}
-                      released · {status.counts.wont_do} won&apos;t do
-                    </p>
-                  ) : null;
-                })()}
+      {projectDetail &&
+        view.screen === "edit_project" &&
+        projectDetail.id === view.projectId && (
+          <section className="detail" aria-labelledby="project-edit-title">
+            <div className="detail-heading">
+              <div>
+                <p className="eyebrow">Project settings</p>
+                <h2 id="project-edit-title">Edit {projectDetail.name}</h2>
+                <p className="project-summary">
+                  Keep planning metadata and external project links together.
+                </p>
+              </div>
+              <div className="detail-actions">
+                <button
+                  className="secondary"
+                  onClick={() => setView(projectView(projectDetail.id))}
+                  type="button"
+                >
+                  Back to tasks
+                </button>
+                <button className="secondary" onClick={openHome} type="button">
+                  Home
+                </button>
+              </div>
             </div>
-            <form onSubmit={createTask}>
+
+            <form
+              className="project-link-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (
+                  !projectTrackerInput.stableId.trim() ||
+                  !projectTrackerInput.url.trim() ||
+                  !trpc.current
+                )
+                  return;
+                void mutateAndRefresh(async () => {
+                  await trpc.current!.projects.link.mutate({
+                    ...projectTrackerInput,
+                    projectId: projectDetail.id,
+                    stableId: projectTrackerInput.stableId.trim(),
+                    title: projectTrackerInput.title.trim() || undefined,
+                    url: projectTrackerInput.url.trim(),
+                  });
+                  setProjectTrackerInput({
+                    system: projectTrackerInput.system,
+                    stableId: "",
+                    title: "",
+                    url: "",
+                  });
+                });
+              }}
+            >
+              <select
+                aria-label="Project tracker system"
+                disabled={!snapshot.canMutate || busy}
+                onChange={(event) =>
+                  setProjectTrackerInput((current) => ({
+                    ...current,
+                    system: event.target.value as "linear" | "notion",
+                  }))
+                }
+                value={projectTrackerInput.system}
+              >
+                <option value="linear">Linear project</option>
+                <option value="notion">Notion project</option>
+              </select>
+              <input
+                aria-label="Project tracker ID"
+                disabled={!snapshot.canMutate || busy}
+                onChange={(event) =>
+                  setProjectTrackerInput((current) => ({
+                    ...current,
+                    stableId: event.target.value,
+                  }))
+                }
+                placeholder="Project ID"
+                value={projectTrackerInput.stableId}
+              />
+              <input
+                aria-label="Project tracker URL"
+                disabled={!snapshot.canMutate || busy}
+                onChange={(event) =>
+                  setProjectTrackerInput((current) => ({
+                    ...current,
+                    url: event.target.value,
+                  }))
+                }
+                placeholder="https://…"
+                value={projectTrackerInput.url}
+              />
+              <input
+                aria-label="Project tracker title"
+                disabled={!snapshot.canMutate || busy}
+                onChange={(event) =>
+                  setProjectTrackerInput((current) => ({
+                    ...current,
+                    title: event.target.value,
+                  }))
+                }
+                placeholder="Display title (optional)"
+                value={projectTrackerInput.title}
+              />
+              <button
+                disabled={
+                  !snapshot.canMutate ||
+                  busy ||
+                  !projectTrackerInput.stableId.trim() ||
+                  !projectTrackerInput.url.trim()
+                }
+                type="submit"
+              >
+                Link project
+              </button>
+            </form>
+
+            {projectDetail.trackerLinks.length > 0 && (
+              <div className="links" aria-label="Project tracker links">
+                {projectDetail.trackerLinks.map((link) => (
+                  <a
+                    href={link.url}
+                    key={link.id}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {link.system}: {link.title ?? link.stableId}
+                  </a>
+                ))}
+              </div>
+            )}
+
+            <form className="task-editor" onSubmit={createTask}>
+              <div>
+                <p className="eyebrow">New task</p>
+                <h3>Plan the next piece of work</h3>
+              </div>
               <div className="task-create-main">
                 <label>
                   <span className="visually-hidden">Task name</span>
                   <input
                     disabled={!snapshot.canMutate || busy}
                     onChange={(event) => setTaskName(event.target.value)}
-                    placeholder="New task"
+                    placeholder="Task name"
                     value={taskName}
                   />
                 </label>
@@ -540,7 +698,7 @@ function Dashboard() {
                   Add task
                 </button>
               </div>
-              <details className="task-planning">
+              <details className="task-planning" open>
                 <summary>Planning metadata</summary>
                 <div className="planning-grid">
                   <textarea
@@ -606,530 +764,362 @@ function Dashboard() {
                 </div>
               </details>
             </form>
-          </div>
+          </section>
+        )}
 
-          <form
-            className="project-link-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (
-                !projectTrackerInput.stableId.trim() ||
-                !projectTrackerInput.url.trim() ||
-                !trpc.current
-              )
-                return;
-              void mutateAndRefresh(async () => {
-                await trpc.current!.projects.link.mutate({
-                  ...projectTrackerInput,
-                  projectId: projectDetail.id,
-                  stableId: projectTrackerInput.stableId.trim(),
-                  title: projectTrackerInput.title.trim() || undefined,
-                  url: projectTrackerInput.url.trim(),
-                });
-                setProjectTrackerInput({
-                  system: projectTrackerInput.system,
-                  stableId: "",
-                  title: "",
-                  url: "",
-                });
-              });
-            }}
-          >
-            <select
-              aria-label="Project tracker system"
-              disabled={!snapshot.canMutate || busy}
-              onChange={(event) =>
-                setProjectTrackerInput((current) => ({
-                  ...current,
-                  system: event.target.value as "linear" | "notion",
-                }))
-              }
-              value={projectTrackerInput.system}
-            >
-              <option value="linear">Linear project</option>
-              <option value="notion">Notion project</option>
-            </select>
-            <input
-              aria-label="Project tracker ID"
-              disabled={!snapshot.canMutate || busy}
-              onChange={(event) =>
-                setProjectTrackerInput((current) => ({
-                  ...current,
-                  stableId: event.target.value,
-                }))
-              }
-              placeholder="Project ID"
-              value={projectTrackerInput.stableId}
-            />
-            <input
-              aria-label="Project tracker URL"
-              disabled={!snapshot.canMutate || busy}
-              onChange={(event) =>
-                setProjectTrackerInput((current) => ({
-                  ...current,
-                  url: event.target.value,
-                }))
-              }
-              placeholder="https://…"
-              value={projectTrackerInput.url}
-            />
-            <input
-              aria-label="Project tracker title"
-              disabled={!snapshot.canMutate || busy}
-              onChange={(event) =>
-                setProjectTrackerInput((current) => ({
-                  ...current,
-                  title: event.target.value,
-                }))
-              }
-              placeholder="Display title (optional)"
-              value={projectTrackerInput.title}
-            />
-            <button
-              disabled={
-                !snapshot.canMutate ||
-                busy ||
-                !projectTrackerInput.stableId.trim() ||
-                !projectTrackerInput.url.trim()
-              }
-              type="submit"
-            >
-              Link project
-            </button>
-          </form>
-
-          {projectDetail.trackerLinks.length > 0 && (
-            <div className="links" aria-label="Project tracker links">
-              {projectDetail.trackerLinks.map((link) => (
-                <a
-                  href={link.url}
-                  key={link.id}
-                  rel="noreferrer"
-                  target="_blank"
+      {projectDetail &&
+        view.screen === "project" &&
+        projectDetail.id === view.projectId && (
+          <section className="detail" aria-labelledby="project-detail-title">
+            <div className="detail-heading">
+              <div>
+                <p className="eyebrow">Project tasks</p>
+                <h2 id="project-detail-title">{projectDetail.name}</h2>
+                {portfolioStatus &&
+                  (() => {
+                    const status = portfolioStatus.projects.find(
+                      (candidate) => candidate.projectId === projectDetail.id,
+                    );
+                    return status ? (
+                      <p className="project-summary">
+                        {status.totalTasks} tasks · {status.counts.planned}{" "}
+                        planned · {status.counts.active} active ·{" "}
+                        {status.counts.awaiting_verification} awaiting
+                        verification · {status.counts.completed} completed ·{" "}
+                        {status.counts.blocked} blocked ·{" "}
+                        {status.counts.released} released ·{" "}
+                        {status.counts.wont_do} won&apos;t do
+                      </p>
+                    ) : null;
+                  })()}
+              </div>
+              <div className="detail-actions">
+                <button className="secondary" onClick={openHome} type="button">
+                  Home
+                </button>
+                <button
+                  className="secondary"
+                  onClick={() => openProjectEditor(projectDetail.id)}
+                  type="button"
                 >
-                  {link.system}: {link.title ?? link.stableId}
-                </a>
-              ))}
+                  Edit project
+                </button>
+              </div>
             </div>
-          )}
 
-          {projectDetail.tasks.length === 0 ? (
-            <p className="empty">
-              No tasks yet. Add the first piece of work above.
-            </p>
-          ) : (
-            <div className="task-list">
-              {projectDetail.tasks.map((task) => {
-                const status = taskStatuses[task.id];
-                const taskDetail = taskDetails[task.id];
-                const linkInput = projectLinkInputs[task.id] ?? {
-                  system: "linear" as const,
-                  stableId: "",
-                  title: "",
-                  url: "",
-                };
-                return (
-                  <article className="task-card" key={task.id}>
-                    <div className="task-heading">
-                      <div>
-                        <h3>{task.name}</h3>
-                        <span
-                          className={`status-pill ${status?.taskState ?? "planned"}`}
+            {projectDetail.tasks.length === 0 ? (
+              <div className="empty">
+                <p>
+                  No tasks yet. Add the first piece of work from project
+                  settings.
+                </p>
+                <button
+                  className="secondary"
+                  onClick={() => openProjectEditor(projectDetail.id)}
+                  type="button"
+                >
+                  Add a task
+                </button>
+              </div>
+            ) : (
+              <div className="task-list">
+                {projectDetail.tasks.map((task) => {
+                  const status = taskStatuses[task.id];
+                  const taskDetail = taskDetails[task.id];
+                  const linkInput = projectLinkInputs[task.id] ?? {
+                    system: "linear" as const,
+                    stableId: "",
+                    title: "",
+                    url: "",
+                  };
+                  const subtasksCollapsed = collapsedTasks[task.id] ?? false;
+                  return (
+                    <article className="task-card" key={task.id}>
+                      <div className="task-heading">
+                        <div>
+                          <h3>{task.name}</h3>
+                          <span
+                            className={`status-pill ${status?.taskState ?? "planned"}`}
+                          >
+                            {formatWorkState(status?.taskState ?? "planned")}
+                          </span>
+                        </div>
+                        <div
+                          aria-label={`Quick status for ${task.name}`}
+                          className="quick-status"
                         >
-                          {formatWorkState(status?.taskState ?? "planned")}
-                        </span>
-                      </div>
-                      <div
-                        aria-label={`Quick status for ${task.name}`}
-                        className="quick-status"
-                      >
-                        <button
-                          className="secondary"
-                          disabled={!snapshot.canMutate || busy}
-                          onClick={() =>
-                            void mutateAndRefresh(() =>
-                              trpc.current!.tasks.archive.mutate({
-                                archiveState: "released",
-                                taskId: task.id,
-                              }),
-                            )
-                          }
-                          type="button"
-                        >
-                          Released
-                        </button>
-                        <button
-                          className="danger"
-                          disabled={!snapshot.canMutate || busy}
-                          onClick={() =>
-                            void mutateAndRefresh(() =>
-                              trpc.current!.tasks.archive.mutate({
-                                archiveState: "wont_do",
-                                taskId: task.id,
-                              }),
-                            )
-                          }
-                          type="button"
-                        >
-                          Won&apos;t do
-                        </button>
-                        {status?.archiveState && (
+                          <button
+                            aria-expanded={!subtasksCollapsed}
+                            className="secondary"
+                            onClick={() =>
+                              setCollapsedTasks((current) => ({
+                                ...current,
+                                [task.id]: !subtasksCollapsed,
+                              }))
+                            }
+                            type="button"
+                          >
+                            {subtasksCollapsed
+                              ? "Show subtasks"
+                              : "Hide subtasks"}
+                          </button>
                           <button
                             className="secondary"
                             disabled={!snapshot.canMutate || busy}
                             onClick={() =>
                               void mutateAndRefresh(() =>
-                                trpc.current!.tasks.restore.mutate({
+                                trpc.current!.tasks.archive.mutate({
+                                  archiveState: "released",
                                   taskId: task.id,
                                 }),
                               )
                             }
                             type="button"
                           >
-                            Restore
+                            Released
                           </button>
-                        )}
-                      </div>
-                      <form
-                        className="inline-form"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          if (
-                            !linkInput.stableId.trim() ||
-                            !linkInput.url.trim() ||
-                            !trpc.current
-                          )
-                            return;
-                          void mutateAndRefresh(async () => {
-                            await trpc.current!.tasks.link.mutate({
-                              ...linkInput,
-                              stableId: linkInput.stableId.trim(),
-                              title: linkInput.title.trim() || undefined,
-                              taskId: task.id,
-                              url: linkInput.url.trim(),
-                            });
-                            setProjectLinkInputs((current) => ({
-                              ...current,
-                              [task.id]: {
-                                ...linkInput,
-                                stableId: "",
-                                title: "",
-                                url: "",
-                              },
-                            }));
-                          });
-                        }}
-                      >
-                        <select
-                          aria-label="Tracker system"
-                          disabled={!snapshot.canMutate || busy}
-                          onChange={(event) =>
-                            setProjectLinkInputs((current) => ({
-                              ...current,
-                              [task.id]: {
-                                ...linkInput,
-                                system: event.target.value as
-                                  | "linear"
-                                  | "notion",
-                              },
-                            }))
-                          }
-                          value={linkInput.system}
-                        >
-                          <option value="linear">Linear</option>
-                          <option value="notion">Notion</option>
-                        </select>
-                        <input
-                          aria-label="Tracker ID"
-                          disabled={!snapshot.canMutate || busy}
-                          onChange={(event) =>
-                            setProjectLinkInputs((current) => ({
-                              ...current,
-                              [task.id]: {
-                                ...linkInput,
-                                stableId: event.target.value,
-                              },
-                            }))
-                          }
-                          placeholder="GRA-123"
-                          value={linkInput.stableId}
-                        />
-                        <input
-                          aria-label="Tracker URL"
-                          disabled={!snapshot.canMutate || busy}
-                          onChange={(event) =>
-                            setProjectLinkInputs((current) => ({
-                              ...current,
-                              [task.id]: {
-                                ...linkInput,
-                                url: event.target.value,
-                              },
-                            }))
-                          }
-                          placeholder="https://…"
-                          value={linkInput.url}
-                        />
-                        <button
-                          disabled={
-                            !snapshot.canMutate ||
-                            busy ||
-                            !linkInput.stableId.trim() ||
-                            !linkInput.url.trim()
-                          }
-                          type="submit"
-                        >
-                          Link
-                        </button>
-                      </form>
-                    </div>
-
-                    {taskDetail?.trackerLinks.length ? (
-                      <div className="links" aria-label="Tracker links">
-                        {taskDetail.trackerLinks.map((link) => (
-                          <a
-                            href={link.url}
-                            key={link.id}
-                            rel="noreferrer"
-                            target="_blank"
+                          <button
+                            className="danger"
+                            disabled={!snapshot.canMutate || busy}
+                            onClick={() =>
+                              void mutateAndRefresh(() =>
+                                trpc.current!.tasks.archive.mutate({
+                                  archiveState: "wont_do",
+                                  taskId: task.id,
+                                }),
+                              )
+                            }
+                            type="button"
                           >
-                            {link.system}: {link.stableId}
-                          </a>
-                        ))}
+                            Won&apos;t do
+                          </button>
+                          {status?.archiveState && (
+                            <button
+                              className="secondary"
+                              disabled={!snapshot.canMutate || busy}
+                              onClick={() =>
+                                void mutateAndRefresh(() =>
+                                  trpc.current!.tasks.restore.mutate({
+                                    taskId: task.id,
+                                  }),
+                                )
+                              }
+                              type="button"
+                            >
+                              Restore
+                            </button>
+                          )}
+                        </div>
+                        <form
+                          className="inline-form"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            if (
+                              !linkInput.stableId.trim() ||
+                              !linkInput.url.trim() ||
+                              !trpc.current
+                            )
+                              return;
+                            void mutateAndRefresh(async () => {
+                              await trpc.current!.tasks.link.mutate({
+                                ...linkInput,
+                                stableId: linkInput.stableId.trim(),
+                                title: linkInput.title.trim() || undefined,
+                                taskId: task.id,
+                                url: linkInput.url.trim(),
+                              });
+                              setProjectLinkInputs((current) => ({
+                                ...current,
+                                [task.id]: {
+                                  ...linkInput,
+                                  stableId: "",
+                                  title: "",
+                                  url: "",
+                                },
+                              }));
+                            });
+                          }}
+                        >
+                          <select
+                            aria-label="Tracker system"
+                            disabled={!snapshot.canMutate || busy}
+                            onChange={(event) =>
+                              setProjectLinkInputs((current) => ({
+                                ...current,
+                                [task.id]: {
+                                  ...linkInput,
+                                  system: event.target.value as
+                                    | "linear"
+                                    | "notion",
+                                },
+                              }))
+                            }
+                            value={linkInput.system}
+                          >
+                            <option value="linear">Linear</option>
+                            <option value="notion">Notion</option>
+                          </select>
+                          <input
+                            aria-label="Tracker ID"
+                            disabled={!snapshot.canMutate || busy}
+                            onChange={(event) =>
+                              setProjectLinkInputs((current) => ({
+                                ...current,
+                                [task.id]: {
+                                  ...linkInput,
+                                  stableId: event.target.value,
+                                },
+                              }))
+                            }
+                            placeholder="GRA-123"
+                            value={linkInput.stableId}
+                          />
+                          <input
+                            aria-label="Tracker URL"
+                            disabled={!snapshot.canMutate || busy}
+                            onChange={(event) =>
+                              setProjectLinkInputs((current) => ({
+                                ...current,
+                                [task.id]: {
+                                  ...linkInput,
+                                  url: event.target.value,
+                                },
+                              }))
+                            }
+                            placeholder="https://…"
+                            value={linkInput.url}
+                          />
+                          <button
+                            disabled={
+                              !snapshot.canMutate ||
+                              busy ||
+                              !linkInput.stableId.trim() ||
+                              !linkInput.url.trim()
+                            }
+                            type="submit"
+                          >
+                            Link
+                          </button>
+                        </form>
                       </div>
-                    ) : null}
 
-                    {taskDetail &&
-                    (taskDetail.objective ||
-                      taskDetail.acceptanceCriteria.length > 0 ||
-                      taskDetail.priority ||
-                      taskDetail.owner ||
-                      taskDetail.dependencies.length > 0 ||
-                      taskDetail.repositoryLinks.length > 0) ? (
-                      <div className="task-metadata">
-                        {taskDetail.objective && (
-                          <p>
-                            <strong>Objective:</strong> {taskDetail.objective}
-                          </p>
-                        )}
-                        {taskDetail.owner && (
-                          <p>
-                            <strong>Owner:</strong> {taskDetail.owner}
-                          </p>
-                        )}
-                        {taskDetail.priority && (
-                          <p>
-                            <strong>Priority:</strong> {taskDetail.priority}
-                          </p>
-                        )}
-                        {taskDetail.acceptanceCriteria.length > 0 && (
-                          <p>
-                            <strong>Acceptance:</strong>{" "}
-                            {taskDetail.acceptanceCriteria.join(" · ")}
-                          </p>
-                        )}
-                        {taskDetail.dependencies.length > 0 && (
-                          <p>
-                            <strong>Dependencies:</strong>{" "}
-                            {taskDetail.dependencies.join(" · ")}
-                          </p>
-                        )}
-                        {taskDetail.repositoryLinks.length > 0 && (
-                          <p>
-                            <strong>Repositories:</strong>{" "}
-                            {taskDetail.repositoryLinks.map((link) => (
-                              <a
-                                href={link}
-                                key={link}
-                                rel="noreferrer"
-                                target="_blank"
-                              >
-                                {link}
-                              </a>
-                            ))}
-                          </p>
-                        )}
-                      </div>
-                    ) : null}
+                      {taskDetail?.trackerLinks.length ? (
+                        <div className="links" aria-label="Tracker links">
+                          {taskDetail.trackerLinks.map((link) => (
+                            <a
+                              href={link.url}
+                              key={link.id}
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              {link.system}: {link.stableId}
+                            </a>
+                          ))}
+                        </div>
+                      ) : null}
 
-                    <div className="subtask-list">
-                      {task.subtasks.map((subtask, index) => {
-                        const subtaskStatus = status?.subtasks[index];
-                        const history = subtaskHistories[subtask.id];
-                        const subtaskArchived = Boolean(
-                          subtaskStatus?.archiveState,
-                        );
-                        return (
-                          <div className="subtask" key={subtask.id}>
-                            <div>
-                              <strong>{subtask.name}</strong>
-                              {subtask.description && (
-                                <p className="subtask-description">
-                                  {subtask.description}
-                                </p>
-                              )}
-                              <span className="subtask-state">
-                                {subtaskStatus?.archiveState
-                                  ? formatWorkState(subtaskStatus.archiveState)
-                                  : `${subtaskStatus?.reportedState ?? "not_started"} · ${subtaskStatus?.verificationState ?? "unreported"}`}
-                              </span>
-                              {subtaskStatus?.evidence && (
-                                <p className="evidence">
-                                  {subtaskStatus.evidence}
-                                </p>
-                              )}
-                            </div>
-                            <div className="subtask-actions">
-                              <input
-                                aria-label={`Evidence for ${subtask.name}`}
-                                disabled={
-                                  !snapshot.canMutate || busy || subtaskArchived
-                                }
-                                onChange={(event) =>
-                                  setEvidence((current) => ({
-                                    ...current,
-                                    [subtask.id]: event.target.value,
-                                  }))
-                                }
-                                placeholder="Evidence (optional)"
-                                value={evidence[subtask.id] ?? ""}
-                              />
-                              <button
-                                disabled={
-                                  !snapshot.canMutate || busy || subtaskArchived
-                                }
-                                onClick={() =>
-                                  void mutateAndRefresh(() =>
-                                    trpc.current!.subtasks.report.mutate({
-                                      evidence: evidence[subtask.id],
-                                      reportedState: "in_progress",
-                                      reporter: "kevin",
-                                      subtaskId: subtask.id,
-                                    }),
-                                  )
-                                }
-                                type="button"
-                              >
-                                Report active
-                              </button>
-                              <button
-                                disabled={
-                                  !snapshot.canMutate || busy || subtaskArchived
-                                }
-                                onClick={() =>
-                                  void mutateAndRefresh(() =>
-                                    trpc.current!.subtasks.report.mutate({
-                                      evidence: evidence[subtask.id],
-                                      reportedState: "complete",
-                                      reporter: "codex",
-                                      subtaskId: subtask.id,
-                                    }),
-                                  )
-                                }
-                                type="button"
-                              >
-                                Report complete
-                              </button>
-                              <button
-                                disabled={
-                                  !snapshot.canMutate || busy || subtaskArchived
-                                }
-                                onClick={() =>
-                                  void mutateAndRefresh(() =>
-                                    trpc.current!.subtasks.report.mutate({
-                                      evidence: evidence[subtask.id],
-                                      reportedState: "blocked",
-                                      reporter: "kevin",
-                                      subtaskId: subtask.id,
-                                    }),
-                                  )
-                                }
-                                type="button"
-                              >
-                                Report blocked
-                              </button>
-                              <button
-                                disabled={
-                                  !snapshot.canMutate || busy || subtaskArchived
-                                }
-                                onClick={() =>
-                                  void mutateAndRefresh(() =>
-                                    trpc.current!.subtasks.report.mutate({
-                                      evidence: evidence[subtask.id],
-                                      reportedState: "not_started",
-                                      reporter: "kevin",
-                                      subtaskId: subtask.id,
-                                    }),
-                                  )
-                                }
-                                type="button"
-                              >
-                                Reset planned
-                              </button>
-                              <button
-                                className="secondary"
-                                disabled={
-                                  !snapshot.canMutate || busy || subtaskArchived
-                                }
-                                onClick={() =>
-                                  void mutateAndRefresh(() =>
-                                    trpc.current!.subtasks.archive.mutate({
-                                      archiveState: "released",
-                                      subtaskId: subtask.id,
-                                    }),
-                                  )
-                                }
-                                type="button"
-                              >
-                                Released
-                              </button>
-                              <button
-                                className="danger"
-                                disabled={
-                                  !snapshot.canMutate || busy || subtaskArchived
-                                }
-                                onClick={() =>
-                                  void mutateAndRefresh(() =>
-                                    trpc.current!.subtasks.archive.mutate({
-                                      archiveState: "wont_do",
-                                      subtaskId: subtask.id,
-                                    }),
-                                  )
-                                }
-                                type="button"
-                              >
-                                Won&apos;t do
-                              </button>
-                              {subtaskArchived && (
-                                <button
-                                  className="secondary"
-                                  disabled={!snapshot.canMutate || busy}
-                                  onClick={() =>
-                                    void mutateAndRefresh(() =>
-                                      trpc.current!.subtasks.restore.mutate({
-                                        subtaskId: subtask.id,
-                                      }),
-                                    )
-                                  }
-                                  type="button"
+                      {taskDetail &&
+                      (taskDetail.objective ||
+                        taskDetail.acceptanceCriteria.length > 0 ||
+                        taskDetail.priority ||
+                        taskDetail.owner ||
+                        taskDetail.dependencies.length > 0 ||
+                        taskDetail.repositoryLinks.length > 0) ? (
+                        <div className="task-metadata">
+                          {taskDetail.objective && (
+                            <p>
+                              <strong>Objective:</strong> {taskDetail.objective}
+                            </p>
+                          )}
+                          {taskDetail.owner && (
+                            <p>
+                              <strong>Owner:</strong> {taskDetail.owner}
+                            </p>
+                          )}
+                          {taskDetail.priority && (
+                            <p>
+                              <strong>Priority:</strong> {taskDetail.priority}
+                            </p>
+                          )}
+                          {taskDetail.acceptanceCriteria.length > 0 && (
+                            <p>
+                              <strong>Acceptance:</strong>{" "}
+                              {taskDetail.acceptanceCriteria.join(" · ")}
+                            </p>
+                          )}
+                          {taskDetail.dependencies.length > 0 && (
+                            <p>
+                              <strong>Dependencies:</strong>{" "}
+                              {taskDetail.dependencies.join(" · ")}
+                            </p>
+                          )}
+                          {taskDetail.repositoryLinks.length > 0 && (
+                            <p>
+                              <strong>Repositories:</strong>{" "}
+                              {taskDetail.repositoryLinks.map((link) => (
+                                <a
+                                  href={link}
+                                  key={link}
+                                  rel="noreferrer"
+                                  target="_blank"
                                 >
-                                  Restore
-                                </button>
-                              )}
-                              <button
-                                className="secondary"
-                                onClick={() =>
-                                  void loadSubtaskHistory(subtask.id)
-                                }
-                                type="button"
-                              >
-                                History
-                              </button>
-                              {subtaskStatus?.reportId &&
-                                subtaskStatus.verificationState ===
-                                  "awaiting_verification" && (
-                                  <>
+                                  {link}
+                                </a>
+                              ))}
+                            </p>
+                          )}
+                        </div>
+                      ) : null}
+
+                      {!subtasksCollapsed && (
+                        <>
+                          <div className="subtask-list">
+                            {task.subtasks.map((subtask, index) => {
+                              const subtaskStatus = status?.subtasks[index];
+                              const history = subtaskHistories[subtask.id];
+                              const subtaskArchived = Boolean(
+                                subtaskStatus?.archiveState,
+                              );
+                              return (
+                                <div className="subtask" key={subtask.id}>
+                                  <div>
+                                    <strong>{subtask.name}</strong>
+                                    {subtask.description && (
+                                      <p className="subtask-description">
+                                        {subtask.description}
+                                      </p>
+                                    )}
+                                    <span className="subtask-state">
+                                      {subtaskStatus?.archiveState
+                                        ? formatWorkState(
+                                            subtaskStatus.archiveState,
+                                          )
+                                        : `${subtaskStatus?.reportedState ?? "not_started"} · ${subtaskStatus?.verificationState ?? "unreported"}`}
+                                    </span>
+                                    {subtaskStatus?.evidence && (
+                                      <p className="evidence">
+                                        {subtaskStatus.evidence}
+                                      </p>
+                                    )}
+                                  </div>
+                                  <div className="subtask-actions">
+                                    <input
+                                      aria-label={`Evidence for ${subtask.name}`}
+                                      disabled={
+                                        !snapshot.canMutate ||
+                                        busy ||
+                                        subtaskArchived
+                                      }
+                                      onChange={(event) =>
+                                        setEvidence((current) => ({
+                                          ...current,
+                                          [subtask.id]: event.target.value,
+                                        }))
+                                      }
+                                      placeholder="Evidence (optional)"
+                                      value={evidence[subtask.id] ?? ""}
+                                    />
                                     <button
-                                      className="verify"
                                       disabled={
                                         !snapshot.canMutate ||
                                         busy ||
@@ -1137,16 +1127,98 @@ function Dashboard() {
                                       }
                                       onClick={() =>
                                         void mutateAndRefresh(() =>
-                                          trpc.current!.subtasks.verify.mutate({
-                                            decision: "accepted",
-                                            reportId: subtaskStatus.reportId!,
-                                            verifier: "kevin",
+                                          trpc.current!.subtasks.report.mutate({
+                                            evidence: evidence[subtask.id],
+                                            reportedState: "in_progress",
+                                            reporter: "kevin",
+                                            subtaskId: subtask.id,
                                           }),
                                         )
                                       }
                                       type="button"
                                     >
-                                      Accept
+                                      Report active
+                                    </button>
+                                    <button
+                                      disabled={
+                                        !snapshot.canMutate ||
+                                        busy ||
+                                        subtaskArchived
+                                      }
+                                      onClick={() =>
+                                        void mutateAndRefresh(() =>
+                                          trpc.current!.subtasks.report.mutate({
+                                            evidence: evidence[subtask.id],
+                                            reportedState: "complete",
+                                            reporter: "codex",
+                                            subtaskId: subtask.id,
+                                          }),
+                                        )
+                                      }
+                                      type="button"
+                                    >
+                                      Report complete
+                                    </button>
+                                    <button
+                                      disabled={
+                                        !snapshot.canMutate ||
+                                        busy ||
+                                        subtaskArchived
+                                      }
+                                      onClick={() =>
+                                        void mutateAndRefresh(() =>
+                                          trpc.current!.subtasks.report.mutate({
+                                            evidence: evidence[subtask.id],
+                                            reportedState: "blocked",
+                                            reporter: "kevin",
+                                            subtaskId: subtask.id,
+                                          }),
+                                        )
+                                      }
+                                      type="button"
+                                    >
+                                      Report blocked
+                                    </button>
+                                    <button
+                                      disabled={
+                                        !snapshot.canMutate ||
+                                        busy ||
+                                        subtaskArchived
+                                      }
+                                      onClick={() =>
+                                        void mutateAndRefresh(() =>
+                                          trpc.current!.subtasks.report.mutate({
+                                            evidence: evidence[subtask.id],
+                                            reportedState: "not_started",
+                                            reporter: "kevin",
+                                            subtaskId: subtask.id,
+                                          }),
+                                        )
+                                      }
+                                      type="button"
+                                    >
+                                      Reset planned
+                                    </button>
+                                    <button
+                                      className="secondary"
+                                      disabled={
+                                        !snapshot.canMutate ||
+                                        busy ||
+                                        subtaskArchived
+                                      }
+                                      onClick={() =>
+                                        void mutateAndRefresh(() =>
+                                          trpc.current!.subtasks.archive.mutate(
+                                            {
+                                              archiveState: "released",
+                                              subtaskId: subtask.id,
+                                            },
+                                          ),
+                                        )
+                                      }
+                                      type="button"
+                                    >
+                                      Released
                                     </button>
                                     <button
                                       className="danger"
@@ -1157,110 +1229,194 @@ function Dashboard() {
                                       }
                                       onClick={() =>
                                         void mutateAndRefresh(() =>
-                                          trpc.current!.subtasks.verify.mutate({
-                                            decision: "rejected",
-                                            reportId: subtaskStatus.reportId!,
-                                            verifier: "kevin",
-                                          }),
+                                          trpc.current!.subtasks.archive.mutate(
+                                            {
+                                              archiveState: "wont_do",
+                                              subtaskId: subtask.id,
+                                            },
+                                          ),
                                         )
                                       }
                                       type="button"
                                     >
-                                      Reject
+                                      Won&apos;t do
                                     </button>
-                                  </>
-                                )}
-                            </div>
-                            {history && (
-                              <div className="history">
-                                <strong>History</strong>
-                                {history.reports.map((report) => (
-                                  <p key={report.id}>
-                                    {report.reportedState} by {report.reporter}
-                                    {report.evidence
-                                      ? " · " + report.evidence
-                                      : ""}
-                                  </p>
-                                ))}
-                                {history.verifications.map((verification) => (
-                                  <p key={verification.id}>
-                                    {verification.decision} by{" "}
-                                    {verification.verifier}
-                                  </p>
-                                ))}
-                              </div>
-                            )}
+                                    {subtaskArchived && (
+                                      <button
+                                        className="secondary"
+                                        disabled={!snapshot.canMutate || busy}
+                                        onClick={() =>
+                                          void mutateAndRefresh(() =>
+                                            trpc.current!.subtasks.restore.mutate(
+                                              {
+                                                subtaskId: subtask.id,
+                                              },
+                                            ),
+                                          )
+                                        }
+                                        type="button"
+                                      >
+                                        Restore
+                                      </button>
+                                    )}
+                                    <button
+                                      className="secondary"
+                                      onClick={() =>
+                                        void loadSubtaskHistory(subtask.id)
+                                      }
+                                      type="button"
+                                    >
+                                      History
+                                    </button>
+                                    {subtaskStatus?.reportId &&
+                                      subtaskStatus.verificationState ===
+                                        "awaiting_verification" && (
+                                        <>
+                                          <button
+                                            className="verify"
+                                            disabled={
+                                              !snapshot.canMutate ||
+                                              busy ||
+                                              subtaskArchived
+                                            }
+                                            onClick={() =>
+                                              void mutateAndRefresh(() =>
+                                                trpc.current!.subtasks.verify.mutate(
+                                                  {
+                                                    decision: "accepted",
+                                                    reportId:
+                                                      subtaskStatus.reportId!,
+                                                    verifier: "kevin",
+                                                  },
+                                                ),
+                                              )
+                                            }
+                                            type="button"
+                                          >
+                                            Accept
+                                          </button>
+                                          <button
+                                            className="danger"
+                                            disabled={
+                                              !snapshot.canMutate ||
+                                              busy ||
+                                              subtaskArchived
+                                            }
+                                            onClick={() =>
+                                              void mutateAndRefresh(() =>
+                                                trpc.current!.subtasks.verify.mutate(
+                                                  {
+                                                    decision: "rejected",
+                                                    reportId:
+                                                      subtaskStatus.reportId!,
+                                                    verifier: "kevin",
+                                                  },
+                                                ),
+                                              )
+                                            }
+                                            type="button"
+                                          >
+                                            Reject
+                                          </button>
+                                        </>
+                                      )}
+                                  </div>
+                                  {history && (
+                                    <div className="history">
+                                      <strong>History</strong>
+                                      {history.reports.map((report) => (
+                                        <p key={report.id}>
+                                          {report.reportedState} by{" "}
+                                          {report.reporter}
+                                          {report.evidence
+                                            ? " · " + report.evidence
+                                            : ""}
+                                        </p>
+                                      ))}
+                                      {history.verifications.map(
+                                        (verification) => (
+                                          <p key={verification.id}>
+                                            {verification.decision} by{" "}
+                                            {verification.verifier}
+                                          </p>
+                                        ),
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
-                        );
-                      })}
-                    </div>
 
-                    <form
-                      className="subtask-create"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        const name = subtaskNames[task.id]?.trim();
-                        if (!name || !trpc.current) return;
-                        void mutateAndRefresh(async () => {
-                          await trpc.current!.subtasks.create.mutate({
-                            description:
-                              subtaskDescriptions[task.id]?.trim() || undefined,
-                            name,
-                            taskId: task.id,
-                          });
-                          setSubtaskNames((current) => ({
-                            ...current,
-                            [task.id]: "",
-                          }));
-                          setSubtaskDescriptions((current) => ({
-                            ...current,
-                            [task.id]: "",
-                          }));
-                        });
-                      }}
-                    >
-                      <input
-                        aria-label={`New subtask for ${task.name}`}
-                        disabled={!snapshot.canMutate || busy}
-                        onChange={(event) =>
-                          setSubtaskNames((current) => ({
-                            ...current,
-                            [task.id]: event.target.value,
-                          }))
-                        }
-                        placeholder="New subtask"
-                        value={subtaskNames[task.id] ?? ""}
-                      />
-                      <input
-                        aria-label={`Description for new subtask of ${task.name}`}
-                        disabled={!snapshot.canMutate || busy}
-                        onChange={(event) =>
-                          setSubtaskDescriptions((current) => ({
-                            ...current,
-                            [task.id]: event.target.value,
-                          }))
-                        }
-                        placeholder="Description (optional)"
-                        value={subtaskDescriptions[task.id] ?? ""}
-                      />
-                      <button
-                        disabled={
-                          !snapshot.canMutate ||
-                          busy ||
-                          !subtaskNames[task.id]?.trim()
-                        }
-                        type="submit"
-                      >
-                        Add subtask
-                      </button>
-                    </form>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </section>
-      )}
+                          <form
+                            className="subtask-create"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              const name = subtaskNames[task.id]?.trim();
+                              if (!name || !trpc.current) return;
+                              void mutateAndRefresh(async () => {
+                                await trpc.current!.subtasks.create.mutate({
+                                  description:
+                                    subtaskDescriptions[task.id]?.trim() ||
+                                    undefined,
+                                  name,
+                                  taskId: task.id,
+                                });
+                                setSubtaskNames((current) => ({
+                                  ...current,
+                                  [task.id]: "",
+                                }));
+                                setSubtaskDescriptions((current) => ({
+                                  ...current,
+                                  [task.id]: "",
+                                }));
+                              });
+                            }}
+                          >
+                            <input
+                              aria-label={`New subtask for ${task.name}`}
+                              disabled={!snapshot.canMutate || busy}
+                              onChange={(event) =>
+                                setSubtaskNames((current) => ({
+                                  ...current,
+                                  [task.id]: event.target.value,
+                                }))
+                              }
+                              placeholder="New subtask"
+                              value={subtaskNames[task.id] ?? ""}
+                            />
+                            <input
+                              aria-label={`Description for new subtask of ${task.name}`}
+                              disabled={!snapshot.canMutate || busy}
+                              onChange={(event) =>
+                                setSubtaskDescriptions((current) => ({
+                                  ...current,
+                                  [task.id]: event.target.value,
+                                }))
+                              }
+                              placeholder="Description (optional)"
+                              value={subtaskDescriptions[task.id] ?? ""}
+                            />
+                            <button
+                              disabled={
+                                !snapshot.canMutate ||
+                                busy ||
+                                !subtaskNames[task.id]?.trim()
+                              }
+                              type="submit"
+                            >
+                              Add subtask
+                            </button>
+                          </form>
+                        </>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
     </main>
   );
 }
@@ -1295,5 +1451,5 @@ function formatWorkState(state: string): string {
 createRoot(document.getElementById("root")!).render(<Dashboard />);
 
 if ("serviceWorker" in navigator) {
-  void navigator.serviceWorker.register("/service-worker.js");
+  void navigator.serviceWorker.register("/service-worker.js?v=6");
 }
