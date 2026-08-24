@@ -87,8 +87,9 @@ record. A Status Report does not replace Kevin's Verification.
 - **FR-030** — v1 must include a mobile-responsive web dashboard for creating and inspecting
   Projects, Tasks, Subtasks, Status Reports, and Verifications.
 - **FR-031** — Factory must be reachable from Kevin's mobile devices through the Tailscale
-  tailnet. The application must listen only on loopback; Tailscale Serve must proxy it with
-  tailnet access controls. Factory must not use Tailscale Funnel or expose a public endpoint.
+  tailnet. The default application bind is loopback; an operator may explicitly use a trusted
+  local-network bind for local agents. Tailscale Serve must proxy the private mobile route, and
+  Factory must not use Tailscale Funnel or expose a public endpoint.
 - **FR-032** — v1 must include a CLI for the same core operations. Read commands must support a
   stable JSON output mode so skills can call the CLI without parsing human-oriented prose.
 - **FR-033** — Skills must call the Factory CLI. Factory does not need an MCP server in v1.

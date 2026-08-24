@@ -266,9 +266,11 @@ export type FactoryRouter = ReturnType<typeof createRouter>;
 
 export function createFactoryServer({
   databasePath = "factory.sqlite",
+  hostname = "127.0.0.1",
   port,
 }: {
   databasePath?: string;
+  hostname?: string;
   port: number;
 }): FactoryServer {
   const application = createFactoryApplication({ databasePath });
@@ -280,7 +282,7 @@ export function createFactoryServer({
   });
 
   const server = Bun.serve<SocketData>({
-    hostname: "127.0.0.1",
+    hostname,
     port,
     fetch(request, bunServer) {
       const url = new URL(request.url);
@@ -388,6 +390,9 @@ function toBuffer(message: string | ArrayBuffer | Uint8Array): Buffer {
 }
 
 if (import.meta.main) {
-  const server = createFactoryServer({ port: 3000 });
+  const server = createFactoryServer({
+    hostname: Bun.env.FACTORY_HOST ?? "127.0.0.1",
+    port: 3000,
+  });
   console.info(`Software Factory listening at ${server.url}`);
 }

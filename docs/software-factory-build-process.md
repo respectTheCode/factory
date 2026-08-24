@@ -187,8 +187,11 @@ with a direct path into the owning Project.
 
 ### Phase 7 — private mobile delivery
 
-Run Factory only on loopback and proxy it through tailnet-restricted Tailscale Serve. Funnel and
-public exposure are prohibited. Verify the installed PWA from the actual private Serve URL.
+Run Factory on loopback by default and proxy it through tailnet-restricted Tailscale Serve. When
+local agents need the HTTP/WebSocket API, an operator may opt into the explicit
+`FACTORY_HOST=0.0.0.0` bind on a trusted LAN; verify the LAN address and firewall before sharing
+it. Funnel and public exposure are prohibited. Verify the installed PWA from the actual private
+Serve URL.
 
 ### Phase 8 — end-to-end readiness
 
