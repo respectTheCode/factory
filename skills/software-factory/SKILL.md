@@ -34,11 +34,15 @@ bun run src/cli.ts project link --project-id PROJECT_ID --system notion --stable
 bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" --database "$FACTORY_DB"
 bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts task status --task-id TASK_ID --json --database "$FACTORY_DB"
+bun run src/cli.ts task archive --task-id TASK_ID --state released --database "$FACTORY_DB"
+bun run src/cli.ts task restore --task-id TASK_ID --database "$FACTORY_DB"
 bun run src/cli.ts task link --task-id TASK_ID --system linear --stable-id GRA-143 --url "https://…" --database "$FACTORY_DB"
 bun run src/cli.ts subtask create --task-id TASK_ID --name "Subtask name" --description "What must be checked" --database "$FACTORY_DB"
 bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state in_progress --reporter codex --evidence "What changed" --database "$FACTORY_DB"
 bun run src/cli.ts subtask status --json --task-id TASK_ID --database "$FACTORY_DB"
 bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$FACTORY_DB"
+bun run src/cli.ts subtask archive --subtask-id SUBTASK_ID --state wont_do --database "$FACTORY_DB"
+bun run src/cli.ts subtask restore --subtask-id SUBTASK_ID --database "$FACTORY_DB"
 ```
 
 After taking a backup, remove a project only when its ID has been checked; removal cascades
@@ -94,3 +98,8 @@ status again and include the returned `report.id` in any handoff or summary.
 
 Tracker links can be attached through the CLI, PWA, or tRPC API. They remain references to the
 source item in Linear or Notion; Factory does not push updates to either system.
+
+Use `released` when the work shipped and `wont_do` when it is intentionally abandoned. These
+Archive States remain visible in the project and history, disappear from Attention, and can be
+restored without deleting Status Reports or Verifications. Archiving a Subtask does not archive
+its parent Task.

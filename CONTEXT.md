@@ -13,13 +13,21 @@ _Avoid_: workspace, account
 
 **Task**:
 A planned, independently trackable outcome within a Project. A Task can carry Factory-native
-planning data, Subtasks, and Tracker Links.
+planning data, Subtasks, and Tracker Links. A Task may have an Archive State of `released` or
+`wont_do`; archived Tasks remain addressable and historical but are omitted from Attention.
 _Avoid_: ticket, issue, work item
 
 **Subtask**:
 A small, independently reportable part of a Task. A Subtask has an agent-reported status and a
-separate human verification state.
+separate human verification state. A Subtask may have an Archive State of `released` or
+`wont_do`; this changes only the Subtask's disposition and does not archive its parent Task.
 _Avoid_: checklist item, to-do
+
+**Archive State**:
+A durable terminal disposition for a Task or Subtask: `released` means the work shipped, and
+`wont_do` means the work was intentionally abandoned. Archived records remain visible in their
+Project and history, but do not create Attention items.
+_Avoid_: deletion, completed, hidden
 
 **External Tracker**:
 A system that remains authoritative for a linked product roadmap or development record, such

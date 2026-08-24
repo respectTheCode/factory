@@ -20,6 +20,8 @@ dashboard, CLI, and Codex skills.
 - The Factory core is independent of React, tRPC, WebSockets, the CLI, and Notion/Linear.
   Those are adapters around the same core behavior.
 - A Status Report is an agent claim; only a human Verification can complete a Task.
+- `released` and `wont_do` are explicit Archive States for quick Task/Subtask disposition;
+  they are retained in history and restored rather than deleted.
 - The parent agent owns the working tree, test execution, UI checks, and commits. Bounded
   research, drafting, and review work may be delegated to Luna xhigh subagents; agents must
   not edit overlapping files.
@@ -54,6 +56,8 @@ go to stderr.
 - Creating a Project with a Task makes that Task retrievable through the Project.
 - An agent report of `complete` makes its Subtask awaiting verification; it cannot complete the
   Task.
+- A Task or Subtask may be archived as `released` or `wont_do` from the dashboard, tRPC, or CLI.
+  Archived Tasks leave Attention, while archived Subtasks do not silently change their parent.
 - A human verification retains the original Status Report and is the only action that can make
   the Task completed when its acceptance rule is satisfied.
 - Rejected and deferred reports remain historical observations rather than being overwritten.
@@ -158,8 +162,9 @@ noninteractive command may submit a Status Report but cannot verify or complete 
 the initial skill command and hook payload after the CLI contract is stable. The current agent
 loop reads `project attention`, `task detail`, and `subtask history`, then uses `subtask report`
 for `in_progress`, `blocked`, or `complete`; `subtask verify` remains human-only. Tracker links
-can be attached through the CLI without writing to Notion or Linear. Include a `schemaVersion`
-in machine JSON before skills depend on it.
+can be attached through the CLI without writing to Notion or Linear. `task archive` and
+`subtask archive` provide quick `released`/`wont_do` dispositions, with matching restore
+commands. Include a `schemaVersion` in machine JSON before skills depend on it.
 
 ### Phase 5 — tRPC WebSocket transport
 

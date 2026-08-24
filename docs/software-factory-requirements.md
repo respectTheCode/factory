@@ -32,10 +32,13 @@ record. A Status Report does not replace Kevin's Verification.
 - **FR-002** — A Task must support an objective, acceptance criteria, priority, owner,
   dependencies, and links to zero or more repositories.
 - **FR-003** — A Task must contain zero or more Subtasks. A Subtask must support a title,
-  description, and a current reported state.
-- **FR-004** — Factory must support native Tasks that have no Notion or Linear record.
-- **FR-005** — Factory must show Project- and portfolio-level work by planned, active,
-  awaiting-verification, completed, and blocked state.
+  description, a current reported state, and a quick Archive State of `released` or `wont_do`.
+- **FR-004** — A Task must support the same quick Archive States, independently of its derived
+  work state. Restoring an archived Task or Subtask returns it to its prior derived/reporting
+  behavior without deleting history.
+- **FR-005** — Factory must support native Tasks that have no Notion or Linear record.
+- **FR-006** — Factory must show Project- and portfolio-level work by planned, active,
+  awaiting-verification, completed, blocked, released, and wont-do state.
 
 ### 3.2 Tracker Links
 
@@ -74,6 +77,10 @@ record. A Status Report does not replace Kevin's Verification.
   is `complete` with a latest Verification of `accepted`. A Task with no Subtasks remains
   planned. Human acceptance attests that the Task's visible acceptance criteria are satisfied.
 - Task dependencies are informational in v1 and do not independently block completion.
+- `released` and `wont_do` are explicit Archive States, distinct from human-verified
+  `completed`. Archived Tasks disappear from Attention but remain addressable, counted, and
+  recoverable with a restore action. Archiving a Subtask changes only that Subtask; it does not
+  silently archive its parent Task or erase its report/verification history.
 
 ### 3.4 Mobile web and CLI
 
@@ -129,12 +136,15 @@ record. A Status Report does not replace Kevin's Verification.
 4. **Human verification:** Kevin verifies the reported Subtask from mobile. Factory retains the
    original report, records the Verification, and updates the Task only when its acceptance
    criteria are satisfied.
-5. **Private mobile access:** The dashboard is available over Tailscale Serve from a phone on
+5. **Quick disposition:** Kevin can mark a Task or Subtask `released` or `wont_do` from the
+   dashboard or CLI, restore it later, and see its history intact; a Subtask disposition does
+   not change the parent Task automatically.
+6. **Private mobile access:** The dashboard is available over Tailscale Serve from a phone on
    Kevin's tailnet and unavailable from the public internet.
-6. **Installed mobile app:** Kevin can install the dashboard as a PWA on a phone. It launches
+7. **Installed mobile app:** Kevin can install the dashboard as a PWA on a phone. It launches
    in standalone mode; if Tailscale is disconnected, it clearly shows that live task data and
    edits are unavailable rather than presenting stale data as current.
-7. **Live connection:** If the Tailscale or tRPC WebSocket connection drops, the installed PWA
+8. **Live connection:** If the Tailscale or tRPC WebSocket connection drops, the installed PWA
    changes to `reconnecting` and then `disconnected`, displays the last successful connection
    time, and disables edits. It refreshes data before re-enabling edits after reconnecting.
 

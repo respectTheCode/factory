@@ -2,6 +2,7 @@ import {
   backupFactoryDatabase,
   checkFactoryDatabase,
   createFactoryApplication,
+  type ArchiveState,
   type ReportedState,
   type VerificationDecision,
 } from "./application";
@@ -86,6 +87,14 @@ function reportedStateFlag(flags: Map<string, string>): ReportedState {
     );
   }
   return value as ReportedState;
+}
+
+function archiveStateFlag(flags: Map<string, string>): ArchiveState {
+  const value = requiredFlag(flags, "state");
+  if (value !== "released" && value !== "wont_do") {
+    throw new Error("--state must be released or wont_do.");
+  }
+  return value;
 }
 
 function urlFlag(flags: Map<string, string>): string {
@@ -227,6 +236,21 @@ function main(args: string[]): void {
     return;
   }
 
+  if (resource === "task" && action === "archive") {
+    const taskId = requiredFlag(parsed.flags, "task-id");
+    const archiveState = archiveStateFlag(parsed.flags);
+    application.archiveTask(taskId, archiveState);
+    output({ task: { archiveState, taskId } });
+    return;
+  }
+
+  if (resource === "task" && action === "restore") {
+    const taskId = requiredFlag(parsed.flags, "task-id");
+    application.restoreTask(taskId);
+    output({ task: { archiveState: null, taskId } });
+    return;
+  }
+
   if (resource === "task" && action === "link") {
     const link = application.addTaskTrackerLink({
       stableId: requiredFlag(parsed.flags, "stable-id"),
@@ -260,6 +284,21 @@ function main(args: string[]): void {
     return;
   }
 
+  if (resource === "subtask" && action === "archive") {
+    const subtaskId = requiredFlag(parsed.flags, "subtask-id");
+    const archiveState = archiveStateFlag(parsed.flags);
+    application.archiveSubtask(subtaskId, archiveState);
+    output({ subtask: { archiveState, subtaskId } });
+    return;
+  }
+
+  if (resource === "subtask" && action === "restore") {
+    const subtaskId = requiredFlag(parsed.flags, "subtask-id");
+    application.restoreSubtask(subtaskId);
+    output({ subtask: { archiveState: null, subtaskId } });
+    return;
+  }
+
   if (resource === "subtask" && action === "status") {
     const taskId = requiredFlag(parsed.flags, "task-id");
     output({ status: application.getTaskStatus(taskId) });
@@ -285,7 +324,7 @@ function main(args: string[]): void {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|list|remove|status|portfolio|attention|link, task create|detail|status|link, subtask create|report|status|history|verify",
+    "Usage: database backup|check, project create|list|remove|status|portfolio|attention|link, task create|detail|status|archive|restore|link, subtask create|report|status|archive|restore|history|verify",
   );
 }
 

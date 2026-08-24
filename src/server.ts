@@ -150,6 +150,28 @@ function createRouter(
           projectUpdates.publishAll();
           return report;
         }),
+      archive: trpc.procedure
+        .input(
+          z.object({
+            archiveState: z.enum(["released", "wont_do"]),
+            subtaskId: z.string().min(1),
+          }),
+        )
+        .mutation(({ input }) => {
+          application.archiveSubtask(input.subtaskId, input.archiveState);
+          projectUpdates.publishAll();
+          return {
+            archiveState: input.archiveState,
+            subtaskId: input.subtaskId,
+          };
+        }),
+      restore: trpc.procedure
+        .input(z.object({ subtaskId: z.string().min(1) }))
+        .mutation(({ input }) => {
+          application.restoreSubtask(input.subtaskId);
+          projectUpdates.publishAll();
+          return { subtaskId: input.subtaskId };
+        }),
       verify: trpc.procedure
         .input(
           z.object({
@@ -199,6 +221,28 @@ function createRouter(
       detail: trpc.procedure
         .input(z.object({ taskId: z.string().min(1) }))
         .query(({ input }) => application.getTaskDetail(input.taskId)),
+      archive: trpc.procedure
+        .input(
+          z.object({
+            archiveState: z.enum(["released", "wont_do"]),
+            taskId: z.string().min(1),
+          }),
+        )
+        .mutation(({ input }) => {
+          application.archiveTask(input.taskId, input.archiveState);
+          projectUpdates.publishAll();
+          return {
+            archiveState: input.archiveState,
+            taskId: input.taskId,
+          };
+        }),
+      restore: trpc.procedure
+        .input(z.object({ taskId: z.string().min(1) }))
+        .mutation(({ input }) => {
+          application.restoreTask(input.taskId);
+          projectUpdates.publishAll();
+          return { taskId: input.taskId };
+        }),
       link: trpc.procedure
         .input(
           z.object({

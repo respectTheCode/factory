@@ -14,6 +14,8 @@ type WorkCounts = {
   awaiting_verification: number;
   completed: number;
   blocked: number;
+  released: number;
+  wont_do: number;
 };
 type PortfolioStatus = {
   totalTasks: number;
@@ -48,11 +50,13 @@ type ProjectDetail = {
     id: string;
     name: string;
     projectId: string;
+    archiveState?: "released" | "wont_do";
     subtasks: Array<{
       id: string;
       name: string;
       taskId: string;
       description?: string;
+      archiveState?: "released" | "wont_do";
     }>;
   }>;
 };
@@ -63,7 +67,10 @@ type TaskStatus = {
     | "active"
     | "awaiting_verification"
     | "completed"
-    | "blocked";
+    | "blocked"
+    | "released"
+    | "wont_do";
+  archiveState?: "released" | "wont_do";
   subtasks: Array<{
     reportedState?: "not_started" | "in_progress" | "blocked" | "complete";
     verificationState:
@@ -75,6 +82,7 @@ type TaskStatus = {
     reportId?: string;
     evidence?: string;
     reporter?: string;
+    archiveState?: "released" | "wont_do";
   }>;
 };
 type TaskDetail = {
@@ -87,6 +95,7 @@ type TaskDetail = {
   owner?: string;
   dependencies: string[];
   repositoryLinks: string[];
+  archiveState?: "released" | "wont_do";
   trackerLinks: Array<{
     id: string;
     system: "linear" | "notion";
@@ -428,7 +437,9 @@ function Dashboard() {
               {portfolioStatus.counts.active} active ·{" "}
               {portfolioStatus.counts.awaiting_verification} awaiting
               verification · {portfolioStatus.counts.completed} completed ·{" "}
-              {portfolioStatus.counts.blocked} blocked
+              {portfolioStatus.counts.blocked} blocked ·{" "}
+              {portfolioStatus.counts.released} released ·{" "}
+              {portfolioStatus.counts.wont_do} won't do
             </p>
           )}
         </div>
@@ -505,7 +516,8 @@ function Dashboard() {
                       planned · {status.counts.active} active ·{" "}
                       {status.counts.awaiting_verification} awaiting
                       verification · {status.counts.completed} completed ·{" "}
-                      {status.counts.blocked} blocked
+                      {status.counts.blocked} blocked · {status.counts.released}{" "}
+                      released · {status.counts.wont_do} won&apos;t do
                     </p>
                   ) : null;
                 })()}
@@ -727,6 +739,57 @@ function Dashboard() {
                           {formatWorkState(status?.taskState ?? "planned")}
                         </span>
                       </div>
+                      <div
+                        aria-label={`Quick status for ${task.name}`}
+                        className="quick-status"
+                      >
+                        <button
+                          className="secondary"
+                          disabled={!snapshot.canMutate || busy}
+                          onClick={() =>
+                            void mutateAndRefresh(() =>
+                              trpc.current!.tasks.archive.mutate({
+                                archiveState: "released",
+                                taskId: task.id,
+                              }),
+                            )
+                          }
+                          type="button"
+                        >
+                          Released
+                        </button>
+                        <button
+                          className="danger"
+                          disabled={!snapshot.canMutate || busy}
+                          onClick={() =>
+                            void mutateAndRefresh(() =>
+                              trpc.current!.tasks.archive.mutate({
+                                archiveState: "wont_do",
+                                taskId: task.id,
+                              }),
+                            )
+                          }
+                          type="button"
+                        >
+                          Won&apos;t do
+                        </button>
+                        {status?.archiveState && (
+                          <button
+                            className="secondary"
+                            disabled={!snapshot.canMutate || busy}
+                            onClick={() =>
+                              void mutateAndRefresh(() =>
+                                trpc.current!.tasks.restore.mutate({
+                                  taskId: task.id,
+                                }),
+                              )
+                            }
+                            type="button"
+                          >
+                            Restore
+                          </button>
+                        )}
+                      </div>
                       <form
                         className="inline-form"
                         onSubmit={(event) => {
@@ -892,6 +955,9 @@ function Dashboard() {
                       {task.subtasks.map((subtask, index) => {
                         const subtaskStatus = status?.subtasks[index];
                         const history = subtaskHistories[subtask.id];
+                        const subtaskArchived = Boolean(
+                          subtaskStatus?.archiveState,
+                        );
                         return (
                           <div className="subtask" key={subtask.id}>
                             <div>
@@ -902,10 +968,9 @@ function Dashboard() {
                                 </p>
                               )}
                               <span className="subtask-state">
-                                {subtaskStatus?.reportedState ?? "not_started"}{" "}
-                                ·{" "}
-                                {subtaskStatus?.verificationState ??
-                                  "unreported"}
+                                {subtaskStatus?.archiveState
+                                  ? formatWorkState(subtaskStatus.archiveState)
+                                  : `${subtaskStatus?.reportedState ?? "not_started"} · ${subtaskStatus?.verificationState ?? "unreported"}`}
                               </span>
                               {subtaskStatus?.evidence && (
                                 <p className="evidence">
@@ -916,7 +981,9 @@ function Dashboard() {
                             <div className="subtask-actions">
                               <input
                                 aria-label={`Evidence for ${subtask.name}`}
-                                disabled={!snapshot.canMutate || busy}
+                                disabled={
+                                  !snapshot.canMutate || busy || subtaskArchived
+                                }
                                 onChange={(event) =>
                                   setEvidence((current) => ({
                                     ...current,
@@ -927,7 +994,9 @@ function Dashboard() {
                                 value={evidence[subtask.id] ?? ""}
                               />
                               <button
-                                disabled={!snapshot.canMutate || busy}
+                                disabled={
+                                  !snapshot.canMutate || busy || subtaskArchived
+                                }
                                 onClick={() =>
                                   void mutateAndRefresh(() =>
                                     trpc.current!.subtasks.report.mutate({
@@ -943,7 +1012,9 @@ function Dashboard() {
                                 Report active
                               </button>
                               <button
-                                disabled={!snapshot.canMutate || busy}
+                                disabled={
+                                  !snapshot.canMutate || busy || subtaskArchived
+                                }
                                 onClick={() =>
                                   void mutateAndRefresh(() =>
                                     trpc.current!.subtasks.report.mutate({
@@ -959,6 +1030,92 @@ function Dashboard() {
                                 Report complete
                               </button>
                               <button
+                                disabled={
+                                  !snapshot.canMutate || busy || subtaskArchived
+                                }
+                                onClick={() =>
+                                  void mutateAndRefresh(() =>
+                                    trpc.current!.subtasks.report.mutate({
+                                      evidence: evidence[subtask.id],
+                                      reportedState: "blocked",
+                                      reporter: "kevin",
+                                      subtaskId: subtask.id,
+                                    }),
+                                  )
+                                }
+                                type="button"
+                              >
+                                Report blocked
+                              </button>
+                              <button
+                                disabled={
+                                  !snapshot.canMutate || busy || subtaskArchived
+                                }
+                                onClick={() =>
+                                  void mutateAndRefresh(() =>
+                                    trpc.current!.subtasks.report.mutate({
+                                      evidence: evidence[subtask.id],
+                                      reportedState: "not_started",
+                                      reporter: "kevin",
+                                      subtaskId: subtask.id,
+                                    }),
+                                  )
+                                }
+                                type="button"
+                              >
+                                Reset planned
+                              </button>
+                              <button
+                                className="secondary"
+                                disabled={
+                                  !snapshot.canMutate || busy || subtaskArchived
+                                }
+                                onClick={() =>
+                                  void mutateAndRefresh(() =>
+                                    trpc.current!.subtasks.archive.mutate({
+                                      archiveState: "released",
+                                      subtaskId: subtask.id,
+                                    }),
+                                  )
+                                }
+                                type="button"
+                              >
+                                Released
+                              </button>
+                              <button
+                                className="danger"
+                                disabled={
+                                  !snapshot.canMutate || busy || subtaskArchived
+                                }
+                                onClick={() =>
+                                  void mutateAndRefresh(() =>
+                                    trpc.current!.subtasks.archive.mutate({
+                                      archiveState: "wont_do",
+                                      subtaskId: subtask.id,
+                                    }),
+                                  )
+                                }
+                                type="button"
+                              >
+                                Won&apos;t do
+                              </button>
+                              {subtaskArchived && (
+                                <button
+                                  className="secondary"
+                                  disabled={!snapshot.canMutate || busy}
+                                  onClick={() =>
+                                    void mutateAndRefresh(() =>
+                                      trpc.current!.subtasks.restore.mutate({
+                                        subtaskId: subtask.id,
+                                      }),
+                                    )
+                                  }
+                                  type="button"
+                                >
+                                  Restore
+                                </button>
+                              )}
+                              <button
                                 className="secondary"
                                 onClick={() =>
                                   void loadSubtaskHistory(subtask.id)
@@ -973,7 +1130,11 @@ function Dashboard() {
                                   <>
                                     <button
                                       className="verify"
-                                      disabled={!snapshot.canMutate || busy}
+                                      disabled={
+                                        !snapshot.canMutate ||
+                                        busy ||
+                                        subtaskArchived
+                                      }
                                       onClick={() =>
                                         void mutateAndRefresh(() =>
                                           trpc.current!.subtasks.verify.mutate({
@@ -989,7 +1150,11 @@ function Dashboard() {
                                     </button>
                                     <button
                                       className="danger"
-                                      disabled={!snapshot.canMutate || busy}
+                                      disabled={
+                                        !snapshot.canMutate ||
+                                        busy ||
+                                        subtaskArchived
+                                      }
                                       onClick={() =>
                                         void mutateAndRefresh(() =>
                                           trpc.current!.subtasks.verify.mutate({

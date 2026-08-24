@@ -213,6 +213,23 @@ textarea {
   color: #cbd5e1;
 }
 
+.status-pill.released {
+  background: #166534;
+  color: #bbf7d0;
+}
+
+.status-pill.wont_do {
+  background: #475569;
+  color: #e2e8f0;
+}
+
+.quick-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
 .inline-form {
   flex-wrap: wrap;
   justify-content: flex-end;

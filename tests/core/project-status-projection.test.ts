@@ -84,6 +84,8 @@ describe("project status projection", () => {
         awaiting_verification: 1,
         completed: 1,
         blocked: 1,
+        released: 0,
+        wont_do: 0,
       },
     });
   });
@@ -112,6 +114,8 @@ describe("project status projection", () => {
         awaiting_verification: 1,
         completed: 1,
         blocked: 1,
+        released: 0,
+        wont_do: 0,
       },
       projects: [
         {
@@ -124,6 +128,8 @@ describe("project status projection", () => {
             awaiting_verification: 0,
             completed: 0,
             blocked: 0,
+            released: 0,
+            wont_do: 0,
           },
         },
         {
@@ -136,6 +142,8 @@ describe("project status projection", () => {
             awaiting_verification: 1,
             completed: 1,
             blocked: 1,
+            released: 0,
+            wont_do: 0,
           },
         },
       ],

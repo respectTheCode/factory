@@ -30,6 +30,7 @@ type Task = {
   owner?: string;
   dependencies: string[];
   repositoryLinks: string[];
+  archiveState?: ArchiveState;
   createdAt: Date;
 };
 
@@ -38,8 +39,11 @@ type Subtask = {
   name: string;
   taskId: string;
   description?: string;
+  archiveState?: ArchiveState;
   createdAt: Date;
 };
+
+export type ArchiveState = "released" | "wont_do";
 
 export type ReportedState =
   | "not_started"
@@ -71,7 +75,8 @@ export type ProjectWorkState =
   | "active"
   | "awaiting_verification"
   | "completed"
-  | "blocked";
+  | "blocked"
+  | ArchiveState;
 
 export type ProjectWorkCounts = Record<ProjectWorkState, number>;
 
@@ -80,7 +85,7 @@ export type AttentionItem = {
   projectName: string;
   taskId: string;
   taskName: string;
-  state: Exclude<ProjectWorkState, "completed">;
+  state: Exclude<ProjectWorkState, "completed" | ArchiveState>;
   priority?: "low" | "medium" | "high" | "urgent";
   owner?: string;
 };
@@ -88,6 +93,7 @@ export type AttentionItem = {
 export type TaskStatus = {
   taskCompleted: boolean;
   taskState: ProjectWorkState;
+  archiveState?: ArchiveState;
   subtasks: Array<{
     reportedState?: ReportedState;
     verificationState:
@@ -100,6 +106,7 @@ export type TaskStatus = {
     reportId?: string;
     evidence?: string;
     reporter?: string;
+    archiveState?: ArchiveState;
   }>;
 };
 
@@ -131,6 +138,8 @@ function emptyProjectWorkCounts(): ProjectWorkCounts {
     awaiting_verification: 0,
     completed: 0,
     blocked: 0,
+    released: 0,
+    wont_do: 0,
   };
 }
 
@@ -148,11 +157,13 @@ export type ProjectHierarchy = {
     id: string;
     name: string;
     projectId: string;
+    archiveState?: ArchiveState;
     subtasks: Array<{
       id: string;
       name: string;
       taskId: string;
       description?: string;
+      archiveState?: ArchiveState;
     }>;
   }>;
 };
@@ -311,6 +322,46 @@ export class FactoryApplication {
     return subtask;
   }
 
+  archiveTask(taskId: string, archiveState: ArchiveState): void {
+    this.refreshFromPersistence();
+    const task = this.tasks.find((candidate) => candidate.id === taskId);
+    if (!task) throw new Error(`Task ${taskId} does not exist.`);
+
+    task.archiveState = archiveState;
+    this.save();
+  }
+
+  restoreTask(taskId: string): void {
+    this.refreshFromPersistence();
+    const task = this.tasks.find((candidate) => candidate.id === taskId);
+    if (!task) throw new Error(`Task ${taskId} does not exist.`);
+
+    delete task.archiveState;
+    this.save();
+  }
+
+  archiveSubtask(subtaskId: string, archiveState: ArchiveState): void {
+    this.refreshFromPersistence();
+    const subtask = this.subtasks.find(
+      (candidate) => candidate.id === subtaskId,
+    );
+    if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
+
+    subtask.archiveState = archiveState;
+    this.save();
+  }
+
+  restoreSubtask(subtaskId: string): void {
+    this.refreshFromPersistence();
+    const subtask = this.subtasks.find(
+      (candidate) => candidate.id === subtaskId,
+    );
+    if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
+
+    delete subtask.archiveState;
+    this.save();
+  }
+
   reportSubtaskStatus({
     evidence,
     reporter,
@@ -367,20 +418,29 @@ export class FactoryApplication {
 
   getTaskStatus(taskId: string): TaskStatus {
     this.refreshFromPersistence();
-    if (!this.tasks.some((task) => task.id === taskId)) {
+    const task = this.tasks.find((candidate) => candidate.id === taskId);
+    if (!task) {
       throw new Error(`Task ${taskId} does not exist.`);
     }
 
-    const subtasks = this.subtasks
+    const subtasks: TaskStatus["subtasks"] = this.subtasks
       .filter((subtask) => subtask.taskId === taskId)
       .map((subtask) => {
         const report = this.getCurrentStatusReport(subtask.id);
 
         if (!report) {
-          return { verificationState: "unreported" as const };
+          return {
+            ...(subtask.archiveState
+              ? { archiveState: subtask.archiveState }
+              : {}),
+            verificationState: "unreported" as const,
+          };
         }
 
         return {
+          ...(subtask.archiveState
+            ? { archiveState: subtask.archiveState }
+            : {}),
           id: report.id,
           reportId: report.id,
           reportedState: report.reportedState,
@@ -392,9 +452,13 @@ export class FactoryApplication {
         };
       });
 
+    const activeSubtasks = subtasks.filter(
+      (subtask) => subtask.archiveState === undefined,
+    );
+
     const taskCompleted =
-      subtasks.length > 0 &&
-      subtasks.every(
+      activeSubtasks.length > 0 &&
+      activeSubtasks.every(
         (subtask) =>
           subtask.reportedState === "complete" &&
           subtask.verificationState === "accepted",
@@ -402,7 +466,10 @@ export class FactoryApplication {
 
     return {
       taskCompleted,
-      taskState: this.deriveTaskWorkState(taskCompleted, subtasks),
+      ...(task.archiveState ? { archiveState: task.archiveState } : {}),
+      taskState:
+        task.archiveState ??
+        this.deriveTaskWorkState(taskCompleted, activeSubtasks),
       subtasks,
     };
   }
@@ -477,7 +544,13 @@ export class FactoryApplication {
     return this.tasks
       .flatMap((task) => {
         const state = this.getTaskStatus(task.id).taskState;
-        if (state === "completed") return [];
+        if (
+          state === "completed" ||
+          state === "released" ||
+          state === "wont_do"
+        ) {
+          return [];
+        }
 
         const project = this.projects.find(
           (candidate) => candidate.id === task.projectId,
@@ -550,12 +623,16 @@ export class FactoryApplication {
           id: task.id,
           name: task.name,
           projectId: task.projectId,
+          ...(task.archiveState ? { archiveState: task.archiveState } : {}),
           subtasks: this.subtasks
             .filter((subtask) => subtask.taskId === task.id)
             .map((subtask) => ({
               id: subtask.id,
               name: subtask.name,
               taskId: subtask.taskId,
+              ...(subtask.archiveState
+                ? { archiveState: subtask.archiveState }
+                : {}),
               ...(subtask.description !== undefined
                 ? { description: subtask.description }
                 : {}),
@@ -629,6 +706,7 @@ export class FactoryApplication {
     owner?: string;
     dependencies: string[];
     repositoryLinks: string[];
+    archiveState?: ArchiveState;
     trackerLinks: TrackerLink[];
   } {
     this.refreshFromPersistence();
@@ -644,6 +722,7 @@ export class FactoryApplication {
       owner: task.owner,
       dependencies: task.dependencies,
       repositoryLinks: task.repositoryLinks,
+      ...(task.archiveState ? { archiveState: task.archiveState } : {}),
       trackerLinks: this.trackerLinks.filter((link) => link.taskId === taskId),
     };
   }
