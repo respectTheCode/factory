@@ -17,6 +17,7 @@ export type FactoryApplicationOptions = {
 type Project = {
   id: string;
   name: string;
+  gitOriginUrl?: string;
   createdAt: Date;
 };
 
@@ -24,6 +25,7 @@ type Task = {
   id: string;
   name: string;
   projectId: string;
+  branchName?: string;
   objective?: string;
   acceptanceCriteria: string[];
   priority?: "low" | "medium" | "high" | "urgent";
@@ -153,10 +155,12 @@ function removeMatching<T>(items: T[], matches: (item: T) => boolean): void {
 export type ProjectHierarchy = {
   id: string;
   name: string;
+  gitOriginUrl?: string;
   tasks: Array<{
     id: string;
     name: string;
     projectId: string;
+    branchName?: string;
     archiveState?: ArchiveState;
     subtasks: Array<{
       id: string;
@@ -199,15 +203,44 @@ export class FactoryApplication {
     this.trackerLinks = state?.trackerLinks ?? [];
   }
 
-  createProject({ name }: { name: string }): Project {
+  createProject({
+    gitOriginUrl,
+    name,
+  }: {
+    gitOriginUrl?: string;
+    name: string;
+  }): Project {
     this.refreshFromPersistence();
     const project = {
       id: this.idGenerator(),
       name,
+      ...(gitOriginUrl?.trim() ? { gitOriginUrl: gitOriginUrl.trim() } : {}),
       createdAt: this.clock(),
     };
 
     this.projects.push(project);
+    this.save();
+    return project;
+  }
+
+  updateProject({
+    gitOriginUrl,
+    projectId,
+  }: {
+    gitOriginUrl: string | null;
+    projectId: string;
+  }): Project {
+    this.refreshFromPersistence();
+    const project = this.projects.find(
+      (candidate) => candidate.id === projectId,
+    );
+    if (!project) throw new Error(`Project ${projectId} does not exist.`);
+
+    if (gitOriginUrl?.trim()) {
+      project.gitOriginUrl = gitOriginUrl.trim();
+    } else {
+      delete project.gitOriginUrl;
+    }
     this.save();
     return project;
   }
@@ -254,6 +287,7 @@ export class FactoryApplication {
   }
 
   createTask({
+    branchName,
     name,
     projectId,
     objective,
@@ -263,6 +297,7 @@ export class FactoryApplication {
     dependencies = [],
     repositoryLinks = [],
   }: {
+    branchName?: string;
     name: string;
     projectId: string;
     objective?: string;
@@ -281,6 +316,7 @@ export class FactoryApplication {
       id: this.idGenerator(),
       name,
       projectId,
+      ...(branchName?.trim() ? { branchName: branchName.trim() } : {}),
       objective,
       acceptanceCriteria,
       priority,
@@ -617,12 +653,14 @@ export class FactoryApplication {
     return {
       id: project.id,
       name: project.name,
+      ...(project.gitOriginUrl ? { gitOriginUrl: project.gitOriginUrl } : {}),
       tasks: this.tasks
         .filter((task) => task.projectId === project.id)
         .map((task) => ({
           id: task.id,
           name: task.name,
           projectId: task.projectId,
+          ...(task.branchName ? { branchName: task.branchName } : {}),
           ...(task.archiveState ? { archiveState: task.archiveState } : {}),
           subtasks: this.subtasks
             .filter((subtask) => subtask.taskId === task.id)
@@ -641,9 +679,13 @@ export class FactoryApplication {
     };
   }
 
-  listProjects(): Array<{ id: string; name: string }> {
+  listProjects(): Array<{ id: string; name: string; gitOriginUrl?: string }> {
     this.refreshFromPersistence();
-    return this.projects.map(({ id, name }) => ({ id, name }));
+    return this.projects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      ...(project.gitOriginUrl ? { gitOriginUrl: project.gitOriginUrl } : {}),
+    }));
   }
 
   addTaskTrackerLink({
@@ -679,6 +721,7 @@ export class FactoryApplication {
   getProjectDetail(projectId: string): {
     id: string;
     name: string;
+    gitOriginUrl?: string;
     trackerLinks: TrackerLink[];
   } {
     this.refreshFromPersistence();
@@ -690,6 +733,7 @@ export class FactoryApplication {
     return {
       id: project.id,
       name: project.name,
+      ...(project.gitOriginUrl ? { gitOriginUrl: project.gitOriginUrl } : {}),
       trackerLinks: this.trackerLinks.filter(
         (link) => link.projectId === projectId,
       ),
@@ -700,6 +744,7 @@ export class FactoryApplication {
     id: string;
     name: string;
     projectId: string;
+    branchName?: string;
     objective?: string;
     acceptanceCriteria: string[];
     priority?: "low" | "medium" | "high" | "urgent";
@@ -716,6 +761,7 @@ export class FactoryApplication {
       id: task.id,
       name: task.name,
       projectId: task.projectId,
+      ...(task.branchName ? { branchName: task.branchName } : {}),
       objective: task.objective,
       acceptanceCriteria: task.acceptanceCriteria,
       priority: task.priority,

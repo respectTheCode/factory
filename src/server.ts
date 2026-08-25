@@ -63,8 +63,25 @@ function createRouter(
   return trpc.router({
     projects: trpc.router({
       create: trpc.procedure
-        .input(z.object({ name: z.string().min(1) }))
+        .input(
+          z.object({
+            gitOriginUrl: z.string().trim().min(1).optional(),
+            name: z.string().min(1),
+          }),
+        )
         .mutation(({ input }) => application.createProject(input)),
+      update: trpc.procedure
+        .input(
+          z.object({
+            gitOriginUrl: z.string().trim().min(1).nullable(),
+            projectId: z.string().min(1),
+          }),
+        )
+        .mutation(({ input }) => {
+          const project = application.updateProject(input);
+          projectUpdates.publish(input.projectId);
+          return project;
+        }),
       remove: trpc.procedure
         .input(
           z.object({
@@ -201,6 +218,7 @@ function createRouter(
         .input(
           z.object({
             acceptanceCriteria: z.array(z.string()).default([]),
+            branchName: z.string().trim().min(1).optional(),
             dependencies: z.array(z.string()).default([]),
             name: z.string().min(1),
             objective: z.string().optional(),

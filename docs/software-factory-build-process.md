@@ -160,7 +160,9 @@ tests; business tests never inspect tables directly.
 
 ### Phase 4 — CLI and Codex skills
 
-Add CLI commands for the same core operations, with stable `--json` reads. A skill-shaped,
+Add CLI commands for the same core operations, with stable `--json` reads. Project commands
+include Git-origin context and Task creation accepts a branch name so coding agents can match a
+checkout to Factory work. A skill-shaped,
 noninteractive command may submit a Status Report but cannot verify or complete work. Document
 the initial skill command and hook payload after the CLI contract is stable. The current agent
 loop reads `project attention`, `task detail`, and `subtask history`, then uses `subtask report`

@@ -43,6 +43,7 @@ type AttentionItem = {
   owner?: string;
 };
 type ProjectDetail = {
+  gitOriginUrl?: string;
   id: string;
   name: string;
   trackerLinks: Array<{
@@ -56,6 +57,7 @@ type ProjectDetail = {
     id: string;
     name: string;
     projectId: string;
+    branchName?: string;
     archiveState?: "released" | "wont_do";
     subtasks: Array<{
       id: string;
@@ -92,6 +94,7 @@ type TaskStatus = {
   }>;
 };
 type TaskDetail = {
+  branchName?: string;
   id: string;
   name: string;
   projectId: string;
@@ -135,6 +138,7 @@ function Dashboard() {
   const [projectName, setProjectName] = useState("");
   const [view, setView] = useState<DashboardView>(() => homeView());
   const [taskName, setTaskName] = useState("");
+  const [taskBranchName, setTaskBranchName] = useState("");
   const [taskObjective, setTaskObjective] = useState("");
   const [taskAcceptanceCriteria, setTaskAcceptanceCriteria] = useState("");
   const [taskPriority, setTaskPriority] = useState<
@@ -164,6 +168,7 @@ function Dashboard() {
     title: "",
     url: "",
   });
+  const [projectGitOriginInput, setProjectGitOriginInput] = useState("");
   const [evidence, setEvidence] = useState<Record<string, string>>({});
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [portfolioStatus, setPortfolioStatus] =
@@ -272,6 +277,10 @@ function Dashboard() {
     setTaskStatuses(Object.fromEntries(statuses));
   };
 
+  useEffect(() => {
+    setProjectGitOriginInput(projectDetail?.gitOriginUrl ?? "");
+  }, [projectDetail?.gitOriginUrl, projectDetail?.id]);
+
   const mutateAndRefresh = async (action: () => Promise<unknown>) => {
     if (!snapshot.canMutate || !projectDetail) return;
     setBusy(true);
@@ -336,6 +345,7 @@ function Dashboard() {
     await mutateAndRefresh(async () => {
       await trpc.current!.tasks.create.mutate({
         acceptanceCriteria: lines(taskAcceptanceCriteria),
+        branchName: taskBranchName.trim() || undefined,
         dependencies: lines(taskDependencies),
         name: taskName.trim(),
         objective: taskObjective.trim() || undefined,
@@ -345,6 +355,7 @@ function Dashboard() {
         repositoryLinks: lines(taskRepositoryLinks),
       });
       setTaskName("");
+      setTaskBranchName("");
       setTaskObjective("");
       setTaskAcceptanceCriteria("");
       setTaskPriority("medium");
@@ -572,6 +583,33 @@ function Dashboard() {
             </div>
 
             <form
+              className="project-link-form project-context-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!trpc.current) return;
+                void mutateAndRefresh(() =>
+                  trpc.current!.projects.update.mutate({
+                    gitOriginUrl: projectGitOriginInput.trim() || null,
+                    projectId: projectDetail.id,
+                  }),
+                );
+              }}
+            >
+              <input
+                aria-label="Git origin URL"
+                disabled={!snapshot.canMutate || busy}
+                onChange={(event) =>
+                  setProjectGitOriginInput(event.target.value)
+                }
+                placeholder="Git origin URL (SSH or HTTPS)"
+                value={projectGitOriginInput}
+              />
+              <button disabled={!snapshot.canMutate || busy} type="submit">
+                Save Git URL
+              </button>
+            </form>
+
+            <form
               className="project-link-form"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -716,6 +754,13 @@ function Dashboard() {
                     }
                     placeholder="Acceptance criteria (one per line)"
                     value={taskAcceptanceCriteria}
+                  />
+                  <input
+                    aria-label="Task branch name"
+                    disabled={!snapshot.canMutate || busy}
+                    onChange={(event) => setTaskBranchName(event.target.value)}
+                    placeholder="Branch name (optional)"
+                    value={taskBranchName}
                   />
                   <select
                     aria-label="Task priority"
@@ -1024,11 +1069,17 @@ function Dashboard() {
                         taskDetail.priority ||
                         taskDetail.owner ||
                         taskDetail.dependencies.length > 0 ||
-                        taskDetail.repositoryLinks.length > 0) ? (
+                        taskDetail.repositoryLinks.length > 0 ||
+                        taskDetail.branchName) ? (
                         <div className="task-metadata">
                           {taskDetail.objective && (
                             <p>
                               <strong>Objective:</strong> {taskDetail.objective}
+                            </p>
+                          )}
+                          {taskDetail.branchName && (
+                            <p>
+                              <strong>Branch:</strong> {taskDetail.branchName}
                             </p>
                           )}
                           {taskDetail.owner && (

@@ -120,8 +120,16 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function projectSummary(project: { id: string; name: string }) {
-  return { id: project.id, name: project.name };
+function projectSummary(project: {
+  gitOriginUrl?: string;
+  id: string;
+  name: string;
+}) {
+  return {
+    id: project.id,
+    name: project.name,
+    ...(project.gitOriginUrl ? { gitOriginUrl: project.gitOriginUrl } : {}),
+  };
 }
 
 function main(args: string[]): void {
@@ -165,7 +173,23 @@ function main(args: string[]): void {
 
   if (resource === "project" && action === "create") {
     const project = application.createProject({
+      gitOriginUrl:
+        parsed.flags.get("git-origin-url") ?? parsed.flags.get("git-url"),
       name: requiredFlag(parsed.flags, "name"),
+    });
+    output({ project: projectSummary(project) });
+    return;
+  }
+
+  if (resource === "project" && action === "update") {
+    const gitOriginUrl =
+      parsed.flags.get("git-origin-url") ?? parsed.flags.get("git-url");
+    if (gitOriginUrl === undefined) {
+      throw new Error("Missing required --git-origin-url.");
+    }
+    const project = application.updateProject({
+      gitOriginUrl,
+      projectId: requiredFlag(parsed.flags, "project-id"),
     });
     output({ project: projectSummary(project) });
     return;
@@ -210,6 +234,7 @@ function main(args: string[]): void {
   if (resource === "task" && action === "create") {
     const task = application.createTask({
       acceptanceCriteria: listFlag(parsed.flags, "acceptance-criteria"),
+      branchName: parsed.flags.get("branch-name") ?? parsed.flags.get("branch"),
       dependencies: listFlag(parsed.flags, "dependencies"),
       name: requiredFlag(parsed.flags, "name"),
       objective: parsed.flags.get("objective")?.trim() || undefined,
@@ -324,7 +349,7 @@ function main(args: string[]): void {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|list|remove|status|portfolio|attention|link, task create|detail|status|archive|restore|link, subtask create|report|status|archive|restore|history|verify",
+    "Usage: database backup|check, project create|update|list|remove|status|portfolio|attention|link, task create|detail|status|archive|restore|link, subtask create|report|status|archive|restore|history|verify",
   );
 }
 

@@ -74,7 +74,10 @@ describe("Factory project tracker-link WebSocket transport", () => {
           id: 1,
           method: "mutation",
           params: {
-            input: { name: "Playlister roadmap" },
+            input: {
+              gitOriginUrl: "git@github.com:app-press/playlister.git",
+              name: "Playlister roadmap",
+            },
             path: "projects.create",
           },
         }),
@@ -85,6 +88,7 @@ describe("Factory project tracker-link WebSocket transport", () => {
           method: "mutation",
           params: {
             input: {
+              branchName: "PRO-1412-mobile-dashboard",
               name: "Ship the mobile dashboard",
               projectId: project.id,
             },
@@ -139,6 +143,7 @@ describe("Factory project tracker-link WebSocket transport", () => {
           type: "data",
           data: {
             id: project.id,
+            gitOriginUrl: "git@github.com:app-press/playlister.git",
             name: "Playlister roadmap",
             trackerLinks: [
               {
@@ -166,6 +171,7 @@ describe("Factory project tracker-link WebSocket transport", () => {
         result: {
           type: "data",
           data: {
+            branchName: "PRO-1412-mobile-dashboard",
             trackerLinks: [
               {
                 system: "linear",

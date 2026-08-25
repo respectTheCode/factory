@@ -28,10 +28,16 @@ Common operations:
 bun run src/cli.ts project list --json --database "$FACTORY_DB"
 bun run src/cli.ts project attention --json --database "$FACTORY_DB"
 bun run src/cli.ts project create --name "Project name" --database "$FACTORY_DB"
+bun run src/cli.ts project create --name "Project name" \
+  --git-origin-url "git@github.com:org/repository.git" --database "$FACTORY_DB"
+bun run src/cli.ts project update --project-id PROJECT_ID \
+  --git-origin-url "git@github.com:org/repository.git" --database "$FACTORY_DB"
 bun run src/cli.ts project status --project-id PROJECT_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts project portfolio --json --database "$FACTORY_DB"
 bun run src/cli.ts project link --project-id PROJECT_ID --system notion --stable-id PRO-1412 --url "https://…" --database "$FACTORY_DB"
 bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" --database "$FACTORY_DB"
+bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" \
+  --branch-name "GRA-143-preview-environments" --database "$FACTORY_DB"
 bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts task status --task-id TASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts task archive --task-id TASK_ID --state released --database "$FACTORY_DB"
@@ -69,6 +75,7 @@ Task planning lists use a pipe separator when passed through one shell flag:
 ```bash
 bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" \
   --objective "What success looks like" --priority high --owner kevin \
+  --branch-name "GRA-143-preview-environments" \
   --acceptance-criteria "First check|Second check" \
   --dependencies "Prerequisite A|Prerequisite B" \
   --repository-links "https://github.com/app-press/factory" \
@@ -98,6 +105,20 @@ status again and include the returned `report.id` in any handoff or summary.
 
 Tracker links can be attached through the CLI, PWA, or tRPC API. They remain references to the
 source item in Linear or Notion; Factory does not push updates to either system.
+
+For coding work, use the repository's Git origin to identify the Factory Project and the current
+branch to identify its Task when that branch name is stored on the Task. Check the current
+checkout before reporting work:
+
+```bash
+git remote get-url origin
+git branch --show-current
+bun run src/cli.ts project list --json --database "$FACTORY_DB"
+```
+
+Match the normalized origin against a project's `gitOriginUrl`, then use the matching Task's
+`branchName` and its Tracker Links to retain Linear or Notion context. Branch names are Factory
+context only; matching a Linear or Notion identifier does not update that external system.
 
 Use `released` when the work shipped and `wont_do` when it is intentionally abandoned. These
 Archive States remain visible in the project and history, disappear from Attention, and can be

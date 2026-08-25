@@ -39,6 +39,12 @@ record. A Status Report does not replace Kevin's Verification.
 - **FR-005** — Factory must support native Tasks that have no Notion or Linear record.
 - **FR-006** — Factory must show Project- and portfolio-level work by planned, active,
   awaiting-verification, completed, blocked, released, and wont-do state.
+- **FR-007** — A Project may store a Git origin URL so a coding checkout can be associated with
+  the correct Factory Project. The URL is context metadata, not a repository mirror or sync
+  target.
+- **FR-008** — A Task may store a branch name. Branch names may contain a Linear or Notion
+  identifier for agent context, but Factory must not infer or write external tracker state from
+  that name.
 
 ### 3.2 Tracker Links
 
@@ -118,6 +124,9 @@ record. A Status Report does not replace Kevin's Verification.
   Projects.
 - **FR-042** — Project task pages must allow Tasks to collapse or expand their Subtasks without
   hiding the Task's own status, metadata, or quick disposition controls.
+- **FR-044** — The Project edit page must allow a human to add, replace, or clear the Project's
+  Git origin URL. The Task planning form must accept an optional branch name and task detail must
+  display it when present.
 - **FR-043** — Project settings, external Project Tracker Links, and new-Task planning metadata
   must live on a dedicated Project edit page. Text inputs, text areas, and dropdowns must use
   the dark dashboard theme rather than browser light-mode defaults.

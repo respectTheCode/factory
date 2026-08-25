@@ -8,13 +8,16 @@ systems that own their own data. Herdr-managed coding sessions are a later integ
 
 **Project**:
 A Factory coordination scope containing related tasks, repositories, tracker links, and
-operational status. It may represent work whose product roadmap remains owned elsewhere.
+operational status. It may store a Git origin URL for associating coding checkouts with the
+Project. It may represent work whose product roadmap remains owned elsewhere.
 _Avoid_: workspace, account
 
 **Task**:
 A planned, independently trackable outcome within a Project. A Task can carry Factory-native
 planning data, Subtasks, and Tracker Links. A Task may have an Archive State of `released` or
-`wont_do`; archived Tasks remain addressable and historical but are omitted from Attention.
+`wont_do`; archived Tasks remain addressable and historical but are omitted from Attention. A
+Task may store a branch name for associating coding work with it; a branch name may contain an
+external tracker identifier without changing that tracker.
 _Avoid_: ticket, issue, work item
 
 **Subtask**:

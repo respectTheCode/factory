@@ -1,8 +1,8 @@
-const cacheName = "software-factory-shell-v6";
+const cacheName = "software-factory-shell-v7";
 const appShell = [
   "/",
-  "/main.js?v=dashboard-v3",
-  "/main.css?v=dashboard-v3",
+  "/main.js?v=dashboard-v4",
+  "/main.css?v=dashboard-v4",
   "/icon.svg",
 ];
 const worker = self as unknown as {
