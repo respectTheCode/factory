@@ -331,6 +331,26 @@ export class FactoryApplication {
     return task;
   }
 
+  updateTask({
+    branchName,
+    taskId,
+  }: {
+    branchName: string | null;
+    taskId: string;
+  }): Task {
+    this.refreshFromPersistence();
+    const task = this.tasks.find((candidate) => candidate.id === taskId);
+    if (!task) throw new Error(`Task ${taskId} does not exist.`);
+
+    if (branchName?.trim()) {
+      task.branchName = branchName.trim();
+    } else {
+      delete task.branchName;
+    }
+    this.save();
+    return task;
+  }
+
   createSubtask({
     description,
     name,

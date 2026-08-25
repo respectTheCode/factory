@@ -38,6 +38,8 @@ bun run src/cli.ts project link --project-id PROJECT_ID --system notion --stable
 bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" --database "$FACTORY_DB"
 bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" \
   --branch-name "GRA-143-preview-environments" --database "$FACTORY_DB"
+bun run src/cli.ts task update --task-id TASK_ID \
+  --branch-name "GRA-143-preview-environments" --database "$FACTORY_DB"
 bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts task status --task-id TASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts task archive --task-id TASK_ID --state released --database "$FACTORY_DB"

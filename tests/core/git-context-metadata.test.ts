@@ -33,6 +33,14 @@ describe("git context metadata", () => {
         branchName: "GRA-143-preview-environments",
       });
 
+      firstApplication.updateTask({
+        branchName: "GRA-143-preview-environments-v2",
+        taskId: task.id,
+      });
+      expect(firstApplication.getTaskDetail(task.id)).toMatchObject({
+        branchName: "GRA-143-preview-environments-v2",
+      });
+
       firstApplication.updateProject({
         gitOriginUrl: "https://github.com/app-press/grail.git",
         projectId: project.id,
@@ -48,7 +56,7 @@ describe("git context metadata", () => {
         gitOriginUrl: "https://github.com/app-press/grail.git",
       });
       expect(reopenedApplication.getTaskDetail(task.id)).toMatchObject({
-        branchName: "GRA-143-preview-environments",
+        branchName: "GRA-143-preview-environments-v2",
       });
 
       reopenedApplication.updateProject({

@@ -108,6 +108,23 @@ describe("git context CLI metadata", () => {
           branchName: "GRA-143-preview-environments",
         },
       });
+
+      const taskUpdateResult = await runCli([
+        "task",
+        "update",
+        "--task-id",
+        (JSON.parse(taskResult.stdout) as TaskCreateOutput).task.id,
+        "--branch-name",
+        "GRA-143-preview-environments-v2",
+        "--database",
+        databasePath,
+      ]);
+      expect(taskUpdateResult.exitCode).toBe(0);
+      expect(JSON.parse(taskUpdateResult.stdout)).toMatchObject({
+        task: {
+          branchName: "GRA-143-preview-environments-v2",
+        },
+      });
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }

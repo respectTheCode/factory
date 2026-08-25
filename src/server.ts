@@ -239,6 +239,18 @@ function createRouter(
       detail: trpc.procedure
         .input(z.object({ taskId: z.string().min(1) }))
         .query(({ input }) => application.getTaskDetail(input.taskId)),
+      update: trpc.procedure
+        .input(
+          z.object({
+            branchName: z.string().trim().min(1).nullable(),
+            taskId: z.string().min(1),
+          }),
+        )
+        .mutation(({ input }) => {
+          const task = application.updateTask(input);
+          projectUpdates.publish(task.projectId);
+          return task;
+        }),
       archive: trpc.procedure
         .input(
           z.object({

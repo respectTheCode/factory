@@ -254,6 +254,20 @@ function main(args: string[]): void {
     return;
   }
 
+  if (resource === "task" && action === "update") {
+    const branchName =
+      parsed.flags.get("branch-name") ?? parsed.flags.get("branch");
+    if (branchName === undefined) {
+      throw new Error("Missing required --branch-name.");
+    }
+    const task = application.updateTask({
+      branchName,
+      taskId: requiredFlag(parsed.flags, "task-id"),
+    });
+    output({ task });
+    return;
+  }
+
   if (resource === "task" && action === "status") {
     output({
       status: application.getTaskStatus(requiredFlag(parsed.flags, "task-id")),
@@ -349,7 +363,7 @@ function main(args: string[]): void {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|update|list|remove|status|portfolio|attention|link, task create|detail|status|archive|restore|link, subtask create|report|status|archive|restore|history|verify",
+    "Usage: database backup|check, project create|update|list|remove|status|portfolio|attention|link, task create|update|detail|status|archive|restore|link, subtask create|report|status|archive|restore|history|verify",
   );
 }
 
