@@ -13,6 +13,11 @@ import {
   type DashboardView,
 } from "./navigation";
 import { createProjectAndRefresh } from "./project-actions";
+import {
+  filterAttention,
+  summarizeTaskProgress,
+  type AttentionFilter,
+} from "./task-summary";
 import "./styles.css";
 
 type ProjectSummary = { id: string; name: string };
@@ -178,6 +183,8 @@ function Dashboard() {
   const [portfolioStatus, setPortfolioStatus] =
     useState<PortfolioStatus | null>(null);
   const [attention, setAttention] = useState<AttentionItem[] | null>(null);
+  const [attentionFilter, setAttentionFilter] =
+    useState<AttentionFilter>("all");
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(
     null,
   );
@@ -368,6 +375,10 @@ function Dashboard() {
       .map((line) => line.trim())
       .filter(Boolean);
 
+  const visibleAttention = attention
+    ? filterAttention(attention, attentionFilter)
+    : null;
+
   const loadSubtaskHistory = async (subtaskId: string) => {
     const client = trpc.current;
     if (!client) return;
@@ -432,74 +443,98 @@ function Dashboard() {
             className="panel attention-panel"
             aria-labelledby="attention-title"
           >
-            <div>
-              <p className="eyebrow">Attention</p>
-              <h2 id="attention-title">
-                {attention === null
-                  ? "Loading work…"
-                  : attention.length === 0
-                    ? "Nothing needs attention"
-                    : `${attention.length} open tasks`}
-              </h2>
-              <p className="attention-summary">
-                Start with blocked or awaiting-verification work, then pick the
-                next planned task.
-              </p>
-            </div>
-            {attention && attention.length > 0 && (
-              <div className="attention-groups">
+            <div className="attention-header">
+              <div>
+                <p className="eyebrow">Attention</p>
+                <h2 id="attention-title">
+                  {attention === null
+                    ? "Loading work…"
+                    : attention.length === 0
+                      ? "Nothing needs attention"
+                      : `${attention.length} open tasks`}
+                </h2>
+                <p className="attention-summary">
+                  Start with blocked or awaiting-verification work, then pick
+                  the next planned task.
+                </p>
+              </div>
+              <div
+                aria-label="Attention filters"
+                className="attention-filters"
+                role="group"
+              >
                 {(
                   [
+                    ["all", "All"],
                     ["blocked", "Blocked"],
-                    ["awaiting_verification", "Awaiting verification"],
+                    ["awaiting_verification", "Awaiting"],
                     ["active", "Active"],
                     ["planned", "Planned"],
                   ] as const
-                ).map(([state, label]) => {
-                  const items = attention.filter(
-                    (item) => item.state === state,
-                  );
-                  if (items.length === 0) return null;
-                  return (
-                    <section className="attention-group" key={state}>
-                      <div className="attention-group-heading">
-                        <h3>{label}</h3>
-                        <span className={`status-pill ${state}`}>
-                          {items.length}
-                        </span>
-                      </div>
-                      <div className="attention-items">
-                        {items.map((item) => (
-                          <article className="attention-item" key={item.taskId}>
-                            <div>
-                              <strong>{item.taskName}</strong>
-                              <p>{item.projectName}</p>
-                              {(item.owner || item.priority) && (
-                                <small>
-                                  {item.owner ? `Owner: ${item.owner}` : ""}
-                                  {item.owner && item.priority ? " · " : ""}
-                                  {item.priority
-                                    ? `Priority: ${item.priority}`
-                                    : ""}
-                                </small>
-                              )}
-                            </div>
-                            <button
-                              className="secondary"
-                              disabled={snapshot.state !== "connected"}
-                              onClick={() => void openProject(item.projectId)}
-                              type="button"
-                            >
-                              Open
-                            </button>
-                          </article>
-                        ))}
-                      </div>
-                    </section>
-                  );
-                })}
+                ).map(([filter, label]) => (
+                  <button
+                    aria-pressed={attentionFilter === filter}
+                    className={
+                      attentionFilter === filter
+                        ? "filter-selected"
+                        : "secondary"
+                    }
+                    key={filter}
+                    onClick={() => setAttentionFilter(filter)}
+                    type="button"
+                  >
+                    {label}
+                    {attention && (
+                      <span>
+                        {filter === "all"
+                          ? attention.length
+                          : attention.filter((item) => item.state === filter)
+                              .length}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {visibleAttention && visibleAttention.length > 0 && (
+              <div className="attention-list">
+                {visibleAttention.map((item) => (
+                  <article className="attention-item" key={item.taskId}>
+                    <div>
+                      <strong>{item.taskName}</strong>
+                      <p>
+                        {item.projectName}
+                        {item.owner ? ` · ${item.owner}` : ""}
+                      </p>
+                    </div>
+                    <div className="attention-item-meta">
+                      <span className={`status-pill ${item.state}`}>
+                        {formatWorkState(item.state)}
+                      </span>
+                      {item.priority && (
+                        <small>{formatWorkState(item.priority)} priority</small>
+                      )}
+                      <button
+                        className="secondary"
+                        disabled={snapshot.state !== "connected"}
+                        onClick={() => void openProject(item.projectId)}
+                        type="button"
+                      >
+                        Open
+                      </button>
+                    </div>
+                  </article>
+                ))}
               </div>
             )}
+            {attention &&
+              attention.length > 0 &&
+              visibleAttention &&
+              visibleAttention.length === 0 && (
+                <p className="empty attention-empty">
+                  No tasks match this filter.
+                </p>
+              )}
           </section>
 
           <section className="panel projects-panel" aria-live="polite">
@@ -894,6 +929,36 @@ function Dashboard() {
               </div>
             </div>
 
+            {portfolioStatus &&
+              (() => {
+                const status = portfolioStatus.projects.find(
+                  (candidate) => candidate.projectId === projectDetail.id,
+                );
+                if (!status) return null;
+                return (
+                  <div className="project-stats" aria-label="Project summary">
+                    <div className="project-stat">
+                      <strong>{status.totalTasks}</strong>
+                      <span>Total tasks</span>
+                    </div>
+                    <div className="project-stat">
+                      <strong>
+                        {status.counts.completed}/{status.totalTasks}
+                      </strong>
+                      <span>Tasks complete</span>
+                    </div>
+                    <div className="project-stat">
+                      <strong>{status.counts.active}</strong>
+                      <span>Active</span>
+                    </div>
+                    <div className="project-stat">
+                      <strong>{status.counts.blocked}</strong>
+                      <span>Blocked</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
             {projectDetail.tasks.length === 0 ? (
               <div className="empty">
                 <p>
@@ -919,25 +984,68 @@ function Dashboard() {
                     title: "",
                     url: "",
                   };
-                  const subtasksCollapsed = collapsedTasks[task.id] ?? false;
+                  const subtasksCollapsed = collapsedTasks[task.id] ?? true;
+                  const progress = summarizeTaskProgress(task, status);
                   return (
                     <article className="task-card" key={task.id}>
-                      <div className="task-heading">
-                        <div>
-                          <h3>{task.name}</h3>
-                          <span
-                            className={`status-pill ${status?.taskState ?? "planned"}`}
-                          >
-                            {formatWorkState(status?.taskState ?? "planned")}
-                          </span>
+                      <div className="task-card-header">
+                        <div className="task-summary">
+                          <div className="task-summary-heading">
+                            <h3>{task.name}</h3>
+                            <span
+                              className={`status-pill ${status?.taskState ?? "planned"}`}
+                            >
+                              {formatWorkState(status?.taskState ?? "planned")}
+                            </span>
+                          </div>
+                          {taskDetail?.objective && (
+                            <p className="task-objective">
+                              {taskDetail.objective}
+                            </p>
+                          )}
+                          <div className="task-preview-meta">
+                            {taskDetail?.owner && (
+                              <span>Owner: {taskDetail.owner}</span>
+                            )}
+                            {taskDetail?.priority && (
+                              <span>
+                                Priority: {formatWorkState(taskDetail.priority)}
+                              </span>
+                            )}
+                            <span>
+                              {progress.totalSubtasks > 0
+                                ? `${progress.completedSubtasks}/${progress.totalSubtasks} subtasks done`
+                                : "No subtasks yet"}
+                            </span>
+                          </div>
+                          {progress.totalSubtasks > 0 && (
+                            <progress
+                              aria-label={
+                                String(progress.completedSubtasks) +
+                                " of " +
+                                String(progress.totalSubtasks) +
+                                " subtasks complete"
+                              }
+                              className="task-progress"
+                              max={progress.totalSubtasks}
+                              value={progress.completedSubtasks}
+                            />
+                          )}
+                          {progress.nextSubtaskName && (
+                            <p className="task-next">
+                              <strong>Next:</strong> {progress.nextSubtaskName}
+                            </p>
+                          )}
                         </div>
                         <div
                           aria-label={`Quick status for ${task.name}`}
-                          className="quick-status"
+                          className="task-actions"
                         >
                           <button
                             aria-expanded={!subtasksCollapsed}
-                            className="secondary"
+                            className={
+                              subtasksCollapsed ? "primary" : "secondary"
+                            }
                             onClick={() =>
                               setCollapsedTasks((current) => ({
                                 ...current,
@@ -947,56 +1055,64 @@ function Dashboard() {
                             type="button"
                           >
                             {subtasksCollapsed
-                              ? "Show subtasks"
+                              ? `Show ${progress.totalSubtasks} subtasks`
                               : "Hide subtasks"}
                           </button>
-                          <button
-                            className="secondary"
-                            disabled={!snapshot.canMutate || busy}
-                            onClick={() =>
-                              void mutateAndRefresh(() =>
-                                trpc.current!.tasks.archive.mutate({
-                                  archiveState: "released",
-                                  taskId: task.id,
-                                }),
-                              )
-                            }
-                            type="button"
-                          >
-                            Released
-                          </button>
-                          <button
-                            className="danger"
-                            disabled={!snapshot.canMutate || busy}
-                            onClick={() =>
-                              void mutateAndRefresh(() =>
-                                trpc.current!.tasks.archive.mutate({
-                                  archiveState: "wont_do",
-                                  taskId: task.id,
-                                }),
-                              )
-                            }
-                            type="button"
-                          >
-                            Won&apos;t do
-                          </button>
-                          {status?.archiveState && (
-                            <button
-                              className="secondary"
-                              disabled={!snapshot.canMutate || busy}
-                              onClick={() =>
-                                void mutateAndRefresh(() =>
-                                  trpc.current!.tasks.restore.mutate({
-                                    taskId: task.id,
-                                  }),
-                                )
-                              }
-                              type="button"
-                            >
-                              Restore
-                            </button>
-                          )}
+                          <details className="task-menu">
+                            <summary>More</summary>
+                            <div className="task-menu-options">
+                              <button
+                                className="secondary"
+                                disabled={!snapshot.canMutate || busy}
+                                onClick={() =>
+                                  void mutateAndRefresh(() =>
+                                    trpc.current!.tasks.archive.mutate({
+                                      archiveState: "released",
+                                      taskId: task.id,
+                                    }),
+                                  )
+                                }
+                                type="button"
+                              >
+                                Released
+                              </button>
+                              <button
+                                className="danger"
+                                disabled={!snapshot.canMutate || busy}
+                                onClick={() =>
+                                  void mutateAndRefresh(() =>
+                                    trpc.current!.tasks.archive.mutate({
+                                      archiveState: "wont_do",
+                                      taskId: task.id,
+                                    }),
+                                  )
+                                }
+                                type="button"
+                              >
+                                Won&apos;t do
+                              </button>
+                              {status?.archiveState && (
+                                <button
+                                  className="secondary"
+                                  disabled={!snapshot.canMutate || busy}
+                                  onClick={() =>
+                                    void mutateAndRefresh(() =>
+                                      trpc.current!.tasks.restore.mutate({
+                                        taskId: task.id,
+                                      }),
+                                    )
+                                  }
+                                  type="button"
+                                >
+                                  Restore
+                                </button>
+                              )}
+                            </div>
+                          </details>
                         </div>
+                      </div>
+                      <details className="task-tracker">
+                        <summary>Link external tracker</summary>
                         <form
                           className="inline-form"
                           onSubmit={(event) => {
@@ -1088,7 +1204,7 @@ function Dashboard() {
                             Link
                           </button>
                         </form>
-                      </div>
+                      </details>
 
                       {taskDetail?.trackerLinks.length ? (
                         <div className="links" aria-label="Tracker links">
@@ -1113,55 +1229,59 @@ function Dashboard() {
                         taskDetail.dependencies.length > 0 ||
                         taskDetail.repositoryLinks.length > 0 ||
                         taskDetail.branchName) ? (
-                        <div className="task-metadata">
-                          {taskDetail.objective && (
-                            <p>
-                              <strong>Objective:</strong> {taskDetail.objective}
-                            </p>
-                          )}
-                          {taskDetail.branchName && (
-                            <p>
-                              <strong>Branch:</strong> {taskDetail.branchName}
-                            </p>
-                          )}
-                          {taskDetail.owner && (
-                            <p>
-                              <strong>Owner:</strong> {taskDetail.owner}
-                            </p>
-                          )}
-                          {taskDetail.priority && (
-                            <p>
-                              <strong>Priority:</strong> {taskDetail.priority}
-                            </p>
-                          )}
-                          {taskDetail.acceptanceCriteria.length > 0 && (
-                            <p>
-                              <strong>Acceptance:</strong>{" "}
-                              {taskDetail.acceptanceCriteria.join(" · ")}
-                            </p>
-                          )}
-                          {taskDetail.dependencies.length > 0 && (
-                            <p>
-                              <strong>Dependencies:</strong>{" "}
-                              {taskDetail.dependencies.join(" · ")}
-                            </p>
-                          )}
-                          {taskDetail.repositoryLinks.length > 0 && (
-                            <p>
-                              <strong>Repositories:</strong>{" "}
-                              {taskDetail.repositoryLinks.map((link) => (
-                                <a
-                                  href={link}
-                                  key={link}
-                                  rel="noreferrer"
-                                  target="_blank"
-                                >
-                                  {link}
-                                </a>
-                              ))}
-                            </p>
-                          )}
-                        </div>
+                        <details className="task-details">
+                          <summary>Details and planning metadata</summary>
+                          <div className="task-metadata">
+                            {taskDetail.objective && (
+                              <p>
+                                <strong>Objective:</strong>{" "}
+                                {taskDetail.objective}
+                              </p>
+                            )}
+                            {taskDetail.branchName && (
+                              <p>
+                                <strong>Branch:</strong> {taskDetail.branchName}
+                              </p>
+                            )}
+                            {taskDetail.owner && (
+                              <p>
+                                <strong>Owner:</strong> {taskDetail.owner}
+                              </p>
+                            )}
+                            {taskDetail.priority && (
+                              <p>
+                                <strong>Priority:</strong> {taskDetail.priority}
+                              </p>
+                            )}
+                            {taskDetail.acceptanceCriteria.length > 0 && (
+                              <p>
+                                <strong>Acceptance:</strong>{" "}
+                                {taskDetail.acceptanceCriteria.join(" · ")}
+                              </p>
+                            )}
+                            {taskDetail.dependencies.length > 0 && (
+                              <p>
+                                <strong>Dependencies:</strong>{" "}
+                                {taskDetail.dependencies.join(" · ")}
+                              </p>
+                            )}
+                            {taskDetail.repositoryLinks.length > 0 && (
+                              <p>
+                                <strong>Repositories:</strong>{" "}
+                                {taskDetail.repositoryLinks.map((link) => (
+                                  <a
+                                    href={link}
+                                    key={link}
+                                    rel="noreferrer"
+                                    target="_blank"
+                                  >
+                                    {link}
+                                  </a>
+                                ))}
+                              </p>
+                            )}
+                          </div>
+                        </details>
                       ) : null}
 
                       {!subtasksCollapsed && (

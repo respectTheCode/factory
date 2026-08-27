@@ -99,7 +99,7 @@ h2 {
 }
 
 .detail-heading,
-.task-heading {
+.task-card-header {
   align-items: flex-start;
   display: flex;
   gap: 12px;
@@ -217,9 +217,75 @@ textarea {
   padding: 14px;
 }
 
-.task-heading h3 {
+.task-summary {
+  min-width: 0;
+}
+
+.task-summary-heading {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-summary-heading h3 {
   font-size: 1rem;
-  margin: 0 0 6px;
+  line-height: 1.25;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-objective {
+  color: #cbd5e1;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  margin-top: 7px;
+  max-width: 760px;
+}
+
+.task-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 9px;
+}
+
+.task-preview-meta span,
+.task-next {
+  color: #94a3b8;
+  font-size: 0.75rem;
+}
+
+.task-progress {
+  appearance: none;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  display: block;
+  height: 7px;
+  margin-top: 10px;
+  max-width: 440px;
+  width: 100%;
+}
+
+.task-progress::-webkit-progress-bar {
+  background: #0f172a;
+  border-radius: 999px;
+}
+
+.task-progress::-webkit-progress-value {
+  background: #38bdf8;
+  border-radius: 999px;
+}
+
+.task-progress::-moz-progress-bar {
+  background: #38bdf8;
+  border-radius: 999px;
+}
+
+.task-next {
+  line-height: 1.4;
+  margin-top: 8px;
 }
 
 .status-pill {
@@ -267,16 +333,93 @@ textarea {
   color: #e2e8f0;
 }
 
-.quick-status {
+.task-actions {
+  align-items: flex-end;
   display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
   flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-start;
+}
+
+.task-actions > button,
+.task-menu > summary {
+  min-height: 36px;
+}
+
+.task-menu {
+  position: relative;
+}
+
+.task-menu > summary,
+.task-tracker > summary,
+.task-details > summary {
+  color: #bae6fd;
+  cursor: pointer;
+  font-size: 0.76rem;
+  list-style: none;
+}
+
+.task-menu > summary::-webkit-details-marker,
+.task-tracker > summary::-webkit-details-marker,
+.task-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-menu > summary::before,
+.task-tracker > summary::before,
+.task-details > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 5px;
+  transition: transform 120ms ease;
+}
+
+.task-menu[open] > summary::before,
+.task-tracker[open] > summary::before,
+.task-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.task-menu-options {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  display: grid;
   gap: 5px;
-  justify-content: flex-end;
+  margin-top: 5px;
+  min-width: 112px;
+  padding: 6px;
+  position: absolute;
+  right: 0;
+  z-index: 2;
+}
+
+.task-menu-options button {
+  white-space: nowrap;
+}
+
+.task-tracker,
+.task-details {
+  border-top: 1px solid #334155;
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+.task-tracker .inline-form {
+  justify-content: flex-start;
+  margin-top: 9px;
+}
+
+.task-details .task-metadata {
+  margin-top: 9px;
 }
 
 .inline-form {
+  display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  gap: 5px;
 }
 
 select {
@@ -428,10 +571,14 @@ button.danger {
 }
 
 .attention-panel {
-  align-items: start;
-  display: grid;
+  display: block;
+}
+
+.attention-header {
+  align-items: flex-start;
+  display: flex;
   gap: 18px;
-  grid-template-columns: minmax(220px, 0.55fr) minmax(0, 1fr);
+  justify-content: space-between;
 }
 
 .attention-summary {
@@ -440,6 +587,78 @@ button.danger {
   line-height: 1.45;
   margin-top: 8px;
   max-width: 280px;
+}
+
+.attention-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.attention-filters button {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 9px;
+}
+
+.attention-filters button span {
+  color: #94a3b8;
+  font-size: 0.7rem;
+}
+
+.attention-filters .filter-selected {
+  background: #0c4a6e;
+  color: #e0f2fe;
+}
+
+.attention-filters .filter-selected span {
+  color: #bae6fd;
+}
+
+.attention-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 16px;
+}
+
+.attention-list .attention-item {
+  align-items: center;
+  background: #172033;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-height: 60px;
+  padding: 9px 10px;
+}
+
+.attention-item > div:first-child {
+  min-width: 0;
+}
+
+.attention-item strong {
+  overflow-wrap: anywhere;
+}
+
+.attention-item-meta {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.attention-item-meta button {
+  min-height: 36px;
+}
+
+.attention-empty {
+  margin-top: 16px;
 }
 
 .attention-groups {
@@ -511,6 +730,32 @@ button.danger {
   font-size: 0.76rem;
   line-height: 1.5;
   margin-top: 8px;
+}
+
+.project-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.project-stat {
+  background: #172033;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  display: grid;
+  gap: 2px;
+  min-width: 92px;
+  padding: 9px 11px;
+}
+
+.project-stat strong {
+  font-size: 1rem;
+}
+
+.project-stat span {
+  color: #94a3b8;
+  font-size: 0.7rem;
 }
 
 .connection {
@@ -654,9 +899,46 @@ textarea:focus {
     max-width: none;
   }
 
-  .attention-groups {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .attention-header {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .attention-filters {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .attention-filters button {
+    justify-content: center;
+    min-height: 42px;
+  }
+
+  .attention-list {
     margin-top: 12px;
+  }
+
+  .attention-list .attention-item {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .attention-item-meta {
+    align-items: stretch;
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .attention-item-meta .status-pill,
+  .attention-item-meta small {
+    align-self: center;
+  }
+
+  .attention-item-meta button {
+    flex: 1;
+    min-height: 42px;
   }
 
   .connection {
@@ -699,9 +981,48 @@ textarea:focus {
   }
 
   .detail-heading,
-  .task-heading,
+  .task-card-header,
   .subtask {
     flex-direction: column;
+  }
+
+  .task-actions {
+    align-items: stretch;
+    flex-direction: row;
+    width: 100%;
+  }
+
+  .task-actions > button,
+  .task-actions > .task-menu {
+    flex: 1;
+  }
+
+  .task-actions > button,
+  .task-menu > summary {
+    min-height: 42px;
+  }
+
+  .task-menu > summary {
+    align-items: center;
+    background: #1e293b;
+    border-radius: 6px;
+    display: flex;
+    justify-content: center;
+    padding: 8px 11px;
+  }
+
+  .task-menu-options {
+    left: 0;
+    right: auto;
+  }
+
+  .project-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .project-stat {
+    min-width: 0;
   }
 
   .detail-heading form,
