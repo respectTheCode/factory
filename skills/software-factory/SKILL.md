@@ -13,7 +13,8 @@ running PWA and a CLI/skill can share the database without requiring a server re
 Set the database explicitly when working outside the default local database:
 
 ```bash
-FACTORY_DB=factory.sqlite
+FACTORY_CHECKOUT="${FACTORY_CHECKOUT:-/Users/agent/Projects/factory}"
+FACTORY_DB="${FACTORY_DB:-$FACTORY_CHECKOUT/factory.sqlite}"
 ```
 
 Check database integrity and persisted record counts before or after maintenance:
@@ -26,7 +27,12 @@ Common operations:
 
 ```bash
 bun run src/cli.ts project list --json --database "$FACTORY_DB"
+bun run src/cli.ts project list --git-origin-url "git@github.com:org/repository.git" \
+  --json --database "$FACTORY_DB"
 bun run src/cli.ts project attention --json --database "$FACTORY_DB"
+bun run src/cli.ts project context \
+  --git-origin-url "git@github.com:org/repository.git" \
+  --branch-name "GRA-143-preview-environments" --json --database "$FACTORY_DB"
 bun run src/cli.ts project create --name "Project name" --database "$FACTORY_DB"
 bun run src/cli.ts project create --name "Project name" \
   --git-origin-url "git@github.com:org/repository.git" --database "$FACTORY_DB"
@@ -91,14 +97,27 @@ intentionally refuses verification so an agent cannot self-approve its work.
 
 ## Agent operating loop
 
-Before choosing work, read the live Attention projection. Then inspect the Task and Subtask
-history before changing anything:
+For coding work, resolve the current checkout before reading or reporting Factory work. The CLI
+normalizes common HTTPS, SSH URL, and SCP-style Git origins. `project context` fails closed when
+the origin matches zero or multiple Projects, or when a supplied branch matches zero or multiple
+Tasks:
 
 ```bash
-bun run src/cli.ts project attention --json --database "$FACTORY_DB"
+REPO_CHECKOUT="$(git rev-parse --show-toplevel)"
+GIT_ORIGIN="$(git -C "$REPO_CHECKOUT" remote get-url origin)"
+GIT_BRANCH="$(git -C "$REPO_CHECKOUT" branch --show-current)"
+cd "$FACTORY_CHECKOUT"
+bun run src/cli.ts project context --git-origin-url "$GIT_ORIGIN" \
+  --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
+bun run src/cli.ts project attention --git-origin-url "$GIT_ORIGIN" \
+  --json --database "$FACTORY_DB"
 bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$FACTORY_DB"
 ```
+
+If the checkout is detached and `git branch --show-current` is empty, omit `--branch-name` and
+inspect the returned Project Tasks. Do not infer a Project or Task after a resolver error; ask
+Kevin to correct missing or duplicate Factory context.
 
 When work starts, submit `in_progress`. Submit `blocked` with the blocker in `--evidence`, or
 submit `complete` only when the evidence is ready for Kevin to review. Reports are observations,
@@ -108,19 +127,9 @@ status again and include the returned `report.id` in any handoff or summary.
 Tracker links can be attached through the CLI, PWA, or tRPC API. They remain references to the
 source item in Linear or Notion; Factory does not push updates to either system.
 
-For coding work, use the repository's Git origin to identify the Factory Project and the current
-branch to identify its Task when that branch name is stored on the Task. Check the current
-checkout before reporting work:
-
-```bash
-git remote get-url origin
-git branch --show-current
-bun run src/cli.ts project list --json --database "$FACTORY_DB"
-```
-
-Match the normalized origin against a project's `gitOriginUrl`, then use the matching Task's
-`branchName` and its Tracker Links to retain Linear or Notion context. Branch names are Factory
-context only; matching a Linear or Notion identifier does not update that external system.
+The resolved context includes Project Tracker Links plus matching Task planning, Subtasks, and
+Task Tracker Links. Branch names are Factory context only; matching a Linear or Notion
+identifier does not update that external system.
 
 Use `released` when the work shipped and `wont_do` when it is intentionally abandoned. These
 Archive States remain visible in the project and history, disappear from Attention, and can be

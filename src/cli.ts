@@ -132,6 +132,50 @@ function projectSummary(project: {
   };
 }
 
+function gitOriginFlag(flags: Map<string, string>): string | undefined {
+  const value = flags.get("git-origin-url") ?? flags.get("git-url");
+  if (value === undefined) return undefined;
+  if (!value.trim()) throw new Error("--git-origin-url must not be empty.");
+  return value.trim();
+}
+
+function normalizeGitOriginUrl(value: string): string {
+  const trimmed = value.trim();
+  const normalizePath = (path: string) =>
+    path.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
+
+  if (!trimmed.includes("://")) {
+    const scpStyle = /^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/.exec(trimmed);
+    if (scpStyle?.[1] && scpStyle[2]) {
+      return `${scpStyle[1].toLowerCase()}/${normalizePath(scpStyle[2])}`;
+    }
+  }
+
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol === "file:") {
+      return `file://${url.host.toLowerCase()}/${normalizePath(url.pathname)}`;
+    }
+    return `${url.host.toLowerCase()}/${normalizePath(url.pathname)}`;
+  } catch {
+    return normalizePath(trimmed);
+  }
+}
+
+function projectsMatchingGitOrigin(
+  application: ReturnType<typeof createFactoryApplication>,
+  gitOriginUrl: string,
+) {
+  const normalizedOrigin = normalizeGitOriginUrl(gitOriginUrl);
+  return application
+    .listProjects()
+    .filter(
+      (project) =>
+        project.gitOriginUrl !== undefined &&
+        normalizeGitOriginUrl(project.gitOriginUrl) === normalizedOrigin,
+    );
+}
+
 function main(args: string[]): void {
   const parsed = parseArgs(args);
   const [resource, action] = parsed.command;
@@ -196,7 +240,72 @@ function main(args: string[]): void {
   }
 
   if (resource === "project" && action === "list") {
-    output({ projects: application.listProjects().map(projectSummary) });
+    const gitOriginUrl = gitOriginFlag(parsed.flags);
+    const projects = gitOriginUrl
+      ? projectsMatchingGitOrigin(application, gitOriginUrl)
+      : application.listProjects();
+    output({ projects: projects.map(projectSummary) });
+    return;
+  }
+
+  if (resource === "project" && action === "context") {
+    const gitOriginUrl = gitOriginFlag(parsed.flags);
+    if (!gitOriginUrl) throw new Error("Missing required --git-origin-url.");
+
+    const projects = projectsMatchingGitOrigin(application, gitOriginUrl);
+    if (projects.length === 0) {
+      throw new Error(`No Factory Project matches Git origin ${gitOriginUrl}.`);
+    }
+    if (projects.length > 1) {
+      throw new Error(
+        `Git origin ${gitOriginUrl} matches multiple Factory Projects: ${projects
+          .map((project) => project.id)
+          .join(", ")}.`,
+      );
+    }
+
+    const project = projects[0];
+    if (!project) throw new Error("Factory Project resolution failed.");
+    const hierarchy = application.getProjectHierarchy(project.id);
+    const projectDetail = application.getProjectDetail(project.id);
+    const branchFlag =
+      parsed.flags.get("branch-name") ?? parsed.flags.get("branch");
+    const branchName = branchFlag?.trim();
+    if (branchFlag !== undefined && !branchName) {
+      throw new Error("--branch-name must not be empty.");
+    }
+
+    let tasks = hierarchy.tasks.map((task) => ({
+      ...application.getTaskDetail(task.id),
+      subtasks: task.subtasks,
+    }));
+    if (branchName) {
+      tasks = tasks.filter((task) => task.branchName === branchName);
+      if (tasks.length === 0) {
+        throw new Error(
+          `No Factory Task in Project ${project.id} matches branch ${branchName}.`,
+        );
+      }
+      if (tasks.length > 1) {
+        throw new Error(
+          `Branch ${branchName} matches multiple Factory Tasks in Project ${project.id}: ${tasks
+            .map((task) => task.id)
+            .join(", ")}.`,
+        );
+      }
+    }
+
+    output({
+      context: {
+        id: hierarchy.id,
+        name: hierarchy.name,
+        ...(hierarchy.gitOriginUrl
+          ? { gitOriginUrl: hierarchy.gitOriginUrl }
+          : {}),
+        trackerLinks: projectDetail.trackerLinks,
+        tasks,
+      },
+    });
     return;
   }
 
@@ -215,7 +324,23 @@ function main(args: string[]): void {
   }
 
   if (resource === "project" && action === "attention") {
-    output({ attention: application.getAttentionProjection() });
+    const gitOriginUrl = gitOriginFlag(parsed.flags);
+    const matchingProjectIds = gitOriginUrl
+      ? new Set(
+          projectsMatchingGitOrigin(application, gitOriginUrl).map(
+            (project) => project.id,
+          ),
+        )
+      : undefined;
+    output({
+      attention: application
+        .getAttentionProjection()
+        .filter(
+          (item) =>
+            matchingProjectIds === undefined ||
+            matchingProjectIds.has(item.projectId),
+        ),
+    });
     return;
   }
 
@@ -363,7 +488,7 @@ function main(args: string[]): void {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|update|list|remove|status|portfolio|attention|link, task create|update|detail|status|archive|restore|link, subtask create|report|status|archive|restore|history|verify",
+    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link, task create|update|detail|status|archive|restore|link, subtask create|report|status|archive|restore|history|verify",
   );
 }
 

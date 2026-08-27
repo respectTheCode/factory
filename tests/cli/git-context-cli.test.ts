@@ -129,4 +129,231 @@ describe("git context CLI metadata", () => {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }
   });
+
+  test("isolates project and task context across equivalent Git origin forms", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-cli-origin-context-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+
+    try {
+      const grailProjectResult = await runCli([
+        "project",
+        "create",
+        "--name",
+        "Grail",
+        "--git-origin-url",
+        "git@github.com:app-press/grail.git",
+        "--database",
+        databasePath,
+      ]);
+      const grailProject = (
+        JSON.parse(grailProjectResult.stdout) as ProjectCreateOutput
+      ).project;
+      const playlisterProjectResult = await runCli([
+        "project",
+        "create",
+        "--name",
+        "Playlister",
+        "--git-origin-url",
+        "https://github.com/app-press/playlister.git",
+        "--database",
+        databasePath,
+      ]);
+      const playlisterProject = (
+        JSON.parse(playlisterProjectResult.stdout) as ProjectCreateOutput
+      ).project;
+      await runCli([
+        "task",
+        "create",
+        "--name",
+        "Unrelated Playlister task",
+        "--project-id",
+        playlisterProject.id,
+        "--database",
+        databasePath,
+      ]);
+      const taskResult = await runCli([
+        "task",
+        "create",
+        "--name",
+        "Preview environments",
+        "--project-id",
+        grailProject.id,
+        "--branch-name",
+        "GRA-143-preview-environments",
+        "--database",
+        databasePath,
+      ]);
+      const task = (JSON.parse(taskResult.stdout) as TaskCreateOutput).task;
+      await runCli([
+        "subtask",
+        "create",
+        "--name",
+        "Verify the preview",
+        "--task-id",
+        task.id,
+        "--database",
+        databasePath,
+      ]);
+      await runCli([
+        "task",
+        "link",
+        "--task-id",
+        task.id,
+        "--system",
+        "linear",
+        "--stable-id",
+        "GRA-143",
+        "--url",
+        "https://linear.app/playlister/issue/GRA-143",
+        "--database",
+        databasePath,
+      ]);
+
+      const listResult = await runCli([
+        "project",
+        "list",
+        "--git-origin-url",
+        "https://github.com/app-press/grail/",
+        "--json",
+        "--database",
+        databasePath,
+      ]);
+      expect(JSON.parse(listResult.stdout)).toEqual({
+        schemaVersion: 1,
+        projects: [grailProject],
+      });
+
+      const contextResult = await runCli([
+        "project",
+        "context",
+        "--git-origin-url",
+        "ssh://git@github.com/app-press/grail.git",
+        "--branch-name",
+        "GRA-143-preview-environments",
+        "--json",
+        "--database",
+        databasePath,
+      ]);
+      expect(contextResult.exitCode).toBe(0);
+      expect(JSON.parse(contextResult.stdout)).toMatchObject({
+        schemaVersion: 1,
+        context: {
+          id: grailProject.id,
+          gitOriginUrl: "git@github.com:app-press/grail.git",
+          tasks: [
+            {
+              id: task.id,
+              branchName: "GRA-143-preview-environments",
+              subtasks: [{ name: "Verify the preview" }],
+              trackerLinks: [{ stableId: "GRA-143", system: "linear" }],
+            },
+          ],
+        },
+      });
+
+      const attentionResult = await runCli([
+        "project",
+        "attention",
+        "--git-origin-url",
+        "git@github.com:app-press/grail.git",
+        "--json",
+        "--database",
+        databasePath,
+      ]);
+      expect(JSON.parse(attentionResult.stdout)).toEqual({
+        schemaVersion: 1,
+        attention: [
+          {
+            projectId: grailProject.id,
+            projectName: "Grail",
+            state: "planned",
+            taskId: task.id,
+            taskName: "Preview environments",
+          },
+        ],
+      });
+
+      await runCli([
+        "task",
+        "create",
+        "--name",
+        "Duplicate branch context",
+        "--project-id",
+        grailProject.id,
+        "--branch-name",
+        "GRA-143-preview-environments",
+        "--database",
+        databasePath,
+      ]);
+      const ambiguousBranchResult = await runCli([
+        "project",
+        "context",
+        "--git-origin-url",
+        "git@github.com:app-press/grail.git",
+        "--branch-name",
+        "GRA-143-preview-environments",
+        "--database",
+        databasePath,
+      ]);
+      expect(ambiguousBranchResult.exitCode).toBe(1);
+      expect(ambiguousBranchResult.stderr).toContain(
+        "matches multiple Factory Tasks",
+      );
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test("fails closed when a Git origin does not resolve uniquely", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-cli-origin-ambiguity-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+
+    try {
+      const missingResult = await runCli([
+        "project",
+        "context",
+        "--git-origin-url",
+        "https://github.com/app-press/missing.git",
+        "--database",
+        databasePath,
+      ]);
+      expect(missingResult.exitCode).toBe(1);
+      expect(missingResult.stderr).toContain("No Factory Project matches");
+
+      for (const origin of [
+        "git@github.com:app-press/grail.git",
+        "https://github.com/app-press/grail",
+      ]) {
+        await runCli([
+          "project",
+          "create",
+          "--name",
+          `Grail ${origin}`,
+          "--git-origin-url",
+          origin,
+          "--database",
+          databasePath,
+        ]);
+      }
+
+      const ambiguousResult = await runCli([
+        "project",
+        "context",
+        "--git-origin-url",
+        "ssh://git@github.com/app-press/grail.git",
+        "--database",
+        databasePath,
+      ]);
+      expect(ambiguousResult.exitCode).toBe(1);
+      expect(ambiguousResult.stderr).toContain(
+        "matches multiple Factory Projects",
+      );
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
 });
