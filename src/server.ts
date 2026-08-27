@@ -357,6 +357,10 @@ export function createFactoryServer({
 }
 
 function getStaticFile(pathname: string): string | null {
+  if (pathname.startsWith("/projects/")) {
+    return "src/web/index.html";
+  }
+
   const files: Record<string, string> = {
     "/": "src/web/index.html",
     "/icon.svg": "src/web/icon.svg",

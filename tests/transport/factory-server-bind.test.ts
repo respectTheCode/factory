@@ -16,4 +16,19 @@ describe("Factory server bind address", () => {
       server.stop();
     }
   });
+
+  test("serves the PWA shell for project routes so reloads can restore the view", async () => {
+    const server = createFactoryServer({
+      databasePath: ":memory:",
+      port: 0,
+    });
+
+    try {
+      const response = await fetch(new URL("/projects/project-1", server.url));
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("Software Factory");
+    } finally {
+      server.stop();
+    }
+  });
 });

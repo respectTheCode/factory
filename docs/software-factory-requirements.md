@@ -130,6 +130,9 @@ record. A Status Report does not replace Kevin's Verification.
 - **FR-043** — Project settings, external Project Tracker Links, and new-Task planning metadata
   must live on a dedicated Project edit page. Text inputs, text areas, and dropdowns must use
   the dark dashboard theme rather than browser light-mode defaults.
+- **FR-045** — Dashboard navigation must use browser-addressable Project routes. Selecting Home,
+  a Project, or Project Settings must update the browser history; Back, Forward, and a direct
+  reload of a Project route must restore the corresponding view.
 
 ## 4. V1 constraints and non-goals
 

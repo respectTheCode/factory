@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  dashboardPath,
+  dashboardViewFromPath,
   editProjectView,
   homeView,
   projectView,
@@ -23,5 +25,26 @@ describe("dashboard navigation", () => {
       projectId: "project-1",
       screen: "edit_project",
     });
+  });
+
+  test("maps browser paths to dashboard views", () => {
+    expect(dashboardViewFromPath("/")).toEqual(homeView());
+    expect(dashboardViewFromPath("/projects/project-1")).toEqual(
+      projectView("project-1"),
+    );
+    expect(dashboardViewFromPath("/projects/project-1/edit")).toEqual(
+      editProjectView("project-1"),
+    );
+    expect(dashboardViewFromPath("/not-a-dashboard-route")).toEqual(homeView());
+  });
+
+  test("serializes dashboard views to reloadable browser paths", () => {
+    expect(dashboardPath(homeView())).toBe("/");
+    expect(dashboardPath(projectView("project 1"))).toBe(
+      "/projects/project%201",
+    );
+    expect(dashboardPath(editProjectView("project 1"))).toBe(
+      "/projects/project%201/edit",
+    );
   });
 });

@@ -5,6 +5,8 @@ import { createRoot } from "react-dom/client";
 import type { FactoryRouter } from "../server";
 import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
 import {
+  dashboardPath,
+  dashboardViewFromPath,
   editProjectView,
   homeView,
   projectView,
@@ -136,7 +138,9 @@ function Dashboard() {
     connection.snapshot(),
   );
   const [projectName, setProjectName] = useState("");
-  const [view, setView] = useState<DashboardView>(() => homeView());
+  const [view, setView] = useState<DashboardView>(() =>
+    dashboardViewFromPath(window.location.pathname),
+  );
   const [taskName, setTaskName] = useState("");
   const [taskBranchName, setTaskBranchName] = useState("");
   const [taskObjective, setTaskObjective] = useState("");
@@ -206,7 +210,6 @@ function Dashboard() {
         setTaskDetails({});
         setTaskStatuses({});
         setSubtaskHistories({});
-        setView(homeView());
         setSnapshot(connection.snapshot());
       },
       onOpen: () => {
@@ -281,6 +284,19 @@ function Dashboard() {
     setProjectGitOriginInput(projectDetail?.gitOriginUrl ?? "");
   }, [projectDetail?.gitOriginUrl, projectDetail?.id]);
 
+  const stopProjectSubscription = () => {
+    subscriptionCleanup.current?.();
+    subscriptionCleanup.current = null;
+  };
+
+  const navigateToView = (nextView: DashboardView) => {
+    const nextPath = dashboardPath(nextView);
+    if (window.location.pathname !== nextPath || window.location.search) {
+      window.history.pushState({}, "", nextPath);
+    }
+    setView(nextView);
+  };
+
   const mutateAndRefresh = async (action: () => Promise<unknown>) => {
     if (!snapshot.canMutate || !projectDetail) return;
     setBusy(true);
@@ -292,10 +308,8 @@ function Dashboard() {
     }
   };
 
-  const openProject = async (projectId: string) => {
-    subscriptionCleanup.current?.();
-    subscriptionCleanup.current = null;
-    setView(projectView(projectId));
+  const loadProject = async (projectId: string) => {
+    stopProjectSubscription();
     await refreshProject(projectId);
     const subscription = trpc.current?.projects.updates.subscribe(
       { projectId },
@@ -310,15 +324,43 @@ function Dashboard() {
       : null;
   };
 
+  const openProject = (projectId: string) => {
+    navigateToView(projectView(projectId));
+    void loadProject(projectId);
+  };
+
   const openHome = () => {
-    subscriptionCleanup.current?.();
-    subscriptionCleanup.current = null;
-    setView(homeView());
+    stopProjectSubscription();
+    navigateToView(homeView());
   };
 
   const openProjectEditor = (projectId: string) => {
-    setView(editProjectView(projectId));
+    navigateToView(editProjectView(projectId));
   };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const nextView = dashboardViewFromPath(window.location.pathname);
+      setView(nextView);
+      if (nextView.screen === "home") {
+        stopProjectSubscription();
+        return;
+      }
+      void loadProject(nextView.projectId);
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (snapshot.state !== "connected") return;
+    const nextView = dashboardViewFromPath(window.location.pathname);
+    setView(nextView);
+    if (nextView.screen !== "home") {
+      void loadProject(nextView.projectId);
+    }
+  }, [snapshot.state]);
 
   const lines = (value: string) =>
     value
@@ -571,7 +613,7 @@ function Dashboard() {
               <div className="detail-actions">
                 <button
                   className="secondary"
-                  onClick={() => setView(projectView(projectDetail.id))}
+                  onClick={() => openProject(projectDetail.id)}
                   type="button"
                 >
                   Back to tasks
