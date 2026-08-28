@@ -148,6 +148,18 @@ function createRouter(
           projectUpdates.publishAll();
           return subtask;
         }),
+      remove: trpc.procedure
+        .input(
+          z.object({
+            confirm: z.literal(true),
+            subtaskId: z.string().min(1),
+          }),
+        )
+        .mutation(({ input }) => {
+          application.removeSubtask(input.subtaskId);
+          projectUpdates.publishAll();
+          return { subtaskId: input.subtaskId };
+        }),
       report: trpc.procedure
         .input(
           z.object({
@@ -232,6 +244,18 @@ function createRouter(
           const task = application.createTask(input);
           projectUpdates.publish(input.projectId);
           return task;
+        }),
+      remove: trpc.procedure
+        .input(
+          z.object({
+            confirm: z.literal(true),
+            taskId: z.string().min(1),
+          }),
+        )
+        .mutation(({ input }) => {
+          application.removeTask(input.taskId);
+          projectUpdates.publishAll();
+          return { taskId: input.taskId };
         }),
       status: trpc.procedure
         .input(z.object({ taskId: z.string().min(1) }))

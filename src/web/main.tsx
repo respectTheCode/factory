@@ -15,6 +15,7 @@ import {
 import { createProjectAndRefresh } from "./project-actions";
 import {
   filterAttention,
+  filterArchivedTasks,
   summarizeTaskProgress,
   type AttentionFilter,
 } from "./task-summary";
@@ -185,6 +186,7 @@ function Dashboard() {
   const [attention, setAttention] = useState<AttentionItem[] | null>(null);
   const [attentionFilter, setAttentionFilter] =
     useState<AttentionFilter>("all");
+  const [showArchivedTasks, setShowArchivedTasks] = useState(false);
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(
     null,
   );
@@ -291,6 +293,10 @@ function Dashboard() {
     setProjectGitOriginInput(projectDetail?.gitOriginUrl ?? "");
   }, [projectDetail?.gitOriginUrl, projectDetail?.id]);
 
+  useEffect(() => {
+    setShowArchivedTasks(false);
+  }, [projectDetail?.id]);
+
   const stopProjectSubscription = () => {
     subscriptionCleanup.current?.();
     subscriptionCleanup.current = null;
@@ -378,6 +384,13 @@ function Dashboard() {
   const visibleAttention = attention
     ? filterAttention(attention, attentionFilter)
     : null;
+  const visibleProjectTasks = projectDetail
+    ? filterArchivedTasks(projectDetail.tasks, showArchivedTasks)
+    : [];
+  const archivedTaskCount = projectDetail
+    ? projectDetail.tasks.filter((task) => task.archiveState !== undefined)
+        .length
+    : 0;
 
   const loadSubtaskHistory = async (subtaskId: string) => {
     const client = trpc.current;
@@ -926,6 +939,17 @@ function Dashboard() {
                 >
                   Edit project
                 </button>
+                <button
+                  aria-label={`${showArchivedTasks ? "Hide" : "Show"} archived tasks`}
+                  aria-pressed={showArchivedTasks}
+                  className="secondary"
+                  onClick={() => setShowArchivedTasks((current) => !current)}
+                  type="button"
+                >
+                  {showArchivedTasks
+                    ? "Hide archived"
+                    : `Show archived (${archivedTaskCount})`}
+                </button>
               </div>
             </div>
 
@@ -973,9 +997,23 @@ function Dashboard() {
                   Add a task
                 </button>
               </div>
+            ) : visibleProjectTasks.length === 0 ? (
+              <div className="empty">
+                <p>
+                  All tasks are archived. Show archived tasks to review or
+                  restore them.
+                </p>
+                <button
+                  className="secondary"
+                  onClick={() => setShowArchivedTasks(true)}
+                  type="button"
+                >
+                  Show archived tasks
+                </button>
+              </div>
             ) : (
               <div className="task-list">
-                {projectDetail.tasks.map((task) => {
+                {visibleProjectTasks.map((task) => {
                   const status = taskStatuses[task.id];
                   const taskDetail = taskDetails[task.id];
                   const linkInput = projectLinkInputs[task.id] ?? {
@@ -1107,6 +1145,27 @@ function Dashboard() {
                                   Restore
                                 </button>
                               )}
+                              <button
+                                className="danger"
+                                disabled={!snapshot.canMutate || busy}
+                                onClick={() => {
+                                  if (
+                                    !window.confirm(
+                                      `Delete task “${task.name}” and all of its subtasks? This cannot be undone.`,
+                                    )
+                                  )
+                                    return;
+                                  void mutateAndRefresh(() =>
+                                    trpc.current!.tasks.remove.mutate({
+                                      confirm: true,
+                                      taskId: task.id,
+                                    }),
+                                  );
+                                }}
+                                type="button"
+                              >
+                                Delete task
+                              </button>
                             </div>
                           </details>
                         </div>
@@ -1533,6 +1592,27 @@ function Dashboard() {
                                           </button>
                                         </>
                                       )}
+                                    <button
+                                      className="danger"
+                                      disabled={!snapshot.canMutate || busy}
+                                      onClick={() => {
+                                        if (
+                                          !window.confirm(
+                                            `Delete subtask “${subtask.name}”? This cannot be undone.`,
+                                          )
+                                        )
+                                          return;
+                                        void mutateAndRefresh(() =>
+                                          trpc.current!.subtasks.remove.mutate({
+                                            confirm: true,
+                                            subtaskId: subtask.id,
+                                          }),
+                                        );
+                                      }}
+                                      type="button"
+                                    >
+                                      Delete subtask
+                                    </button>
                                   </div>
                                   {history && (
                                     <div className="history">
@@ -1664,5 +1744,5 @@ function formatWorkState(state: string): string {
 createRoot(document.getElementById("root")!).render(<Dashboard />);
 
 if ("serviceWorker" in navigator) {
-  void navigator.serviceWorker.register("/service-worker.js?v=6");
+  void navigator.serviceWorker.register("/service-worker.js?v=7");
 }

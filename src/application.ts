@@ -286,6 +286,53 @@ export class FactoryApplication {
     this.save();
   }
 
+  removeTask(taskId: string): void {
+    this.refreshFromPersistence();
+    if (!this.tasks.some((task) => task.id === taskId)) {
+      throw new Error(`Task ${taskId} does not exist.`);
+    }
+
+    const subtaskIds = new Set(
+      this.subtasks
+        .filter((subtask) => subtask.taskId === taskId)
+        .map((subtask) => subtask.id),
+    );
+    const reportIds = new Set(
+      this.statusReports
+        .filter((report) => subtaskIds.has(report.subtaskId))
+        .map((report) => report.id),
+    );
+
+    removeMatching(this.tasks, (task) => task.id === taskId);
+    removeMatching(this.subtasks, (subtask) => subtaskIds.has(subtask.id));
+    removeMatching(this.statusReports, (report) => reportIds.has(report.id));
+    removeMatching(this.verifications, (verification) =>
+      reportIds.has(verification.reportId),
+    );
+    removeMatching(this.trackerLinks, (link) => link.taskId === taskId);
+    this.save();
+  }
+
+  removeSubtask(subtaskId: string): void {
+    this.refreshFromPersistence();
+    if (!this.subtasks.some((subtask) => subtask.id === subtaskId)) {
+      throw new Error(`Subtask ${subtaskId} does not exist.`);
+    }
+
+    const reportIds = new Set(
+      this.statusReports
+        .filter((report) => report.subtaskId === subtaskId)
+        .map((report) => report.id),
+    );
+
+    removeMatching(this.subtasks, (subtask) => subtask.id === subtaskId);
+    removeMatching(this.statusReports, (report) => reportIds.has(report.id));
+    removeMatching(this.verifications, (verification) =>
+      reportIds.has(verification.reportId),
+    );
+    this.save();
+  }
+
   createTask({
     branchName,
     name,

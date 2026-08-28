@@ -34,6 +34,15 @@ export type AttentionSummary = {
   taskId: string;
 };
 
+export function filterArchivedTasks<T extends { archiveState?: string }>(
+  items: T[],
+  includeArchived: boolean,
+): T[] {
+  return includeArchived
+    ? items
+    : items.filter((item) => item.archiveState === undefined);
+}
+
 export function filterAttention<T extends AttentionSummary>(
   items: T[],
   filter: AttentionFilter,

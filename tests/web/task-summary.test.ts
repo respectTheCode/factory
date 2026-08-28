@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   filterAttention,
+  filterArchivedTasks,
   summarizeTaskProgress,
 } from "../../src/web/task-summary";
 
@@ -74,5 +75,18 @@ describe("task presentation summaries", () => {
       filterAttention(items, "planned").map((item) => item.taskId),
     ).toEqual(["planned", "planned-2"]);
     expect(filterAttention(items, "all")).toEqual(items);
+  });
+
+  test("hides released and wont-do tasks until archived work is requested", () => {
+    const items = [
+      { id: "active", name: "Current work" },
+      { archiveState: "released" as const, id: "released", name: "Shipped" },
+      { archiveState: "wont_do" as const, id: "wont-do", name: "Dropped" },
+    ];
+
+    expect(filterArchivedTasks(items, false).map((item) => item.id)).toEqual([
+      "active",
+    ]);
+    expect(filterArchivedTasks(items, true)).toEqual(items);
   });
 });

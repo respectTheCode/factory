@@ -8,6 +8,7 @@ import { createFactoryServer } from "../../src/server";
 
 type RawTRPCResponse = {
   id: number;
+  error?: unknown;
   result?: {
     data?: unknown;
     type?: string;
@@ -262,6 +263,106 @@ describe("Factory archive state WebSocket transport", () => {
       expect(
         (restoredStatus.subtasks as Array<Record<string, unknown>>)[0],
       ).not.toHaveProperty("archiveState");
+    } finally {
+      socket.close();
+      server.stop();
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test("requires explicit confirmation before deleting tasks or subtasks", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-removal-transport-"),
+    );
+    const server = createFactoryServer({
+      databasePath: join(temporaryDirectory, "factory.sqlite"),
+      port: 0,
+    });
+    const socket = await openSocket(server);
+
+    try {
+      const project = responseData(
+        await sendRawTRPCRequest(socket, {
+          id: 31,
+          method: "mutation",
+          params: { input: { name: "Factory V1" }, path: "projects.create" },
+        }),
+      );
+      const task = responseData(
+        await sendRawTRPCRequest(socket, {
+          id: 32,
+          method: "mutation",
+          params: {
+            input: { name: "Remove this task", projectId: project.id },
+            path: "tasks.create",
+          },
+        }),
+      );
+      const siblingTask = responseData(
+        await sendRawTRPCRequest(socket, {
+          id: 33,
+          method: "mutation",
+          params: {
+            input: { name: "Keep this task", projectId: project.id },
+            path: "tasks.create",
+          },
+        }),
+      );
+      const subtask = responseData(
+        await sendRawTRPCRequest(socket, {
+          id: 34,
+          method: "mutation",
+          params: {
+            input: { name: "Remove this subtask", taskId: siblingTask.id },
+            path: "subtasks.create",
+          },
+        }),
+      );
+
+      const unconfirmedTask = await sendRawTRPCRequest(socket, {
+        id: 35,
+        method: "mutation",
+        params: { input: { taskId: task.id }, path: "tasks.remove" },
+      });
+      expect(unconfirmedTask.error).toBeDefined();
+
+      const removedTask = await sendRawTRPCRequest(socket, {
+        id: 36,
+        method: "mutation",
+        params: {
+          input: { confirm: true, taskId: task.id },
+          path: "tasks.remove",
+        },
+      });
+      expect(removedTask.result?.type).toBe("data");
+      expect(responseData(removedTask)).toEqual({ taskId: task.id });
+
+      const removedSubtask = await sendRawTRPCRequest(socket, {
+        id: 37,
+        method: "mutation",
+        params: {
+          input: { confirm: true, subtaskId: subtask.id },
+          path: "subtasks.remove",
+        },
+      });
+      expect(removedSubtask.result?.type).toBe("data");
+      expect(responseData(removedSubtask)).toEqual({
+        subtaskId: subtask.id,
+      });
+
+      const remainingHierarchy = responseData(
+        await sendRawTRPCRequest(socket, {
+          id: 38,
+          method: "query",
+          params: {
+            input: { projectId: project.id },
+            path: "projects.detail",
+          },
+        }),
+      );
+      expect(remainingHierarchy.tasks).toEqual([
+        expect.objectContaining({ id: siblingTask.id, subtasks: [] }),
+      ]);
     } finally {
       socket.close();
       server.stop();
