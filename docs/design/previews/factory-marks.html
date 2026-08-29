@@ -18,18 +18,23 @@
   }
   * { box-sizing:border-box; margin:0; }
   body { background:var(--canvas); color:var(--ink); font:400 14px/1.5 var(--sans); padding:24px 24px 64px; }
+  body::before {
+    content:""; position:fixed; inset:0; pointer-events:none;
+    background:radial-gradient(140% 110% at 50% 20%, transparent 50%, rgba(0,0,0,.40) 100%);
+  }
   body::after {
     content:""; position:fixed; inset:0; pointer-events:none; opacity:.08;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
   }
-  main { max-width:1080px; margin:0 auto; }
+  @media (prefers-contrast: more) { body::before, body::after { display:none; } }
+  main { max-width:1080px; margin:0 auto; position:relative; }
   .eyebrow { font:700 10px/1 var(--sans); letter-spacing:.18em; text-transform:uppercase; color:var(--ink-dim); margin-bottom:16px; }
   section { border-bottom:1px solid var(--rule); padding:28px 0; }
   .micro { font:400 11px/1.4 var(--mono); color:var(--ink-dim); }
   .note { font:400 13px/1.5 var(--sans); color:var(--ink-dim); max-width:64ch; margin-top:12px; }
   .strip { display:flex; flex-wrap:wrap; gap:24px; align-items:flex-end; }
   .cell { display:flex; flex-direction:column; gap:8px; align-items:center; }
-  .plate { background:var(--panel); border:1px solid var(--rule); border-radius:10px; padding:20px; display:flex; align-items:center; justify-content:center; }
+  .plate { background:var(--panel); border:1px solid var(--rule); border-radius:10px; padding:20px; display:flex; align-items:center; justify-content:center; box-shadow:inset 0 1px 0 rgba(255,255,255,.04); }
   .wordmark { font:700 15px/1 var(--sans); letter-spacing:.18em; }
   .lockup { display:inline-flex; align-items:center; gap:10px; }
   ul.rules { padding-left:18px; display:grid; gap:6px; max-width:70ch; font-size:13px; }
@@ -37,67 +42,111 @@
 </style>
 </head>
 <body>
+<!-- shared defs for the dimensional rendition (24-grid filter values) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="mkBar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F6F2EA"/><stop offset="1" stop-color="#CEC6B8"/>
+    </linearGradient>
+    <linearGradient id="mkLed" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#B4B8E4"/><stop offset="1" stop-color="#7F84B8"/>
+    </linearGradient>
+    <filter id="mkShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="1" stdDeviation="1.25" flood-color="#000" flood-opacity="0.5"/>
+    </filter>
+    <filter id="mkGlow" x="-120%" y="-120%" width="340%" height="340%">
+      <feDropShadow dx="0" dy="0" stdDeviation="1.5" flood-color="#9499CB" flood-opacity="0.9"/>
+    </filter>
+  </defs>
+</svg>
 <main>
 
 <header style="padding-bottom:16px">
   <div class="eyebrow" style="margin-bottom:6px">Factory · mark study</div>
   <div style="font:600 20px/1.3 var(--sans)">The Countersigned F</div>
-  <p class="note">An F built as ledger records on a spine — a full top bar and a shorter middle bar bound to a vertical spine — with a detached square, the countersign slot, floating beside the middle bar, right-aligned to the top bar's edge. It reads F first, ledger second. Family grammar: like Forge's tally square and Watchtower's health bay, the mark miniaturizes the product's core semantic, and exactly one element may carry color.</p>
+  <p class="note">An F built as ledger records on a spine — a full top bar and a shorter middle bar bound to a vertical spine — with a detached square, the countersign slot, beside the middle bar. The mark is <strong style="color:var(--ink)">dimensional</strong>: stamped raised metal with one lit LED chip. It reads F first, ledger second. Family grammar: like Forge's tally square and Watchtower's health bay, the mark miniaturizes the product's core semantic, and exactly one element may carry color — here it also emits the only light.</p>
 </header>
 
 <section>
-  <div class="eyebrow">01 · Canonical 24px form</div>
+  <div class="eyebrow">01 · The mark — dimensional, ≥32px</div>
   <div class="strip">
     <div class="cell">
       <div class="plate">
-        <svg width="96" height="96" viewBox="0 0 24 24" fill="none" role="img" aria-label="Factory mark, static">
+        <svg width="96" height="96" viewBox="0 0 24 24" fill="none" role="img" aria-label="Factory mark">
+          <g filter="url(#mkShadow)">
+            <g fill="#8A8172">
+              <rect x="4.5" y="3.75" width="15" height="3.5" rx="0.6"/>
+              <rect x="4.5" y="3.75" width="3" height="18" rx="0.6"/>
+              <rect x="4.5" y="11.25" width="9" height="3.5" rx="0.6"/>
+            </g>
+            <g fill="url(#mkBar)">
+              <rect x="4.5" y="3" width="15" height="3.5" rx="0.6"/>
+              <rect x="4.5" y="3" width="3" height="18" rx="0.6"/>
+              <rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6"/>
+            </g>
+          </g>
+          <rect x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="url(#mkLed)" filter="url(#mkGlow)"/>
+        </svg>
+      </div>
+      <span class="micro">96 · shown 4×</span>
+    </div>
+    <div class="cell">
+      <div class="plate">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" role="img" aria-label="Factory mark, 48px">
+          <g filter="url(#mkShadow)">
+            <g fill="#8A8172">
+              <rect x="4.5" y="3.75" width="15" height="3.5" rx="0.6"/>
+              <rect x="4.5" y="3.75" width="3" height="18" rx="0.6"/>
+              <rect x="4.5" y="11.25" width="9" height="3.5" rx="0.6"/>
+            </g>
+            <g fill="url(#mkBar)">
+              <rect x="4.5" y="3" width="15" height="3.5" rx="0.6"/>
+              <rect x="4.5" y="3" width="3" height="18" rx="0.6"/>
+              <rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6"/>
+            </g>
+          </g>
+          <rect x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="url(#mkLed)" filter="url(#mkGlow)"/>
+        </svg>
+      </div>
+      <span class="micro">48</span>
+    </div>
+    <div class="cell">
+      <div class="plate">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" role="img" aria-label="Factory mark, 32px">
+          <g filter="url(#mkShadow)">
+            <g fill="#8A8172">
+              <rect x="4.5" y="3.75" width="15" height="3.5" rx="0.6"/>
+              <rect x="4.5" y="3.75" width="3" height="18" rx="0.6"/>
+              <rect x="4.5" y="11.25" width="9" height="3.5" rx="0.6"/>
+            </g>
+            <g fill="url(#mkBar)">
+              <rect x="4.5" y="3" width="15" height="3.5" rx="0.6"/>
+              <rect x="4.5" y="3" width="3" height="18" rx="0.6"/>
+              <rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6"/>
+            </g>
+          </g>
+          <rect x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="url(#mkLed)" filter="url(#mkGlow)"/>
+        </svg>
+      </div>
+      <span class="micro">32 · minimum for dimensional</span>
+    </div>
+  </div>
+  <p class="note">Stamped raised metal: warm-ink gradient bars (#F6F2EA → #CEC6B8) over a dark extrusion (#8A8172, +0.75 in the 24 grid), soft drop shadow onto the surface. The chip is a lit lavender LED (#B4B8E4 → #7F84B8, #9499CB halo). The chip is the only element that emits light; the F reflects it. Geometry (24 grid): top bar x 4.5→19.5 · h 3.5; spine x 4.5→7.5, y 3→21; middle bar x 4.5→13.5 · h 3.5 at y 10.5; chip 3.5×3.5 at x 16, right-aligned to the top bar.</p>
+</section>
+
+<section>
+  <div class="eyebrow">02 · Flat rendition — chrome ≤24px, print, greyscale</div>
+  <div class="strip">
+    <div class="cell">
+      <div class="plate">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" role="img" aria-label="Factory mark, flat 24px">
           <rect x="4.5" y="3" width="15" height="3.5" rx="0.6" fill="currentColor"/>
           <rect x="4.5" y="3" width="3" height="18" rx="0.6" fill="currentColor"/>
           <rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6" fill="currentColor"/>
           <rect x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="var(--accent)" style="filter:drop-shadow(0 0 1.2px rgba(148,153,203,.75))"/>
         </svg>
       </div>
-      <span class="micro">24 grid · shown 4× · flat + chip glow</span>
-    </div>
-    <div class="cell">
-      <div class="plate">
-        <svg width="96" height="96" viewBox="0 0 24 24" fill="none" role="img" aria-label="Factory mark, dimensional">
-          <defs>
-            <linearGradient id="mbar" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#F6F2EA"/><stop offset="1" stop-color="#CEC6B8"/>
-            </linearGradient>
-            <linearGradient id="mled" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#B4B8E4"/><stop offset="1" stop-color="#7F84B8"/>
-            </linearGradient>
-            <filter id="mshadow" x="-30%" y="-30%" width="160%" height="160%">
-              <feDropShadow dx="0" dy="0.7" stdDeviation="0.9" flood-color="#000" flood-opacity="0.5"/>
-            </filter>
-            <filter id="mglow" x="-120%" y="-120%" width="340%" height="340%">
-              <feDropShadow dx="0" dy="0" stdDeviation="1.2" flood-color="#9499CB" flood-opacity="0.9"/>
-            </filter>
-          </defs>
-          <g filter="url(#mshadow)">
-            <g fill="#8A8172">
-              <rect x="4.5" y="3.6" width="15" height="3.5" rx="0.6"/>
-              <rect x="4.5" y="3.6" width="3" height="18" rx="0.6"/>
-              <rect x="4.5" y="11.1" width="9" height="3.5" rx="0.6"/>
-            </g>
-            <g fill="url(#mbar)">
-              <rect x="4.5" y="3" width="15" height="3.5" rx="0.6"/>
-              <rect x="4.5" y="3" width="3" height="18" rx="0.6"/>
-              <rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6"/>
-            </g>
-          </g>
-          <rect x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="url(#mled)" filter="url(#mglow)"/>
-        </svg>
-      </div>
-      <span class="micro">dimensional · ≥32px · stamped metal, lit LED</span>
-    </div>
-    <div class="cell">
-      <div class="plate" style="gap:16px">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="4.5" y="3" width="15" height="3.5" rx="0.6" fill="currentColor"/><rect x="4.5" y="3" width="3" height="18" rx="0.6" fill="currentColor"/><rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6" fill="currentColor"/><rect x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="var(--accent)"/></svg>
-      </div>
-      <span class="micro">24px actual</span>
+      <span class="micro">24 · flat + chip glow</span>
     </div>
     <div class="cell">
       <div class="plate">
@@ -108,14 +157,14 @@
           <rect x="16" y="10.5" width="4" height="4" rx="1.1" fill="var(--accent)"/>
         </svg>
       </div>
-      <span class="micro">16px simplified · thicker bars</span>
+      <span class="micro">16 · simplified · thicker bars · no glow</span>
     </div>
   </div>
-  <p class="note">Geometry (24 grid): top bar x 4.5→19.5 · h 3.5; spine x 4.5→7.5, y 3→21; middle bar x 4.5→13.5 · h 3.5 at y 10.5; chip 3.5×3.5 at x 16, right-aligned to the top bar, 2.5-unit gap from the middle bar. Bars are currentColor; only the chip is colored.</p>
+  <p class="note">Same geometry, currentColor bars, no gradients or shadows — one asset serves chrome, docs, and print. The chip may carry a small glow at 24px; below that it stays flat (glow turns to mud at favicon sizes). In greyscale the whole mark flattens to the flat rendition.</p>
 </section>
 
 <section>
-  <div class="eyebrow">02 · The chip is live — favicon states</div>
+  <div class="eyebrow">03 · The chip is live — favicon states (flat)</div>
   <div class="strip">
     <div class="cell">
       <div class="plate"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" role="img" aria-label="Factory — nothing awaiting verification"><rect x="4.5" y="3" width="15" height="3.5" rx="0.6" fill="currentColor"/><rect x="4.5" y="3" width="3" height="18" rx="0.6" fill="currentColor"/><rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6" fill="currentColor"/><rect x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="var(--sig-ok)"/></svg></div>
@@ -134,22 +183,36 @@
       <span class="micro">STATIC · accent</span>
     </div>
   </div>
-  <p class="note">Live favicon: amber when the attention projection has items, green when clear, faint when disconnected. Static contexts (README, app icon, login, exports) always use accent lavender. Ship one favicon file per state and swap the &lt;link&gt;; never recolor via canvas. The aria-label is the text twin. Only the chip ever takes color — a second colored element would read as a meter.</p>
+  <p class="note">Favicons always use the flat rendition — dimensional detail and glow don't survive 16–32px tab strips. Live favicon: amber when the attention projection has items, green when clear, faint when disconnected; static contexts use accent lavender. Ship one favicon file per state and swap the &lt;link&gt;; never recolor via canvas. The aria-label is the text twin. Only the chip ever takes color — a second colored element would read as a meter.</p>
 </section>
 
 <section>
-  <div class="eyebrow">03 · Lockup</div>
+  <div class="eyebrow">04 · Lockup</div>
   <div class="plate" style="display:inline-flex">
     <span class="lockup">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="4.5" y="3" width="15" height="3.5" rx="0.6" fill="currentColor"/><rect x="4.5" y="3" width="3" height="18" rx="0.6" fill="currentColor"/><rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6" fill="currentColor"/><rect x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="var(--accent)"/></svg>
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" role="img" aria-label="Factory mark">
+        <g filter="url(#mkShadow)">
+          <g fill="#8A8172">
+            <rect x="4.5" y="3.75" width="15" height="3.5" rx="0.6"/>
+            <rect x="4.5" y="3.75" width="3" height="18" rx="0.6"/>
+            <rect x="4.5" y="11.25" width="9" height="3.5" rx="0.6"/>
+          </g>
+          <g fill="url(#mkBar)">
+            <rect x="4.5" y="3" width="15" height="3.5" rx="0.6"/>
+            <rect x="4.5" y="3" width="3" height="18" rx="0.6"/>
+            <rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6"/>
+          </g>
+        </g>
+        <rect x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="url(#mkLed)" filter="url(#mkGlow)"/>
+      </svg>
       <span class="wordmark">FACTORY</span>
     </span>
   </div>
-  <p class="note">IBM Plex Sans 700 · .18em · uppercase · mark at left, 10px gap, optically centered on cap height. Never recolor a letter — the chip carries all the color. Never put the mark in a circle or badge. Below 16px use the mark alone.</p>
+  <p class="note">Dimensional mark at 32px, IBM Plex Sans 700 · .18em · uppercase, 10px gap, optically centered on cap height. Below 32px the lockup switches to the flat mark; below 16px use the mark alone. Never recolor a letter — the chip carries all the color and all the light. Never put the mark in a circle or badge.</p>
 </section>
 
 <section>
-  <div class="eyebrow">04 · App icon (src/web/icon.svg)</div>
+  <div class="eyebrow">05 · App icon (src/web/icon.svg)</div>
   <div class="strip">
     <div class="cell">
       <svg width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Factory app icon">
@@ -195,16 +258,15 @@
 </section>
 
 <section>
-  <div class="eyebrow">05 · Rules</div>
+  <div class="eyebrow">06 · Rules</div>
   <ul class="rules">
-    <li><span class="do">Do</span> — draw bars in currentColor so one asset serves chrome, docs, and print.</li>
-    <li><span class="do">Do</span> — keep the chip's meaning narrow: attention state only, with a text twin.</li>
+    <li><span class="do">Do</span> — use the dimensional rendition everywhere ≥32px; it is the mark. Flat currentColor is the utility form for chrome ≤24px, favicons, print, and greyscale.</li>
+    <li><span class="do">Do</span> — keep the chip's meaning narrow: attention state only, with a text twin. The chip is the only element that emits light; the F reflects it.</li>
     <li><span class="dont">Don't</span> — add gears, smokestacks, conveyors, or a third bar. The F is records on a spine, nothing more.</li>
-    <li><span class="do">Do</span> — use the dimensional rendition (stamped metal, lit LED) at ≥32px; flat currentColor below that. The chip is the only element that emits light; the F reflects it.</li>
     <li><span class="dont">Don't</span> — color more than the chip, glow anything but the chip, glow at favicon sizes (it turns to mud), or escalate severity by coloring bars.</li>
     <li><span class="dont">Don't</span> — set the wordmark without the mark above 16px, or box the mark in a circle/badge.</li>
   </ul>
-  <p class="note">Greyscale: the chip flattens; acceptable only because the favicon is ambient — the Attention lane in the app is the authoritative surface.</p>
+  <p class="note">Greyscale: both renditions flatten to the flat form; acceptable only because the favicon is ambient — the Attention lane in the app is the authoritative surface.</p>
 </section>
 
 <footer style="padding-top:24px"><span class="micro">factory-marks.html · Ledger v0.2.1 · spec: docs/design/style-guide.md §10</span></footer>

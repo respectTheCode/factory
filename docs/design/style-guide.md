@@ -241,21 +241,24 @@ clear / `--sig-warn` attention pending / `--ink-faint` disconnected. Only
 the chip takes color; text twin required; ship per-state favicon files
 and swap the `<link>`.
 
-**Two renditions:**
+**Two renditions — dimensional is the mark; flat is its small-size
+utility form:**
 
-- **Flat** — the canonical `currentColor` form above. Chrome, favicons,
-  print, and any use ≤24px. The chip may carry the LED glow at ≥24px;
-  below that it stays flat (glow turns to mud at favicon sizes).
-- **Dimensional** — for the app icon and any use ≥32px: the F is stamped
-  raised metal. Bars fill with a vertical warm-ink gradient
-  (`#F6F2EA → #CEC6B8`), over a dark warm extrusion layer offset +3y
-  (`#8A8172`), with a soft drop shadow onto the plate
-  (`feDropShadow dy 4, stdDeviation 5, opacity .5`). The chip becomes a
-  **lit LED**: lavender gradient (`#B4B8E4 → #7F84B8`) with a `#9499CB`
-  glow halo (`feDropShadow 0 0, stdDeviation 6, opacity .9`; scale all
-  filter values with the render size — the 24-grid rendition in
-  `factory-marks.html` uses proportionally smaller ones). The chip is the
-  only element that emits light; the F reflects it.
+- **Dimensional (primary)** — the brand mark, used everywhere ≥32px: app
+  icon, mastheads, lockups, marketing, README. The F is stamped raised
+  metal: bars fill with a vertical warm-ink gradient (`#F6F2EA →
+  #CEC6B8`) over a dark warm extrusion layer offset +3y in 128-scale
+  (`#8A8172`), with a soft drop shadow onto the plate (`feDropShadow
+  dy 4, stdDeviation 5, opacity .5`). The chip is a **lit LED**: lavender
+  gradient (`#B4B8E4 → #7F84B8`) with a `#9499CB` glow halo
+  (`feDropShadow 0 0, stdDeviation 6, opacity .9`). Filter and offset
+  values scale with the render size (at 24-grid: offset +0.75, shadow
+  dy 1 / stdDeviation 1.25, glow stdDeviation 1.5). The chip is the only
+  element that emits light; the F reflects it.
+- **Flat (utility)** — the `currentColor` form above, sharing the same
+  geometry. For chrome ≤24px, favicons, print, and greyscale. No
+  gradients, no shadows; no glow below 24px (it turns to mud at favicon
+  sizes).
 
 **App icon (v0.2.1):** the dimensional mark on a `#141210` plate with an
 **engraved border groove** (inset 1px stroke at `rgba(234,230,223,.10)`,

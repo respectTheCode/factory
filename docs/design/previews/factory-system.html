@@ -184,11 +184,34 @@
 <main>
 
 <header class="masthead">
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" role="img" aria-label="Factory mark">
-    <rect x="4.5" y="3" width="15" height="3.5" rx="0.6" fill="currentColor"/>
-    <rect x="4.5" y="3" width="3" height="18" rx="0.6" fill="currentColor"/>
-    <rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6" fill="currentColor"/>
-    <rect class="glow-accent" x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="#9499CB"/>
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" role="img" aria-label="Factory mark">
+    <defs>
+      <linearGradient id="mkBar" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#F6F2EA"/><stop offset="1" stop-color="#CEC6B8"/>
+      </linearGradient>
+      <linearGradient id="mkLed" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#B4B8E4"/><stop offset="1" stop-color="#7F84B8"/>
+      </linearGradient>
+      <filter id="mkShadow" x="-30%" y="-30%" width="160%" height="160%">
+        <feDropShadow dx="0" dy="1" stdDeviation="1.25" flood-color="#000" flood-opacity="0.5"/>
+      </filter>
+      <filter id="mkGlow" x="-120%" y="-120%" width="340%" height="340%">
+        <feDropShadow dx="0" dy="0" stdDeviation="1.5" flood-color="#9499CB" flood-opacity="0.9"/>
+      </filter>
+    </defs>
+    <g filter="url(#mkShadow)">
+      <g fill="#8A8172">
+        <rect x="4.5" y="3.75" width="15" height="3.5" rx="0.6"/>
+        <rect x="4.5" y="3.75" width="3" height="18" rx="0.6"/>
+        <rect x="4.5" y="11.25" width="9" height="3.5" rx="0.6"/>
+      </g>
+      <g fill="url(#mkBar)">
+        <rect x="4.5" y="3" width="15" height="3.5" rx="0.6"/>
+        <rect x="4.5" y="3" width="3" height="18" rx="0.6"/>
+        <rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6"/>
+      </g>
+    </g>
+    <rect x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="url(#mkLed)" filter="url(#mkGlow)"/>
   </svg>
   <span class="wordmark">FACTORY</span>
   <span class="micro">LEDGER · v0.2.1 · 2026-08-29 · clean records, dirty room</span>
