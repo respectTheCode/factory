@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Factory Design System — Ledger v0.2.1</title>
+<!-- CDN fonts are for this preview only; production bundles woff2 (style-guide.md §11) -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    color-scheme: dark;
+    --canvas:#141210; --panel:#1B1815; --raised:#24201B; --rule:#342E26;
+    --ink:#EAE6DF; --ink-dim:#A2988A; --ink-faint:#635A4D;
+    --sig-down:#E5484D; --sig-ok:#2FBE6B; --sig-warn:#F0B429; --sig-info:#4AA3E0;
+    --tint-down:rgba(229,72,77,.16); --tint-ok:rgba(47,190,107,.16);
+    --tint-warn:rgba(240,180,41,.16); --tint-info:rgba(74,163,224,.16);
+    --accent:#9499CB; --on-accent:#141210; --tint-accent:rgba(148,153,203,.16);
+    --u:4px; --r-card:10px; --r-field:8px; --r-chip:6px;
+    --edge-machined:inset 0 1px 0 rgba(255,255,255,.04);
+    --shadow-overlay:0 10px 24px rgba(0,0,0,.45);
+    --shell:1280px;
+    --glow-down:drop-shadow(0 0 4px rgba(229,72,77,.55));
+    --glow-ok:drop-shadow(0 0 4px rgba(47,190,107,.55));
+    --glow-warn:drop-shadow(0 0 4px rgba(240,180,41,.55));
+    --glow-info:drop-shadow(0 0 4px rgba(74,163,224,.55));
+    --glow-accent:drop-shadow(0 0 4px rgba(148,153,203,.55));
+    --sans:"IBM Plex Sans",system-ui,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,monospace;
+  }
+  * { box-sizing:border-box; margin:0; }
+  body {
+    background:var(--canvas); color:var(--ink);
+    font:400 14px/1.5 var(--sans);
+    padding:24px 24px 64px;
+  }
+  /* shopwear: oil vignette + film grain over everything */
+  body::before {
+    content:""; position:fixed; inset:0; z-index:2; pointer-events:none;
+    background:radial-gradient(140% 110% at 50% 20%, transparent 50%, rgba(0,0,0,.40) 100%);
+  }
+  body::after {
+    content:""; position:fixed; inset:0; z-index:3; pointer-events:none; opacity:.08;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  @media (prefers-contrast: more) { body::before, body::after { display:none; } }
+  main { max-width:var(--shell); margin:0 auto; position:relative; z-index:1; }
+  a { color:var(--accent); }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  /* type roles */
+  .page-title { font:600 20px/1.3 var(--sans); }
+  .eyebrow { font:700 10px/1 var(--sans); letter-spacing:.18em; text-transform:uppercase; color:var(--ink-dim); }
+  .item-name { font:600 13px/1.4 var(--sans); }
+  .body-dense { font:400 13px/1.5 var(--sans); }
+  .data { font:500 12px/1.4 var(--mono); font-variant-numeric:tabular-nums; }
+  .micro { font:400 11px/1.4 var(--mono); font-variant-numeric:tabular-nums; color:var(--ink-dim); }
+  .dim { color:var(--ink-dim); } .faint { color:var(--ink-faint); }
+
+  header.masthead {
+    display:flex; align-items:center; gap:10px;
+    border-bottom:1px solid var(--rule); padding-bottom:16px; margin-bottom:8px;
+  }
+  .wordmark { font:700 15px/1 var(--sans); letter-spacing:.18em; }
+  .masthead .micro { margin-left:auto; }
+
+  section { border-bottom:1px solid var(--rule); padding:28px 0; }
+  section > .eyebrow { margin-bottom:16px; }
+  .note { font:400 13px/1.5 var(--sans); color:var(--ink-dim); max-width:64ch; margin-top:12px; }
+
+  .swatch-row { display:flex; flex-wrap:wrap; gap:8px; }
+  .swatch { width:132px; border:1px solid var(--rule); border-radius:var(--r-chip); overflow:hidden; }
+  .swatch .chipfill { height:44px; }
+  .swatch .meta { padding:6px 8px; background:var(--panel); }
+  .swatch .meta div:first-child { font:600 11px/1.4 var(--sans); }
+
+  .panel { background:var(--panel); border:1px solid var(--rule); border-radius:var(--r-card); padding:16px; box-shadow:var(--edge-machined); }
+  .card  { background:var(--raised); border:1px solid var(--rule); border-radius:var(--r-card); padding:16px; box-shadow:var(--edge-machined); }
+  .grid  { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
+
+  /* shopwear utilities */
+  .hatch {
+    background-image:repeating-linear-gradient(45deg, rgba(234,230,223,.065) 0 1px, transparent 1px 9px);
+  }
+  /* LED glow — indicators only */
+  .glow-down { filter:var(--glow-down); }
+  .glow-ok   { filter:var(--glow-ok); }
+  .glow-warn { filter:var(--glow-warn); }
+  .glow-info { filter:var(--glow-info); }
+  .glow-accent { filter:var(--glow-accent); }
+  @media (prefers-contrast: more) {
+    .glow-down,.glow-ok,.glow-warn,.glow-info,.glow-accent { filter:none; }
+  }
+  .hazard {
+    background-image:repeating-linear-gradient(45deg, rgba(229,72,77,.08) 0 10px, transparent 10px 20px);
+    border-color:rgba(229,72,77,.5) !important;
+  }
+
+  /* state chips */
+  .chip {
+    display:inline-flex; align-items:center; gap:6px;
+    font:600 10px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase;
+    padding:3px 8px; border-radius:var(--r-chip); border:1px solid transparent;
+  }
+  .chip.planned  { background:var(--raised); color:var(--ink-dim); border-color:var(--rule); }
+  .chip.active   { background:var(--tint-info); color:var(--sig-info); border-color:rgba(74,163,224,.45); }
+  .chip.awaiting { background:var(--tint-warn); color:var(--sig-warn); border-color:rgba(240,180,41,.45); }
+  .chip.blocked  { background:var(--tint-down); color:var(--sig-down); border-color:rgba(229,72,77,.45); }
+  .chip.complete { background:var(--tint-ok); color:var(--sig-ok); border-color:rgba(47,190,107,.45); }
+  .chip.released { background:transparent; color:var(--sig-ok); border-color:rgba(47,190,107,.45); }
+  .chip.wontdo   { background:transparent; color:var(--ink-faint); border-color:var(--rule); }
+
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+
+  /* status dials */
+  .dial-row { display:flex; flex-wrap:wrap; gap:24px; }
+  .dial-cell { display:flex; flex-direction:column; align-items:center; gap:8px; min-width:88px; }
+  .dial-cell .micro { text-align:center; }
+
+  /* countersign */
+  .slot {
+    width:14px; height:14px; border-radius:4px; flex:none;
+    display:inline-flex; align-items:center; justify-content:center;
+    font:600 10px/1 var(--mono);
+  }
+  .slot.empty    { border:1px dashed var(--ink-dim); }
+  .slot.accepted { border:1px solid var(--sig-ok); background:var(--tint-ok); color:var(--sig-ok); }
+  .slot.rejected { border:1px solid var(--sig-down); background:var(--tint-down); color:var(--sig-down); }
+  .slot.deferred { border:1px dashed var(--ink-dim); }
+  .slot.deferred::after { content:""; width:4px; height:4px; border-radius:50%; background:var(--ink-dim); }
+
+  .row {
+    display:flex; align-items:center; gap:12px; min-height:52px;
+    padding:8px 12px; border-top:1px solid var(--rule);
+  }
+  .row:first-of-type { border-top:none; }
+  .row .grow { flex:1; min-width:0; }
+  .row .claim { margin-top:2px; }
+  .verdict { font:400 12px/1.4 var(--sans); color:var(--ink-dim); }
+
+  button {
+    font:600 13px/1 var(--sans); padding:10px 16px; min-height:44px;
+    border-radius:var(--r-field); border:1px solid transparent;
+    background:var(--raised); color:var(--ink); border-color:var(--rule);
+    box-shadow:var(--edge-machined); cursor:pointer;
+  }
+  button.primary { background:var(--accent); color:var(--on-accent); box-shadow:none; }
+  button.accept  { background:var(--tint-ok); color:var(--sig-ok); border-color:rgba(47,190,107,.45); }
+  button.reject  { background:var(--tint-down); color:var(--sig-down); border-color:rgba(229,72,77,.45); }
+  button.danger  { background:var(--raised); color:var(--sig-down); border-color:rgba(229,72,77,.5); }
+  button:disabled { color:var(--ink-faint); background:var(--panel); cursor:default; box-shadow:none; }
+  .btn-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+
+  input[type=text], textarea, select {
+    font:400 14px/1.4 var(--sans); color:var(--ink);
+    background:var(--panel); border:1px solid var(--rule);
+    border-radius:var(--r-field); padding:10px 12px; width:100%;
+  }
+  label { display:block; margin-bottom:6px; }
+  .field { max-width:360px; }
+
+  .filters { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+  .filter {
+    font:600 12px/1 var(--sans); padding:8px 12px; min-height:36px;
+    border:1px solid var(--rule); border-radius:var(--r-field);
+    background:var(--panel); color:var(--ink-dim); cursor:pointer;
+    display:inline-flex; align-items:center; gap:8px; box-shadow:var(--edge-machined);
+  }
+  .filter .data { color:var(--ink); }
+  .filter[aria-pressed="true"] { background:var(--tint-accent); color:var(--ink); border-color:var(--accent); }
+
+  table.spec { border-collapse:collapse; width:100%; max-width:720px; }
+  table.spec td { border-top:1px solid var(--rule); padding:8px 12px 8px 0; vertical-align:baseline; }
+  table.spec tr:first-child td { border-top:none; }
+
+  .dont { color:var(--sig-down); } .do { color:var(--sig-ok); }
+  ul.rules { padding-left:18px; display:grid; gap:6px; max-width:70ch; }
+
+  footer { padding-top:24px; }
+</style>
+</head>
+<body>
+<main>
+
+<header class="masthead">
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" role="img" aria-label="Factory mark">
+    <rect x="4.5" y="3" width="15" height="3.5" rx="0.6" fill="currentColor"/>
+    <rect x="4.5" y="3" width="3" height="18" rx="0.6" fill="currentColor"/>
+    <rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6" fill="currentColor"/>
+    <rect class="glow-accent" x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="#9499CB"/>
+  </svg>
+  <span class="wordmark">FACTORY</span>
+  <span class="micro">LEDGER · v0.2.1 · 2026-08-29 · clean records, dirty room</span>
+</header>
+
+<section>
+  <div class="eyebrow">01 · Principles</div>
+  <div class="grid">
+    <div class="panel"><div class="item-name">Clean records, dirty room</div>
+      <p class="note">Layout, type, and data stay disciplined; grit lives only in the environment — grain, vignette, hatch, machined edges. If a texture competes with a value, the texture loses.</p></div>
+    <div class="panel"><div class="item-name">Machinery is material, not process</div>
+      <p class="note">Dials, plates, hazard paint, stamps: yes. Gears, conveyors, robots, pipelines: never. Factory is a run substrate, not a factory pipeline.</p></div>
+    <div class="panel"><div class="item-name">Amber means "your turn"</div>
+      <p class="note">sig-warn marks work awaiting a human decision — attention, not failure. The dashboard exists to drain the amber column.</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">02 · Neutrals — oil &amp; iron</div>
+  <div class="swatch-row">
+    <div class="swatch"><div class="chipfill" style="background:#141210"></div><div class="meta"><div>canvas</div><div class="micro">#141210</div></div></div>
+    <div class="swatch"><div class="chipfill" style="background:#1B1815"></div><div class="meta"><div>panel</div><div class="micro">#1B1815</div></div></div>
+    <div class="swatch"><div class="chipfill" style="background:#24201B"></div><div class="meta"><div>raised</div><div class="micro">#24201B</div></div></div>
+    <div class="swatch"><div class="chipfill" style="background:#342E26"></div><div class="meta"><div>rule</div><div class="micro">#342E26</div></div></div>
+    <div class="swatch"><div class="chipfill" style="background:#EAE6DF"></div><div class="meta"><div>ink</div><div class="micro">#EAE6DF</div></div></div>
+    <div class="swatch"><div class="chipfill" style="background:#A2988A"></div><div class="meta"><div>ink-dim</div><div class="micro">#A2988A</div></div></div>
+    <div class="swatch"><div class="chipfill" style="background:#635A4D"></div><div class="meta"><div>ink-faint</div><div class="micro">#635A4D</div></div></div>
+  </div>
+  <p class="note">Soot and oil, not blue steel — Factory steps off the family's cool canvas ladder on purpose (Grail set the precedent for switching materials). Ink is the color of a shop traveler card. Signals and accent are untouched, so it still reads as family at a glance.</p>
+</section>
+
+<section>
+  <div class="eyebrow">03 · Signals &amp; accent</div>
+  <div class="swatch-row">
+    <div class="swatch"><div class="chipfill" style="background:#E5484D"></div><div class="meta"><div>sig-down</div><div class="micro">#E5484D</div></div></div>
+    <div class="swatch"><div class="chipfill" style="background:#2FBE6B"></div><div class="meta"><div>sig-ok</div><div class="micro">#2FBE6B</div></div></div>
+    <div class="swatch"><div class="chipfill" style="background:#F0B429"></div><div class="meta"><div>sig-warn</div><div class="micro">#F0B429</div></div></div>
+    <div class="swatch"><div class="chipfill" style="background:#4AA3E0"></div><div class="meta"><div>sig-info</div><div class="micro">#4AA3E0</div></div></div>
+    <div class="swatch"><div class="chipfill" style="background:#9499CB"></div><div class="meta"><div>accent</div><div class="micro">#9499CB</div></div></div>
+  </div>
+  <p class="note">Family-wide hexes: down = blocked/rejected · ok = verified/released/connected · warn = awaiting, attention pending · info = agent working. On the warm ramp, saturation separates signal from environment — no neutral may exceed ink-dim's saturation. The accent stays cool so warm saturation always means a real signal. No fifth signal, ever.</p>
+</section>
+
+<section>
+  <div class="eyebrow">04 · Shopwear — the texture layer</div>
+  <div class="grid">
+    <div class="panel"><div class="item-name">Grain + vignette</div>
+      <p class="note">Already on this page: feTurbulence film grain at 8% over everything, oil-stained corners at 40%. Fixed, pointer-transparent, off under prefers-contrast: more.</p></div>
+    <div class="panel hatch"><div class="item-name">Hatch</div>
+      <p class="note">45° hairlines at 6.5% ink. Empty states, placeholder zones, archive panels. Never under body text… except in this demo.</p></div>
+    <div class="card hazard"><div class="item-name" style="color:var(--sig-down)">Hazard</div>
+      <p class="note">Forge's escalation grammar: 45° stripes at 8% sig-down, 50%-alpha border. Destructive confirm zones only — never for blocked or awaiting states.</p>
+      <div class="btn-row" style="margin-top:10px"><button class="danger">Delete work</button></div></div>
+  </div>
+  <p class="note">Cards and buttons carry the machined edge — inset 0 1px 0 rgba(255,255,255,.04), a milled top lip catching light. The one depth cue on chrome besides the overlay shadow. Glow exists but is rationed — <strong>only indicators emit light</strong>: signal dials, the connection dot, and the mark's chip carry drop-shadow(0 0 4px signal @ 55%). Buttons, chips, text, and cards never glow.</p>
+</section>
+
+<section>
+  <div class="eyebrow">05 · Status dials — one gauge, seven positions</div>
+  <div class="dial-row">
+    <div class="dial-cell">
+      <svg width="32" height="32" viewBox="0 0 16 16" fill="none"><title>Planned</title>
+        <circle cx="8" cy="8" r="5.5" stroke="#A2988A" stroke-width="1.6" stroke-dasharray="2.5 2.6"/></svg>
+      <span class="micro">PLANNED<br/>dashed empty ring</span>
+    </div>
+    <div class="dial-cell">
+      <svg class="glow-info" width="32" height="32" viewBox="0 0 16 16" fill="none"><title>Active</title>
+        <circle cx="8" cy="8" r="5.5" stroke="#4AA3E0" stroke-width="1.6"/>
+        <path d="M8 8 L8 3.6 A4.4 4.4 0 0 1 12.4 8 Z" fill="#4AA3E0"/></svg>
+      <span class="micro">ACTIVE<br/>quarter wedge</span>
+    </div>
+    <div class="dial-cell">
+      <svg class="glow-warn" width="32" height="32" viewBox="0 0 16 16" fill="none"><title>Awaiting verification</title>
+        <circle cx="8" cy="8" r="5.5" stroke="#F0B429" stroke-width="1.6" stroke-dasharray="2.5 2.6"/>
+        <circle cx="8" cy="8" r="3" fill="#F0B429"/></svg>
+      <span class="micro">AWAITING<br/>full but unsealed</span>
+    </div>
+    <div class="dial-cell">
+      <svg class="glow-down" width="32" height="32" viewBox="0 0 16 16" fill="none"><title>Blocked</title>
+        <circle cx="8" cy="8" r="5.5" stroke="#E5484D" stroke-width="1.6"/>
+        <rect x="4.8" y="7.1" width="6.4" height="1.8" rx="0.4" fill="#E5484D"/></svg>
+      <span class="micro">BLOCKED<br/>do-not-enter bar</span>
+    </div>
+    <div class="dial-cell">
+      <svg class="glow-ok" width="32" height="32" viewBox="0 0 16 16" fill="none"><title>Complete</title>
+        <circle cx="8" cy="8" r="6.3" fill="#2FBE6B"/>
+        <path d="M5.2 8.2 L7.1 10.1 L10.9 6.1" stroke="#141210" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      <span class="micro">COMPLETE<br/>stamped disc</span>
+    </div>
+    <div class="dial-cell">
+      <svg class="glow-ok" width="32" height="32" viewBox="0 0 16 16" fill="none"><title>Released</title>
+        <circle cx="8" cy="8" r="5.5" stroke="#2FBE6B" stroke-width="1.6"/>
+        <path d="M5.4 8.2 L7.2 10 L10.7 6.3" stroke="#2FBE6B" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      <span class="micro">RELEASED<br/>hollow — left the shop</span>
+    </div>
+    <div class="dial-cell">
+      <svg width="32" height="32" viewBox="0 0 16 16" fill="none"><title>Won't do</title>
+        <circle cx="8" cy="8" r="5.5" stroke="#635A4D" stroke-width="1.6"/>
+        <path d="M4.8 11.2 L11.2 4.8" stroke="#635A4D" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <span class="micro">WONT DO<br/>slash</span>
+    </div>
+    <div class="dial-cell">
+      <svg class="glow-ok" width="32" height="32" viewBox="0 0 16 16" fill="none"><title>Progress, 3 of 5 verified</title>
+        <circle cx="8" cy="8" r="5.5" stroke="#342E26" stroke-width="1.6"/>
+        <path d="M8 8 L8 2.5 A5.5 5.5 0 1 1 2.77 9.7 Z" fill="none" stroke="#2FBE6B" stroke-width="1.6" stroke-dasharray="20.7 34.6" transform="rotate(0 8 8)"/>
+        <path d="M8 2.5 A5.5 5.5 0 0 1 13.34 9.32" stroke="#2FBE6B" stroke-width="1.8" fill="none"/></svg>
+      <span class="micro">3/5 · progress pie<br/>verified work only</span>
+    </div>
+  </div>
+  <p class="note">One circular grammar — 16 grid, 1.6px ring, drawn inline with a &lt;title&gt; and a mono text twin. The hinge is AWAITING: the core is full (the claim exists) but the ring is dashed (unsealed) — the same dashed-equals-unverified grammar as the Countersign. Verification seals the ring. Task-level progress pies count only verified subtasks; claims don't move the needle.</p>
+</section>
+
+<section>
+  <div class="eyebrow">06 · Typography — Plex identifies, Plex measures</div>
+  <table class="spec">
+    <tr><td class="micro">pageTitle</td><td class="page-title">Software Factory</td></tr>
+    <tr><td class="micro">sectionLabel</td><td><span class="eyebrow">Attention</span></td></tr>
+    <tr><td class="micro">itemName</td><td class="item-name">Resolve factory context from git checkout</td></tr>
+    <tr><td class="micro">body</td><td>Factory keeps native work, agent reports, and human verification visible without replacing Notion or Linear.</td></tr>
+    <tr><td class="micro">data</td><td class="data">feature/task-editing · 3 of 5 verified</td></tr>
+    <tr><td class="micro">microData</td><td class="micro">agent · complete · 2h ago</td></tr>
+    <tr><td class="micro">stateCode</td><td><span class="chip awaiting">Awaiting</span></td></tr>
+  </table>
+  <p class="note">IBM Plex Sans for prose; IBM Plex Mono (tabular) for anything you could read off a traveler card — timestamps, counts, branches, IDs, state codes. A stencil display face was considered for the industrial voice and rejected: grit belongs to texture, not type.</p>
+</section>
+
+<section>
+  <div class="eyebrow">07 · The Countersign — signature</div>
+  <div class="panel" style="padding:0; max-width:720px">
+    <div class="row">
+      <svg class="glow-warn" width="16" height="16" viewBox="0 0 16 16" fill="none"><title>Awaiting verification</title><circle cx="8" cy="8" r="5.5" stroke="#F0B429" stroke-width="1.6" stroke-dasharray="2.5 2.6"/><circle cx="8" cy="8" r="3" fill="#F0B429"/></svg>
+      <span class="slot empty" role="img" aria-label="Awaiting your verification"></span>
+      <div class="grow">
+        <div class="item-name">Wire task editing into the CLI</div>
+        <div class="claim micro">agent · complete · 2h ago</div>
+      </div>
+      <span class="chip awaiting">Awaiting</span>
+    </div>
+    <div class="row">
+      <svg class="glow-ok" width="16" height="16" viewBox="0 0 16 16" fill="none"><title>Complete</title><circle cx="8" cy="8" r="6.3" fill="#2FBE6B"/><path d="M5.2 8.2 L7.1 10.1 L10.9 6.1" stroke="#141210" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      <span class="slot accepted" role="img" aria-label="Accepted">✓</span>
+      <div class="grow">
+        <div class="item-name">Persist dashboard navigation in history</div>
+        <div class="claim verdict">Accepted · 14:20</div>
+      </div>
+      <span class="chip complete">Complete</span>
+    </div>
+    <div class="row">
+      <svg class="glow-info" width="16" height="16" viewBox="0 0 16 16" fill="none"><title>Active</title><circle cx="8" cy="8" r="5.5" stroke="#4AA3E0" stroke-width="1.6"/><path d="M8 8 L8 3.6 A4.4 4.4 0 0 1 12.4 8 Z" fill="#4AA3E0"/></svg>
+      <span class="slot rejected" role="img" aria-label="Rejected">✕</span>
+      <div class="grow">
+        <div class="item-name">Hide archived tasks in web UI</div>
+        <div class="claim verdict">Rejected · missing filter test</div>
+      </div>
+      <span class="chip active">Active</span>
+    </div>
+    <div class="row">
+      <svg class="glow-down" width="16" height="16" viewBox="0 0 16 16" fill="none"><title>Blocked</title><circle cx="8" cy="8" r="5.5" stroke="#E5484D" stroke-width="1.6"/><rect x="4.8" y="7.1" width="6.4" height="1.8" rx="0.4" fill="#E5484D"/></svg>
+      <div class="grow" style="margin-left:26px">
+        <div class="item-name">Update task branch context</div>
+        <div class="claim micro">blocked · needs Tailscale cert decision</div>
+      </div>
+      <span class="chip blocked">Blocked</span>
+    </div>
+    <div class="row">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><title>Planned</title><circle cx="8" cy="8" r="5.5" stroke="#A2988A" stroke-width="1.6" stroke-dasharray="2.5 2.6"/></svg>
+      <div class="grow" style="margin-left:26px">
+        <div class="item-name dim">Streamline project dashboard</div>
+        <div class="claim micro">planned</div>
+      </div>
+      <span class="chip planned">Planned</span>
+    </div>
+  </div>
+  <p class="note">Circles are what the machine reports; squares are what the human decides. The dashed square slot is the hole where the verification belongs — never amber; the emptiness is the signal. No claim, no slot. Claims are mono; verdicts are prose.</p>
+</section>
+
+<section>
+  <div class="eyebrow">08 · Attention lane</div>
+  <div class="filters">
+    <button class="filter" aria-pressed="true">All <span class="data">7</span></button>
+    <button class="filter" aria-pressed="false">Blocked <span class="data">1</span></button>
+    <button class="filter" aria-pressed="false">Awaiting <span class="data">2</span></button>
+    <button class="filter" aria-pressed="false">Active <span class="data">3</span></button>
+    <button class="filter" aria-pressed="false">Planned <span class="data">1</span></button>
+  </div>
+  <div class="panel hatch" style="max-width:720px">
+    <p class="body-dense dim">Nothing needs attention.</p>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">09 · Controls</div>
+  <div class="btn-row">
+    <button class="primary">New task</button>
+    <button>Show archived</button>
+    <button class="accept">Accept</button>
+    <button class="reject">Reject</button>
+    <button>Defer</button>
+    <button disabled>Report complete</button>
+  </div>
+  <div class="field" style="margin-top:16px">
+    <label class="eyebrow" for="branch">Branch</label>
+    <input id="branch" type="text" value="feature/task-editing" />
+  </div>
+  <p class="note">Primary = accent fill. Accept/Reject are state actions and wear their signal tints — the only buttons allowed to. Agent verbs (Report…) and human verbs (Accept/Reject/Defer) never share a vocabulary. Min height 44px.</p>
+</section>
+
+<section>
+  <div class="eyebrow">10 · Motion &amp; rules</div>
+  <ul class="rules">
+    <li><span class="do">Do</span> — exactly three animations: countersign stamp (120ms), live report flash (sig-info → ink, 400ms), one spinner (800ms). The active dial's wedge does not rotate. Reduced motion: flash becomes a persistent left border.</li>
+    <li><span class="do">Do</span> — grain 8%, vignette 40% max, hatch 6.5%; glow on indicators only (dials, connection dot, mark chip); all off under prefers-contrast: more. Machined edge is the only card depth cue.</li>
+    <li><span class="dont">Don't</span> — gears, conveyors, robots, pipelines. Machinery is material, not process.</li>
+    <li><span class="dont">Don't</span> — hazard stripes on blocked/awaiting states; hazard is for destructive zones only.</li>
+    <li><span class="dont">Don't</span> — pills, drop shadows, decorative gradients, hover lifts, a fifth signal hue, color without a text twin, texture under body text, or glow on anything that isn't an indicator.</li>
+    <li><span class="dont">Don't</span> — warm saturation in chrome. On the oil ramp, saturation is what separates signal amber from environmental warmth.</li>
+  </ul>
+</section>
+
+<footer>
+  <span class="micro">factory-system.html · Ledger v0.2.1 · tokens mirror docs/design/style-guide.md §11 · marks: factory-marks.html</span>
+</footer>
+
+</main>
+</body>
+</html>
