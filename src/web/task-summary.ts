@@ -1,3 +1,5 @@
+import type { WorkStatus } from "./status-presentation";
+
 export type SummarySubtask = {
   archiveState?: "released" | "wont_do";
   id: string;
@@ -33,6 +35,37 @@ export type AttentionSummary = {
   state: Exclude<AttentionFilter, "all">;
   taskId: string;
 };
+
+export const taskGroupOrder: WorkStatus[] = [
+  "planned",
+  "active",
+  "awaiting_verification",
+  "blocked",
+  "completed",
+  "released",
+  "wont_do",
+];
+
+export function groupTasksByStatus<
+  T extends { archiveState?: "released" | "wont_do"; id: string },
+>(
+  tasks: T[],
+  statuses: Record<string, { taskState?: WorkStatus } | undefined>,
+): Array<{ state: WorkStatus; tasks: T[] }> {
+  const grouped = new Map<WorkStatus, T[]>();
+
+  for (const task of tasks) {
+    const state =
+      statuses[task.id]?.taskState ?? task.archiveState ?? "planned";
+    const group = grouped.get(state) ?? [];
+    group.push(task);
+    grouped.set(state, group);
+  }
+
+  return taskGroupOrder
+    .map((state) => ({ state, tasks: grouped.get(state) ?? [] }))
+    .filter((group) => group.tasks.length > 0);
+}
 
 export function filterArchivedTasks<T extends { archiveState?: string }>(
   items: T[],

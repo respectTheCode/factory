@@ -45,6 +45,8 @@ bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" --data
 bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" \
   --branch-name "GRA-143-preview-environments" --database "$FACTORY_DB"
 bun run src/cli.ts task update --task-id TASK_ID \
+  --title "Task title" --description "What success looks like" \
+  --acceptance-criteria "First check|Second check" \
   --branch-name "GRA-143-preview-environments" --database "$FACTORY_DB"
 bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts task status --task-id TASK_ID --json --database "$FACTORY_DB"
@@ -52,6 +54,8 @@ bun run src/cli.ts task archive --task-id TASK_ID --state released --database "$
 bun run src/cli.ts task restore --task-id TASK_ID --database "$FACTORY_DB"
 bun run src/cli.ts task link --task-id TASK_ID --system linear --stable-id GRA-143 --url "https://…" --database "$FACTORY_DB"
 bun run src/cli.ts subtask create --task-id TASK_ID --name "Subtask name" --description "What must be checked" --database "$FACTORY_DB"
+bun run src/cli.ts subtask update --subtask-id SUBTASK_ID \
+  --title "Subtask title" --description "What must be checked" --database "$FACTORY_DB"
 bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state in_progress --reporter codex --evidence "What changed" --database "$FACTORY_DB"
 bun run src/cli.ts subtask status --json --task-id TASK_ID --database "$FACTORY_DB"
 bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$FACTORY_DB"
@@ -89,6 +93,17 @@ bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" \
   --repository-links "https://github.com/app-press/factory" \
   --database "$FACTORY_DB"
 ```
+
+Task and Subtask edits accept any combination of their editable fields. `--title` updates the
+stored `name`; Task `--description` updates its stored `objective`, while Subtask `--description`
+updates its stored `description`. A blank description clears it. Task edits also retain the
+existing `--branch-name` update; at least one edit field is required, and titles must not be
+blank. `--acceptance-criteria` replaces the Task's criteria, using `|` between entries; an empty
+value clears them.
+
+Agents may change acceptance criteria only during the planning phase. Run `task status` first and
+make the edit only when the Task state is `planned`, before implementation begins. The CLI rejects
+criteria edits once the Task is active, blocked, awaiting verification, completed, or archived.
 
 Agents may report `not_started`, `in_progress`, `blocked`, or `complete`.
 Reports are append-only. A complete report remains `awaiting_verification`

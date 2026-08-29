@@ -148,6 +148,19 @@ function createRouter(
           projectUpdates.publishAll();
           return subtask;
         }),
+      update: trpc.procedure
+        .input(
+          z.object({
+            description: z.string().nullable().optional(),
+            name: z.string().trim().min(1).optional(),
+            subtaskId: z.string().min(1),
+          }),
+        )
+        .mutation(({ input }) => {
+          const subtask = application.updateSubtask(input);
+          projectUpdates.publishAll();
+          return subtask;
+        }),
       remove: trpc.procedure
         .input(
           z.object({
@@ -266,7 +279,10 @@ function createRouter(
       update: trpc.procedure
         .input(
           z.object({
-            branchName: z.string().trim().min(1).nullable(),
+            acceptanceCriteria: z.array(z.string()).optional(),
+            branchName: z.string().trim().min(1).nullable().optional(),
+            name: z.string().trim().min(1).optional(),
+            objective: z.string().nullable().optional(),
             taskId: z.string().min(1),
           }),
         )
@@ -383,7 +399,9 @@ export function createFactoryServer({
 
       const staticFile = getStaticFile(url.pathname);
       if (staticFile) {
-        return new Response(Bun.file(staticFile));
+        const response = new Response(Bun.file(staticFile));
+        response.headers.set("Cache-Control", "no-cache");
+        return response;
       }
 
       return new Response("Not Found", { status: 404 });

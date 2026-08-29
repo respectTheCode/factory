@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   filterAttention,
   filterArchivedTasks,
+  groupTasksByStatus,
   summarizeTaskProgress,
 } from "../../src/web/task-summary";
 
@@ -88,5 +89,45 @@ describe("task presentation summaries", () => {
       "active",
     ]);
     expect(filterArchivedTasks(items, true)).toEqual(items);
+  });
+
+  test("groups tasks in workflow order and preserves each group's task order", () => {
+    const tasks = [
+      { id: "active-1", name: "Active one" },
+      { id: "planned-1", name: "Planned one" },
+      { id: "active-2", name: "Active two" },
+      { id: "blocked-1", name: "Blocked one" },
+    ];
+
+    const groups = groupTasksByStatus(tasks, {
+      "active-1": { taskState: "active" },
+      "planned-1": { taskState: "planned" },
+      "active-2": { taskState: "active" },
+      "blocked-1": { taskState: "blocked" },
+    });
+
+    expect(groups.map((group) => group.state)).toEqual([
+      "planned",
+      "active",
+      "blocked",
+    ]);
+    expect(groups[1]?.tasks.map((task) => task.id)).toEqual([
+      "active-1",
+      "active-2",
+    ]);
+  });
+
+  test("uses an archived task disposition when status data is unavailable", () => {
+    const groups = groupTasksByStatus(
+      [{ archiveState: "released" as const, id: "released", name: "Shipped" }],
+      {},
+    );
+
+    expect(groups).toEqual([
+      {
+        state: "released",
+        tasks: [{ archiveState: "released", id: "released", name: "Shipped" }],
+      },
+    ]);
   });
 });

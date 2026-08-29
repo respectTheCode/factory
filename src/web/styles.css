@@ -130,6 +130,31 @@ h2 {
   margin: 4px 0 0;
 }
 
+.task-edit-form,
+.subtask-edit-form {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px;
+}
+
+.task-edit-form label,
+.subtask-edit-form label {
+  color: #cbd5e1;
+  display: grid;
+  font-size: 0.75rem;
+  gap: 4px;
+}
+
+.edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .project-link-form {
   align-items: center;
   border-bottom: 1px solid #334155;
@@ -204,17 +229,109 @@ textarea {
 
 .task-list {
   display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
+  gap: 18px;
   margin-top: 14px;
 }
 
-.task-card {
+.task-group {
+  min-width: 0;
+}
+
+.task-group-heading {
+  align-items: center;
   background: #172033;
   border: 1px solid #334155;
-  border-radius: 9px;
+  border-radius: 8px 8px 0 0;
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+
+.task-group-toggle {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: #e5e7eb;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.task-group-toggle:hover {
+  background: transparent;
+}
+
+.task-group-toggle:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+
+.task-group-chevron {
+  color: #64748b;
+  font-size: 0.8rem;
+  width: 10px;
+}
+
+.task-group-toggle h3 {
+  font-size: 0.92rem;
+  margin: 0;
+}
+
+.task-group-toggle > span:last-child {
+  color: #94a3b8;
+  font-size: 0.82rem;
+}
+
+.task-group-items {
+  border: 1px solid #334155;
+  border-radius: 0 0 8px 8px;
+  border-top: 0;
+  overflow: visible;
+}
+
+.task-row {
+  background: #172033;
   min-width: 0;
   padding: 14px;
+}
+
+.task-row + .task-row {
+  border-top: 1px solid #334155;
+}
+
+.task-group-planned .task-group-heading {
+  background: rgb(249 115 22 / 10%);
+  border-color: rgb(249 115 22 / 35%);
+}
+
+.task-group-active .task-group-heading {
+  background: rgb(250 204 21 / 10%);
+  border-color: rgb(250 204 21 / 35%);
+}
+
+.task-group-awaiting_verification .task-group-heading {
+  background: rgb(34 197 94 / 10%);
+  border-color: rgb(34 197 94 / 35%);
+}
+
+.task-group-blocked .task-group-heading {
+  background: rgb(239 68 68 / 10%);
+  border-color: rgb(239 68 68 / 35%);
+}
+
+.task-group-completed .task-group-heading,
+.task-group-released .task-group-heading {
+  background: rgb(99 102 241 / 10%);
+  border-color: rgb(99 102 241 / 35%);
+}
+
+.task-group-wont_do .task-group-heading {
+  background: rgb(148 163 184 / 10%);
+  border-color: rgb(148 163 184 / 35%);
 }
 
 .task-summary {
@@ -224,7 +341,6 @@ textarea {
 .task-summary-heading {
   align-items: flex-start;
   display: flex;
-  flex-direction: column;
   gap: 6px;
 }
 
@@ -288,49 +404,132 @@ textarea {
   margin-top: 8px;
 }
 
-.status-pill {
-  border-radius: 999px;
-  display: inline-block;
+.status-menu {
+  position: relative;
+}
+
+.status-menu > summary {
+  list-style: none;
+}
+
+.status-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.status-trigger {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  justify-content: center;
+  min-height: 30px;
+  min-width: 30px;
+  padding: 3px;
+}
+
+.status-trigger:hover,
+.status-menu[open] > .status-trigger {
+  background: #1e293b;
+  border-color: #475569;
+}
+
+.status-trigger:focus-visible {
+  border-color: #38bdf8;
+  outline: 2px solid #0c4a6e;
+  outline-offset: 1px;
+}
+
+.status-menu-options {
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  box-shadow: 0 14px 28px rgb(0 0 0 / 28%);
+  display: grid;
+  gap: 3px;
+  left: 0;
+  min-width: 246px;
+  padding: 7px;
+  position: absolute;
+  top: calc(100% + 5px);
+  z-index: 4;
+}
+
+.status-menu-heading,
+.status-menu-note {
+  color: #94a3b8;
   font-size: 0.7rem;
-  padding: 3px 7px;
-  text-transform: capitalize;
+  line-height: 1.35;
+  padding: 3px 7px 5px;
 }
 
-.status-pill.completed,
-.status-pill.complete {
-  background: #064e3b;
-  color: #a7f3d0;
+.status-menu-note {
+  border-top: 1px solid #334155;
+  margin-top: 3px;
+  padding-top: 7px;
 }
 
-.status-pill.active {
-  background: #0c4a6e;
-  color: #bae6fd;
+.status-option {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: #e5e7eb;
+  display: grid;
+  font-size: 0.78rem;
+  gap: 8px;
+  grid-template-columns: 22px minmax(0, 1fr) 18px;
+  min-height: 34px;
+  padding: 5px 7px;
+  text-align: left;
+  width: 100%;
 }
 
-.status-pill.awaiting_verification {
-  background: #713f12;
-  color: #fde68a;
-}
-
-.status-pill.blocked {
-  background: #7f1d1d;
-  color: #fecaca;
-}
-
-.status-pill.planned,
-.status-pill.pending {
+.status-option:hover {
   background: #334155;
-  color: #cbd5e1;
 }
 
-.status-pill.released {
-  background: #166534;
-  color: #bbf7d0;
+.status-option.selected {
+  background: #334155;
 }
 
-.status-pill.wont_do {
-  background: #475569;
-  color: #e2e8f0;
+.status-option.status-readonly {
+  cursor: default;
+}
+
+.status-option.status-readonly:hover {
+  background: #334155;
+}
+
+.status-menu-divider {
+  background: #334155;
+  height: 1px;
+  margin: 4px 7px;
+}
+
+.status-option:disabled {
+  background: transparent;
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.status-option:disabled.selected {
+  background: #334155;
+}
+
+.task-status-menu,
+.subtask-status-menu {
+  flex: 0 0 auto;
+}
+
+.subtask-status-menu .status-menu-options {
+  bottom: calc(100% + 5px);
+  top: auto;
+}
+
+.status-icon {
+  flex: 0 0 auto;
 }
 
 .task-actions {
@@ -486,9 +685,16 @@ option {
   padding: 10px 0;
 }
 
+.subtask > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
 .subtask-state {
+  align-items: center;
   color: #94a3b8;
-  display: block;
+  display: flex;
+  gap: 5px;
   font-size: 0.75rem;
   margin-top: 3px;
   text-transform: capitalize;
@@ -931,7 +1137,7 @@ textarea:focus {
     width: 100%;
   }
 
-  .attention-item-meta .status-pill,
+  .attention-item-meta .status-icon,
   .attention-item-meta small {
     align-self: center;
   }

@@ -1,10 +1,17 @@
-const cacheName = "software-factory-shell-v10";
+const cacheName = "software-factory-shell-v13";
 const appShell = [
   "/",
-  "/main.js?v=dashboard-v10",
-  "/main.css?v=dashboard-v10",
+  "/main.js",
+  "/main.css",
   "/icon.svg",
+  "/manifest.webmanifest",
 ];
+const appShellPaths = new Set([
+  "/main.js",
+  "/main.css",
+  "/icon.svg",
+  "/manifest.webmanifest",
+]);
 const worker = self as unknown as {
   addEventListener: (
     type: string,
@@ -49,11 +56,38 @@ worker.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
 
-  if (request.method !== "GET" || url.pathname === "/trpc") {
+  if (
+    request.method !== "GET" ||
+    url.pathname === "/trpc" ||
+    (request.mode !== "navigate" && !appShellPaths.has(url.pathname))
+  ) {
     return;
   }
 
-  event.respondWith(
-    caches.match(request).then((cached) => cached ?? fetch(request)),
-  );
+  event.respondWith(networkFirst(request));
 });
+
+async function networkFirst(request: Request): Promise<Response> {
+  const cache = await caches.open(cacheName);
+
+  try {
+    const response = await fetch(new Request(request, { cache: "no-cache" }));
+    if (response.ok) {
+      await cache.put(request, response.clone());
+    }
+    return response;
+  } catch {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+
+    if (request.mode === "navigate") {
+      const shell = await cache.match("/");
+      if (shell) return shell;
+    }
+
+    return new Response("Software Factory is offline.", {
+      headers: { "Content-Type": "text/plain" },
+      status: 503,
+    });
+  }
+}

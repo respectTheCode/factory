@@ -24,7 +24,7 @@ function parseArgs(args: string[]): ParsedArgs {
     if (value.startsWith("--")) {
       const flag = value.slice(2);
       const next = args[index + 1];
-      if (!next || next.startsWith("--")) {
+      if (next === undefined || next.startsWith("--")) {
         if (flag === "confirm" || flag === "json" || flag === "overwrite") {
           flags.set(flag, "true");
           continue;
@@ -380,14 +380,38 @@ function main(args: string[]): void {
   }
 
   if (resource === "task" && action === "update") {
+    const acceptanceCriteria = parsed.flags.has("acceptance-criteria")
+      ? listFlag(parsed.flags, "acceptance-criteria")
+      : undefined;
+    const title = parsed.flags.get("title");
+    const description = parsed.flags.get("description");
     const branchName =
       parsed.flags.get("branch-name") ?? parsed.flags.get("branch");
-    if (branchName === undefined) {
-      throw new Error("Missing required --branch-name.");
+    if (
+      title === undefined &&
+      description === undefined &&
+      acceptanceCriteria === undefined &&
+      branchName === undefined
+    ) {
+      throw new Error(
+        "Provide at least one of --title, --description, --acceptance-criteria, or --branch-name.",
+      );
+    }
+    const taskId = requiredFlag(parsed.flags, "task-id");
+    if (acceptanceCriteria !== undefined) {
+      const status = application.getTaskStatus(taskId);
+      if (status.taskState !== "planned") {
+        throw new Error(
+          "Acceptance criteria may only be changed during the planning phase while the Task is planned.",
+        );
+      }
     }
     const task = application.updateTask({
+      acceptanceCriteria,
       branchName,
-      taskId: requiredFlag(parsed.flags, "task-id"),
+      name: title,
+      objective: description,
+      taskId,
     });
     output({ task });
     return;
@@ -432,6 +456,21 @@ function main(args: string[]): void {
       description: parsed.flags.get("description")?.trim() || undefined,
       name: requiredFlag(parsed.flags, "name"),
       taskId: requiredFlag(parsed.flags, "task-id"),
+    });
+    output({ subtask });
+    return;
+  }
+
+  if (resource === "subtask" && action === "update") {
+    const title = parsed.flags.get("title");
+    const description = parsed.flags.get("description");
+    if (title === undefined && description === undefined) {
+      throw new Error("Provide at least one of --title or --description.");
+    }
+    const subtask = application.updateSubtask({
+      description,
+      name: title,
+      subtaskId: requiredFlag(parsed.flags, "subtask-id"),
     });
     output({ subtask });
     return;
@@ -488,7 +527,7 @@ function main(args: string[]): void {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link, task create|update|detail|status|archive|restore|link, subtask create|report|status|archive|restore|history|verify",
+    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link, task create|update|detail|status|archive|restore|link, subtask create|update|report|status|archive|restore|history|verify",
   );
 }
 

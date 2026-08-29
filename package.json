@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
     "@tanstack/react-query": "5.101.4",
     "@trpc/client": "11.18.0",
     "@trpc/react-query": "11.18.0",

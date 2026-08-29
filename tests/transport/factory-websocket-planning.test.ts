@@ -53,6 +53,149 @@ function responseData(response: RawTRPCResponse): Record<string, unknown> {
 }
 
 describe("Factory planning WebSocket transport", () => {
+  test("updates task and subtask text through the planning API", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-editing-transport-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+    const server = createFactoryServer({ port: 0, databasePath });
+    const socket = new WebSocket(new URL("/trpc", server.url));
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener(
+          "error",
+          () => reject(new Error("WebSocket connection failed")),
+          { once: true },
+        );
+      });
+
+      const project = responseData(
+        await sendRawTRPCRequest(socket, {
+          id: 101,
+          method: "mutation",
+          params: {
+            input: { name: "Factory planning" },
+            path: "projects.create",
+          },
+        }),
+      );
+      const task = responseData(
+        await sendRawTRPCRequest(socket, {
+          id: 102,
+          method: "mutation",
+          params: {
+            input: {
+              acceptanceCriteria: ["Original criterion"],
+              name: "Original task title",
+              objective: "Original task description",
+              projectId: project.id,
+            },
+            path: "tasks.create",
+          },
+        }),
+      );
+      const subtask = responseData(
+        await sendRawTRPCRequest(socket, {
+          id: 103,
+          method: "mutation",
+          params: {
+            input: {
+              description: "Original subtask description",
+              name: "Original subtask title",
+              taskId: task.id,
+            },
+            path: "subtasks.create",
+          },
+        }),
+      );
+
+      const taskUpdate = await sendRawTRPCRequest(socket, {
+        id: 104,
+        method: "mutation",
+        params: {
+          input: {
+            acceptanceCriteria: ["Updated criterion", "Second criterion"],
+            name: "Updated task title",
+            objective: "Updated task description",
+            taskId: task.id,
+          },
+          path: "tasks.update",
+        },
+      });
+      expect(taskUpdate.result?.type).toBe("data");
+
+      const subtaskUpdate = await sendRawTRPCRequest(socket, {
+        id: 105,
+        method: "mutation",
+        params: {
+          input: {
+            description: "Updated subtask description",
+            name: "Updated subtask title",
+            subtaskId: subtask.id,
+          },
+          path: "subtasks.update",
+        },
+      });
+      expect(subtaskUpdate.result?.type).toBe("data");
+
+      expect(
+        await sendRawTRPCRequest(socket, {
+          id: 106,
+          method: "query",
+          params: {
+            input: { projectId: project.id },
+            path: "projects.detail",
+          },
+        }),
+      ).toMatchObject({
+        id: 106,
+        result: {
+          type: "data",
+          data: {
+            tasks: [
+              {
+                name: "Updated task title",
+                subtasks: [
+                  {
+                    description: "Updated subtask description",
+                    name: "Updated subtask title",
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      });
+
+      expect(
+        await sendRawTRPCRequest(socket, {
+          id: 107,
+          method: "query",
+          params: {
+            input: { taskId: task.id },
+            path: "tasks.detail",
+          },
+        }),
+      ).toMatchObject({
+        id: 107,
+        result: {
+          type: "data",
+          data: {
+            acceptanceCriteria: ["Updated criterion", "Second criterion"],
+            name: "Updated task title",
+            objective: "Updated task description",
+          },
+        },
+      });
+    } finally {
+      socket.close();
+      server.stop();
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
   test("creates a task plan and observes it through project detail", async () => {
     const temporaryDirectory = mkdtempSync(
       join(tmpdir(), "software-factory-planning-transport-"),

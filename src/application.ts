@@ -379,20 +379,43 @@ export class FactoryApplication {
   }
 
   updateTask({
+    acceptanceCriteria,
     branchName,
+    name,
+    objective,
     taskId,
   }: {
-    branchName: string | null;
+    acceptanceCriteria?: string[];
+    branchName?: string | null;
+    name?: string;
+    objective?: string | null;
     taskId: string;
   }): Task {
     this.refreshFromPersistence();
     const task = this.tasks.find((candidate) => candidate.id === taskId);
     if (!task) throw new Error(`Task ${taskId} does not exist.`);
 
-    if (branchName?.trim()) {
-      task.branchName = branchName.trim();
-    } else {
-      delete task.branchName;
+    if (name !== undefined) {
+      const trimmedName = name.trim();
+      if (!trimmedName) throw new Error("Task title must not be empty.");
+      task.name = trimmedName;
+    }
+    if (objective !== undefined) {
+      if (objective?.trim()) {
+        task.objective = objective.trim();
+      } else {
+        delete task.objective;
+      }
+    }
+    if (acceptanceCriteria !== undefined) {
+      task.acceptanceCriteria = acceptanceCriteria;
+    }
+    if (branchName !== undefined) {
+      if (branchName?.trim()) {
+        task.branchName = branchName.trim();
+      } else {
+        delete task.branchName;
+      }
     }
     this.save();
     return task;
@@ -421,6 +444,37 @@ export class FactoryApplication {
     };
 
     this.subtasks.push(subtask);
+    this.save();
+    return subtask;
+  }
+
+  updateSubtask({
+    description,
+    name,
+    subtaskId,
+  }: {
+    description?: string | null;
+    name?: string;
+    subtaskId: string;
+  }): Subtask {
+    this.refreshFromPersistence();
+    const subtask = this.subtasks.find(
+      (candidate) => candidate.id === subtaskId,
+    );
+    if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
+
+    if (name !== undefined) {
+      const trimmedName = name.trim();
+      if (!trimmedName) throw new Error("Subtask title must not be empty.");
+      subtask.name = trimmedName;
+    }
+    if (description !== undefined) {
+      if (description?.trim()) {
+        subtask.description = description.trim();
+      } else {
+        delete subtask.description;
+      }
+    }
     this.save();
     return subtask;
   }
