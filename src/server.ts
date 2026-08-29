@@ -318,6 +318,36 @@ function createRouter(
 
 export type FactoryRouter = ReturnType<typeof createRouter>;
 
+export type FactoryServerOptions = {
+  databasePath: string;
+  hostname: string;
+  port: number;
+};
+
+export function getFactoryServerOptions(
+  environment: Record<string, string | undefined>,
+): FactoryServerOptions {
+  const configuredPort = environment.FACTORY_PORT ?? "3000";
+  const port = Number(configuredPort);
+
+  if (
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65_535 ||
+    String(port) !== configuredPort
+  ) {
+    throw new Error(
+      `FACTORY_PORT must be an integer from 1 through 65535; received ${JSON.stringify(configuredPort)}.`,
+    );
+  }
+
+  return {
+    databasePath: environment.FACTORY_DB ?? "factory.sqlite",
+    hostname: environment.FACTORY_HOST ?? "127.0.0.1",
+    port,
+  };
+}
+
 export function createFactoryServer({
   databasePath = "factory.sqlite",
   hostname = "127.0.0.1",
@@ -448,9 +478,6 @@ function toBuffer(message: string | ArrayBuffer | Uint8Array): Buffer {
 }
 
 if (import.meta.main) {
-  const server = createFactoryServer({
-    hostname: Bun.env.FACTORY_HOST ?? "127.0.0.1",
-    port: 3000,
-  });
+  const server = createFactoryServer(getFactoryServerOptions(Bun.env));
   console.info(`Software Factory listening at ${server.url}`);
 }

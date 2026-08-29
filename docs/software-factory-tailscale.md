@@ -5,7 +5,50 @@ entry point. If local agents need direct HTTP/WebSocket access, the operator can
 the server to all local IPv4 interfaces; do not use Funnel or expose the port beyond a trusted
 network.
 
-## Start the local service
+## Run the durable user service
+
+Deploy the current checkout as a stable snapshot and load its macOS LaunchAgent:
+
+```bash
+bun run service:deploy
+```
+
+The LaunchAgent `com.app-press.factory` starts at login, restarts after an unexpected exit,
+binds `0.0.0.0:3000` for the trusted LAN clients, and continues to use the checkout's existing
+`factory.sqlite`. Its executable and web assets are copied to
+`~/Library/Application Support/Factory/current`, so edits in the checkout cannot affect the
+running service until the deploy command is run again. Logs are written under
+`~/Library/Logs/Factory/`.
+
+Inspect the service and its listener:
+
+```bash
+launchctl print gui/$(id -u)/com.app-press.factory
+lsof -nP -iTCP:3000 -sTCP:LISTEN
+```
+
+Each deploy keeps its prior release under `~/Library/Application Support/Factory/releases/`.
+To roll back, repoint the `current` symlink to the prior release and restart the LaunchAgent.
+
+## Test checkout changes on port 3001
+
+Keep the user service on port 3000 and start the mutable checkout separately:
+
+```bash
+bun run dev
+```
+
+This serves the checkout on `http://127.0.0.1:3001` and uses the same durable Factory database,
+whose adapter refreshes before each read and write. For data-isolated testing, override the
+database as well:
+
+```bash
+FACTORY_DB=factory-dev.sqlite bun run dev
+```
+
+Deploy again only after the checkout has passed its intended checks.
+
+## Start an interactive port-3000 server
 
 ```bash
 bun run start
@@ -19,7 +62,7 @@ lsof -nP -iTCP:3000 -sTCP:LISTEN
 
 The output should name `127.0.0.1:3000`, not `*:3000`.
 
-## Optional local-agent access
+## Optional interactive local-agent access
 
 Start the server on the local network only when the agents need to call the HTTP or WebSocket
 API directly:
@@ -68,7 +111,10 @@ Factory's private route. Never use `tailscale funnel` for Factory.
 
 ## Acceptance checks
 
-- Local listener is loopback-only.
+- The durable user service listens on trusted LAN interfaces at port 3000; an interactive
+  default server remains loopback-only.
+- The checkout can listen on loopback port 3001 at the same time without displacing the
+  durable service.
 - Phone reaches the dashboard only while its Tailscale connection is active.
 - Dashboard establishes the tRPC WebSocket and shows `Connected`.
 - Dropping Tailscale changes the UI to `Disconnected` and disables mutations.

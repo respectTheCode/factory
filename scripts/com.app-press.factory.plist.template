@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.app-press.factory</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__BUN_PATH__</string>
+    <string>__SERVICE_ROOT__/current/server.js</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__SERVICE_ROOT__/current</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FACTORY_DB</key>
+    <string>__DATABASE_PATH__</string>
+    <key>FACTORY_HOST</key>
+    <string>0.0.0.0</string>
+    <key>FACTORY_PORT</key>
+    <string>3000</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardErrorPath</key>
+  <string>__LOG_ROOT__/factory.err.log</string>
+  <key>StandardOutPath</key>
+  <string>__LOG_ROOT__/factory.out.log</string>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+</dict>
+</plist>

@@ -5,8 +5,10 @@
   "scripts": {
     "build": "bun run typecheck && bun run build:web",
     "build:web": "bun build ./src/web/main.tsx ./src/web/service-worker.ts --outdir ./dist --target browser",
+    "dev": "FACTORY_PORT=3001 bun run start",
     "format": "prettier --check package.json tsconfig.json src tests",
     "format:write": "prettier --write package.json tsconfig.json src tests",
+    "service:deploy": "bash ./scripts/deploy-user-service.sh",
     "start": "bun run build && bun run src/server.ts",
     "test": "bun test",
     "test:watch": "bun test --watch",
