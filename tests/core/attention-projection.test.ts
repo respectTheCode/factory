@@ -37,6 +37,9 @@ function addTask(
     taskId: task.id,
   });
   const report = app.reportSubtaskStatus({
+    ...(input.reportedState === "blocked" || input.reportedState === "complete"
+      ? { reason: "Check the next action against the acceptance criteria." }
+      : {}),
     reportedState: input.reportedState,
     reporter: "codex",
     subtaskId: subtask.id,
@@ -77,6 +80,20 @@ describe("attention projection", () => {
       priority: "medium",
       reportedState: "in_progress",
     });
+    const zetaPlanned = addTask(app, zeta.id, {
+      name: "Plan deployment",
+      owner: "sam",
+      priority: "medium",
+    });
+    const zetaBacklog = addTask(app, zeta.id, {
+      name: "Consider deployment follow-up",
+      owner: "sam",
+      priority: "low",
+    });
+    app.setTaskWorkState({
+      taskId: zetaBacklog.id,
+      workState: "backlog",
+    });
     const zetaCompleted = addTask(app, zeta.id, {
       name: "Archive deployment",
       owner: "kevin",
@@ -105,15 +122,6 @@ describe("attention projection", () => {
       {
         projectId: zeta.id,
         projectName: "Zeta launch",
-        taskId: zetaActive.id,
-        taskName: "Build deployment",
-        state: "active",
-        priority: "medium",
-        owner: "sam",
-      },
-      {
-        projectId: zeta.id,
-        projectName: "Zeta launch",
         taskId: zetaBlocked.id,
         taskName: "Unblock deployment",
         state: "blocked",
@@ -128,6 +136,33 @@ describe("attention projection", () => {
         state: "awaiting_verification",
         priority: "high",
         owner: "alex",
+      },
+      {
+        projectId: zeta.id,
+        projectName: "Zeta launch",
+        taskId: zetaActive.id,
+        taskName: "Build deployment",
+        state: "active",
+        priority: "medium",
+        owner: "sam",
+      },
+      {
+        projectId: zeta.id,
+        projectName: "Zeta launch",
+        taskId: zetaPlanned.id,
+        taskName: "Plan deployment",
+        state: "planned",
+        priority: "medium",
+        owner: "sam",
+      },
+      {
+        projectId: zeta.id,
+        projectName: "Zeta launch",
+        taskId: zetaBacklog.id,
+        taskName: "Consider deployment follow-up",
+        state: "backlog",
+        priority: "low",
+        owner: "sam",
       },
     ]);
 

@@ -37,6 +37,8 @@ describe("subtask history", () => {
     });
     const secondReport = app.reportSubtaskStatus({
       evidence: "Build 2026-08-23 passed in CI.",
+      reason:
+        "Check the second implementation against the acceptance criteria.",
       reporter: "codex",
       reportedState: "complete",
       subtaskId: subtask.id,

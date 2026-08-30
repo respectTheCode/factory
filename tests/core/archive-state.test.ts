@@ -72,6 +72,7 @@ describe("archived task and subtask states", () => {
     });
     const report = app.reportSubtaskStatus({
       evidence: "The build is already available to users.",
+      reason: "Check the released build against the acceptance criteria.",
       reporter: "codex",
       reportedState: "complete",
       subtaskId: releasedSubtask.id,

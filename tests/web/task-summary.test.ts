@@ -3,7 +3,9 @@ import { describe, expect, test } from "bun:test";
 import {
   filterAttention,
   filterArchivedTasks,
+  groupSubtasksByStatus,
   groupTasksByStatus,
+  reorderIds,
   summarizeTaskProgress,
 } from "../../src/web/task-summary";
 
@@ -93,10 +95,10 @@ describe("task presentation summaries", () => {
 
   test("groups tasks in workflow order and preserves each group's task order", () => {
     const tasks = [
-      { id: "active-1", name: "Active one" },
-      { id: "planned-1", name: "Planned one" },
-      { id: "active-2", name: "Active two" },
-      { id: "blocked-1", name: "Blocked one" },
+      { id: "active-1", name: "Active one", sortOrder: 20 },
+      { id: "planned-1", name: "Planned one", sortOrder: 1 },
+      { id: "active-2", name: "Active two", sortOrder: 10 },
+      { id: "blocked-1", name: "Blocked one", sortOrder: 1 },
     ];
 
     const groups = groupTasksByStatus(tasks, {
@@ -107,13 +109,13 @@ describe("task presentation summaries", () => {
     });
 
     expect(groups.map((group) => group.state)).toEqual([
-      "planned",
-      "active",
       "blocked",
+      "active",
+      "planned",
     ]);
     expect(groups[1]?.tasks.map((task) => task.id)).toEqual([
-      "active-1",
       "active-2",
+      "active-1",
     ]);
   });
 
@@ -128,6 +130,57 @@ describe("task presentation summaries", () => {
         state: "released",
         tasks: [{ archiveState: "released", id: "released", name: "Shipped" }],
       },
+    ]);
+  });
+
+  test("groups subtasks by state so their within-state order is visible", () => {
+    const groups = groupSubtasksByStatus([
+      {
+        id: "active-1",
+        name: "Active one",
+        state: "active" as const,
+        sortOrder: 20,
+      },
+      {
+        id: "blocked",
+        name: "Blocked",
+        state: "blocked" as const,
+        sortOrder: 1,
+      },
+      {
+        id: "active-2",
+        name: "Active two",
+        state: "active" as const,
+        sortOrder: 10,
+      },
+      {
+        id: "planned",
+        name: "Planned",
+        state: "planned" as const,
+        sortOrder: 1,
+      },
+    ]);
+
+    expect(groups.map((group) => group.state)).toEqual([
+      "blocked",
+      "active",
+      "planned",
+    ]);
+    expect(groups[1]?.subtasks.map((subtask) => subtask.id)).toEqual([
+      "active-2",
+      "active-1",
+    ]);
+  });
+
+  test("moves an item before a same-state target or to the state tail", () => {
+    expect(reorderIds(["a", "b", "c"], "c", "a")).toEqual(["c", "a", "b"]);
+    expect(reorderIds(["a", "b", "c"], "a", "c")).toEqual(["b", "a", "c"]);
+    expect(reorderIds(["a", "b", "c"], "a")).toEqual(["b", "c", "a"]);
+    expect(reorderIds(["a", "b", "c"], "c")).toEqual(["a", "b", "c"]);
+    expect(reorderIds(["a", "b", "c"], "missing", "a")).toEqual([
+      "a",
+      "b",
+      "c",
     ]);
   });
 });

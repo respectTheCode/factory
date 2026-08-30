@@ -26,6 +26,13 @@ separate human verification state. A Subtask may have an Archive State of `relea
 `wont_do`; this changes only the Subtask's disposition and does not archive its parent Task.
 _Avoid_: checklist item, to-do
 
+**Work State**:
+A Task or Subtask's explicit workflow placement: `backlog`, `planned`, `active`,
+`awaiting_verification`, `blocked`, or `completed`. A Task's Work State remains directly
+editable even when Subtask transitions can advance it; completion follows its own all-active-
+Subtasks rule.
+_Avoid_: derived status, progress percentage
+
 **Archive State**:
 A durable terminal disposition for a Task or Subtask: `released` means the work shipped, and
 `wont_do` means the work was intentionally abandoned. Archived records remain visible in their

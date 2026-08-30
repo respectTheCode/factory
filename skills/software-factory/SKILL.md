@@ -49,6 +49,11 @@ bun run src/cli.ts task update --task-id TASK_ID \
   --acceptance-criteria "First check|Second check" \
   --branch-name "GRA-143-preview-environments" --database "$FACTORY_DB"
 bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
+bun run src/cli.ts task state --task-id TASK_ID --state active --database "$FACTORY_DB"
+bun run src/cli.ts task state --task-id TASK_ID --state blocked \
+  --reason "What is blocking the work and what must be checked" --database "$FACTORY_DB"
+bun run src/cli.ts task reorder --project-id PROJECT_ID --state planned \
+  --task-ids TASK_ID_2\|TASK_ID_1 --database "$FACTORY_DB"
 bun run src/cli.ts task status --task-id TASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts task archive --task-id TASK_ID --state released --database "$FACTORY_DB"
 bun run src/cli.ts task restore --task-id TASK_ID --database "$FACTORY_DB"
@@ -57,6 +62,10 @@ bun run src/cli.ts subtask create --task-id TASK_ID --name "Subtask name" --desc
 bun run src/cli.ts subtask update --subtask-id SUBTASK_ID \
   --title "Subtask title" --description "What must be checked" --database "$FACTORY_DB"
 bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state in_progress --reporter codex --evidence "What changed" --database "$FACTORY_DB"
+bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state backlog \
+  --reason "What I need to check before starting" --reporter codex --database "$FACTORY_DB"
+bun run src/cli.ts subtask reorder --task-id TASK_ID --state planned \
+  --subtask-ids SUBTASK_ID_2\|SUBTASK_ID_1 --database "$FACTORY_DB"
 bun run src/cli.ts subtask status --json --task-id TASK_ID --database "$FACTORY_DB"
 bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts subtask archive --subtask-id SUBTASK_ID --state wont_do --database "$FACTORY_DB"
@@ -105,10 +114,21 @@ Agents may change acceptance criteria only during the planning phase. Run `task 
 make the edit only when the Task state is `planned`, before implementation begins. The CLI rejects
 criteria edits once the Task is active, blocked, awaiting verification, completed, or archived.
 
-Agents may report `not_started`, `in_progress`, `blocked`, or `complete`.
-Reports are append-only. A complete report remains `awaiting_verification`
-until a human accepts it in the Factory dashboard. The noninteractive CLI
-intentionally refuses verification so an agent cannot self-approve its work.
+Agents may directly move Tasks between `backlog`, `planned`, `active`,
+`awaiting_verification`, and `blocked` with `task state`, and may
+reorder Tasks or Subtasks within one state. Moving into `blocked` or
+`awaiting_verification` requires `--reason`; direct state changes never rewrite
+Subtasks. Completed is set by human verification in the Factory dashboard and
+cannot be assigned by an agent through this CLI. State changes are durable and
+remain `schemaVersion: 1` in CLI output.
+
+Agents may report `backlog`, `not_started`, `in_progress`, `blocked`, or `complete`.
+Reports are append-only. Reports for `blocked` and `complete` require `--reason`
+describing the blocker or the verification check. A complete report remains
+`awaiting_verification` until a human accepts it in the Factory dashboard. The
+noninteractive CLI intentionally refuses verification so an agent cannot
+self-approve its work; rejected or deferred verification reasons remain a
+human-only PWA concern.
 
 ## Agent operating loop
 

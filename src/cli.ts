@@ -5,6 +5,7 @@ import {
   type ArchiveState,
   type ReportedState,
   type VerificationDecision,
+  type WorkState,
 } from "./application";
 
 const SCHEMA_VERSION = 1 as const;
@@ -56,6 +57,20 @@ function listFlag(flags: Map<string, string>, name: string): string[] {
     .filter(Boolean);
 }
 
+function orderedIdsFlag(
+  flags: Map<string, string>,
+  name: "subtask-ids" | "task-ids",
+): string[] {
+  const value = requiredFlag(flags, name);
+  const ids = value
+    .split("|")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (ids.length === 0)
+    throw new Error(`--${name} must include at least one ID.`);
+  return ids;
+}
+
 function trackerSystem(flags: Map<string, string>): "linear" | "notion" {
   const value = requiredFlag(flags, "system");
   if (value !== "linear" && value !== "notion") {
@@ -79,14 +94,65 @@ function reportedStateFlag(flags: Map<string, string>): ReportedState {
   const value = requiredFlag(flags, "state");
   if (
     !(
-      ["not_started", "in_progress", "blocked", "complete"] as string[]
+      [
+        "not_started",
+        "in_progress",
+        "blocked",
+        "complete",
+        "backlog",
+      ] as string[]
     ).includes(value)
   ) {
     throw new Error(
-      "--state must be not_started, in_progress, blocked, or complete.",
+      "--state must be not_started, in_progress, blocked, complete, or backlog.",
     );
   }
   return value as ReportedState;
+}
+
+function workStateFlag(flags: Map<string, string>): WorkState {
+  const value = (flags.get("state") ?? flags.get("work-state"))?.trim();
+  if (!value) throw new Error("Missing required --state.");
+  if (
+    !(
+      [
+        "backlog",
+        "planned",
+        "active",
+        "awaiting_verification",
+        "blocked",
+        "completed",
+      ] as string[]
+    ).includes(value)
+  ) {
+    throw new Error(
+      "--state must be backlog, planned, active, awaiting_verification, blocked, or completed.",
+    );
+  }
+  return value as WorkState;
+}
+
+function editableTaskStateFlag(
+  flags: Map<string, string>,
+): Exclude<WorkState, "completed"> {
+  const value = (flags.get("state") ?? flags.get("work-state"))?.trim();
+  if (!value) throw new Error("Missing required --state.");
+  if (
+    !(
+      [
+        "backlog",
+        "planned",
+        "active",
+        "awaiting_verification",
+        "blocked",
+      ] as string[]
+    ).includes(value)
+  ) {
+    throw new Error(
+      "--state must be backlog, planned, active, awaiting_verification, or blocked; completed is set by human verification.",
+    );
+  }
+  return value as Exclude<WorkState, "completed">;
 }
 
 function archiveStateFlag(flags: Map<string, string>): ArchiveState {
@@ -379,6 +445,30 @@ function main(args: string[]): void {
     return;
   }
 
+  if (resource === "task" && action === "state") {
+    const taskId = requiredFlag(parsed.flags, "task-id");
+    application.setTaskWorkState({
+      reason: parsed.flags.get("reason"),
+      taskId,
+      workState: editableTaskStateFlag(parsed.flags),
+    });
+    output({ status: application.getTaskStatus(taskId) });
+    return;
+  }
+
+  if (resource === "task" && action === "reorder") {
+    const projectId = requiredFlag(parsed.flags, "project-id");
+    const workState = workStateFlag(parsed.flags);
+    const taskIds = orderedIdsFlag(parsed.flags, "task-ids");
+    application.reorderTasks({
+      orderedTaskIds: taskIds,
+      projectId,
+      workState,
+    });
+    output({ order: { projectId, taskIds, workState } });
+    return;
+  }
+
   if (resource === "task" && action === "update") {
     const acceptanceCriteria = parsed.flags.has("acceptance-criteria")
       ? listFlag(parsed.flags, "acceptance-criteria")
@@ -489,9 +579,23 @@ function main(args: string[]): void {
       evidence: parsed.flags.get("evidence"),
       reportedState: reportedStateFlag(parsed.flags),
       reporter: requiredFlag(parsed.flags, "reporter"),
+      reason: parsed.flags.get("reason"),
       subtaskId: requiredFlag(parsed.flags, "subtask-id"),
     });
     output({ report });
+    return;
+  }
+
+  if (resource === "subtask" && action === "reorder") {
+    const taskId = requiredFlag(parsed.flags, "task-id");
+    const workState = workStateFlag(parsed.flags);
+    const subtaskIds = orderedIdsFlag(parsed.flags, "subtask-ids");
+    application.reorderSubtasks({
+      orderedSubtaskIds: subtaskIds,
+      taskId,
+      workState,
+    });
+    output({ order: { subtaskIds, taskId, workState } });
     return;
   }
 
@@ -535,7 +639,7 @@ function main(args: string[]): void {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link, task create|update|detail|status|archive|restore|link, subtask create|update|report|status|archive|restore|history|verify",
+    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link, task create|update|detail|state|status|reorder|archive|restore|link, subtask create|update|report|reorder|status|archive|restore|history|verify",
   );
 }
 

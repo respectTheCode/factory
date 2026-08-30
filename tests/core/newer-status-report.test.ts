@@ -31,6 +31,7 @@ describe("current subtask status", () => {
 
     const acceptedReport = app.reportSubtaskStatus({
       evidence: "bun test tests/core/project-task-hierarchy.test.ts",
+      reason: "Check the result against the acceptance criteria.",
       reporter: "codex",
       reportedState: "complete",
       subtaskId: subtask.id,

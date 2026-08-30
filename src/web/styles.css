@@ -1856,3 +1856,111 @@ option {
     width: 100%;
   }
 }
+
+/* Work-state ordering and touch-friendly controls. */
+.reorder-handle {
+  align-items: center;
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--ink-faint);
+  cursor: grab;
+  display: inline-flex;
+  flex: 0 0 32px;
+  font: 600 16px/1 var(--mono);
+  justify-content: center;
+  min-height: 32px;
+  min-width: 32px;
+  padding: 4px;
+  touch-action: none;
+  user-select: none;
+}
+.reorder-handle:hover,
+.reorder-handle:focus-visible {
+  background: var(--tint-accent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.reorder-handle:active {
+  cursor: grabbing;
+}
+.reorder-handle:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.task-row.is-dragging,
+.subtask.is-dragging {
+  opacity: 0.55;
+}
+.task-row.is-drag-over,
+.subtask.is-drag-over {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.state-reason {
+  background: var(--tint-warn);
+  border-left: 3px solid var(--sig-warn);
+  color: var(--ink);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  margin-top: 8px;
+  padding: 7px 9px;
+}
+.task-group-backlog .task-group-heading,
+.subtask-group-backlog .subtask-group-heading {
+  background: var(--raised);
+  border-color: var(--rule);
+}
+.subtask-group + .subtask-group {
+  border-top: 1px solid var(--rule);
+}
+.subtask-group-heading {
+  align-items: center;
+  color: var(--ink-dim);
+  display: flex;
+  font-size: 0.7rem;
+  gap: 6px;
+  padding: 6px 0 2px;
+  text-transform: uppercase;
+}
+.subtask-group-heading h4 {
+  font: 600 0.68rem/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  margin: 0;
+}
+.subtask-group-heading span {
+  color: var(--ink-faint);
+}
+.subtask-group-items {
+  padding-bottom: 2px;
+}
+.status-reason-form,
+.verification-reason-form {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  display: grid;
+  gap: 7px;
+  margin: 4px 0;
+  padding: 8px;
+}
+.status-reason-form label,
+.verification-reason-form label {
+  color: var(--ink-dim);
+  display: grid;
+  font-size: 0.72rem;
+  gap: 4px;
+}
+.status-reason-form textarea,
+.verification-reason-form textarea {
+  min-height: 66px;
+  width: 100%;
+}
+.field-error {
+  color: var(--sig-down);
+  font-size: 0.72rem;
+}
+.verification-reason-form {
+  flex: 1 1 100%;
+  min-width: 220px;
+}

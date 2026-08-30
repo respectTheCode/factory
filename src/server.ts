@@ -22,6 +22,22 @@ export type FactoryServer = {
 
 const trpc = initTRPC.create();
 
+const workStateSchema = z.enum([
+  "backlog",
+  "planned",
+  "active",
+  "awaiting_verification",
+  "blocked",
+  "completed",
+]);
+const editableTaskStateSchema = z.enum([
+  "backlog",
+  "planned",
+  "active",
+  "awaiting_verification",
+  "blocked",
+]);
+
 class ProjectUpdateBus {
   private readonly listeners = new Map<
     string,
@@ -183,7 +199,9 @@ function createRouter(
               "in_progress",
               "blocked",
               "complete",
+              "backlog",
             ]),
+            reason: z.string().trim().min(1).optional(),
             reporter: z.string().min(1),
             subtaskId: z.string().min(1),
           }),
@@ -215,11 +233,25 @@ function createRouter(
           projectUpdates.publishAll();
           return { subtaskId: input.subtaskId };
         }),
+      reorder: trpc.procedure
+        .input(
+          z.object({
+            orderedSubtaskIds: z.array(z.string().min(1)).min(1),
+            taskId: z.string().min(1),
+            workState: workStateSchema,
+          }),
+        )
+        .mutation(({ input }) => {
+          const result = application.reorderSubtasks(input);
+          projectUpdates.publishAll();
+          return result;
+        }),
       verify: trpc.procedure
         .input(
           z.object({
             decision: z.enum(["accepted", "rejected", "deferred"]),
             reportId: z.string().min(1),
+            reason: z.string().trim().min(1).optional(),
             verifier: z.string().min(1),
           }),
         )
@@ -313,6 +345,33 @@ function createRouter(
           application.restoreTask(input.taskId);
           projectUpdates.publishAll();
           return { taskId: input.taskId };
+        }),
+      reorder: trpc.procedure
+        .input(
+          z.object({
+            orderedTaskIds: z.array(z.string().min(1)).min(1),
+            projectId: z.string().min(1),
+            workState: workStateSchema,
+          }),
+        )
+        .mutation(({ input }) => {
+          const result = application.reorderTasks(input);
+          projectUpdates.publish(input.projectId);
+          return result;
+        }),
+      setState: trpc.procedure
+        .input(
+          z.object({
+            reason: z.string().trim().min(1).optional(),
+            taskId: z.string().min(1),
+            workState: editableTaskStateSchema,
+          }),
+        )
+        .mutation(({ input }) => {
+          const result = application.setTaskWorkState(input);
+          const task = application.getTaskDetail(input.taskId);
+          projectUpdates.publish(task.projectId);
+          return result;
         }),
       link: trpc.procedure
         .input(

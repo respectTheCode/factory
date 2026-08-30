@@ -21,6 +21,16 @@ type Project = {
   createdAt: Date;
 };
 
+export type WorkState =
+  | "backlog"
+  | "planned"
+  | "active"
+  | "awaiting_verification"
+  | "blocked"
+  | "completed";
+
+type TaskWorkStateSource = "manual" | "rollup";
+
 type Task = {
   id: string;
   name: string;
@@ -32,6 +42,10 @@ type Task = {
   owner?: string;
   dependencies: string[];
   repositoryLinks: string[];
+  workState?: WorkState;
+  workStateSource?: TaskWorkStateSource;
+  stateReason?: string;
+  sortOrder?: number;
   archiveState?: ArchiveState;
   createdAt: Date;
 };
@@ -42,6 +56,7 @@ type Subtask = {
   taskId: string;
   description?: string;
   evidence?: string;
+  sortOrder?: number;
   archiveState?: ArchiveState;
   createdAt: Date;
 };
@@ -49,6 +64,7 @@ type Subtask = {
 export type ArchiveState = "released" | "wont_do";
 
 export type ReportedState =
+  | "backlog"
   | "not_started"
   | "in_progress"
   | "blocked"
@@ -60,6 +76,7 @@ export type StatusReport = {
   reportedState: ReportedState;
   reporter: string;
   evidence?: string;
+  reason?: string;
   createdAt: Date;
 };
 
@@ -70,16 +87,11 @@ export type Verification = {
   reportId: string;
   decision: VerificationDecision;
   verifier: string;
+  reason?: string;
   createdAt: Date;
 };
 
-export type ProjectWorkState =
-  | "planned"
-  | "active"
-  | "awaiting_verification"
-  | "completed"
-  | "blocked"
-  | ArchiveState;
+export type ProjectWorkState = WorkState | ArchiveState;
 
 export type ProjectWorkCounts = Record<ProjectWorkState, number>;
 
@@ -96,9 +108,13 @@ export type AttentionItem = {
 export type TaskStatus = {
   taskCompleted: boolean;
   taskState: ProjectWorkState;
+  stateReason?: string;
   archiveState?: ArchiveState;
   subtasks: Array<{
     reportedState?: ReportedState;
+    effectiveState: WorkState;
+    sortOrder?: number;
+    reason?: string;
     verificationState:
       | "accepted"
       | "awaiting_verification"
@@ -106,6 +122,7 @@ export type TaskStatus = {
       | "rejected"
       | "unreported";
     id?: string;
+    subtaskId?: string;
     reportId?: string;
     evidence?: string;
     reporter?: string;
@@ -136,6 +153,7 @@ type FactoryState = {
 
 function emptyProjectWorkCounts(): ProjectWorkCounts {
   return {
+    backlog: 0,
     planned: 0,
     active: 0,
     awaiting_verification: 0,
@@ -153,6 +171,34 @@ function removeMatching<T>(items: T[], matches: (item: T) => boolean): void {
   }
 }
 
+const WORK_STATE_RANK: Record<WorkState, number> = {
+  backlog: 0,
+  planned: 1,
+  active: 2,
+  awaiting_verification: 3,
+  blocked: 4,
+  completed: 5,
+};
+
+const WORK_STATE_DISPLAY_ORDER: Record<WorkState, number> = {
+  completed: 0,
+  blocked: 1,
+  awaiting_verification: 2,
+  active: 3,
+  planned: 4,
+  backlog: 5,
+};
+
+function requireReason(reason: string | undefined, message: string): string {
+  const trimmed = reason?.trim();
+  if (!trimmed) throw new Error(message);
+  return trimmed;
+}
+
+function compareWorkStates(left: WorkState, right: WorkState): number {
+  return WORK_STATE_RANK[left] - WORK_STATE_RANK[right];
+}
+
 export type ProjectHierarchy = {
   id: string;
   name: string;
@@ -162,6 +208,9 @@ export type ProjectHierarchy = {
     name: string;
     projectId: string;
     branchName?: string;
+    workState?: WorkState;
+    stateReason?: string;
+    sortOrder?: number;
     archiveState?: ArchiveState;
     subtasks: Array<{
       id: string;
@@ -169,6 +218,9 @@ export type ProjectHierarchy = {
       taskId: string;
       description?: string;
       evidence?: string;
+      workState?: WorkState;
+      stateReason?: string;
+      sortOrder?: number;
       archiveState?: ArchiveState;
     }>;
   }>;
@@ -345,6 +397,8 @@ export class FactoryApplication {
     owner,
     dependencies = [],
     repositoryLinks = [],
+    stateReason,
+    workState = "planned",
   }: {
     branchName?: string;
     name: string;
@@ -355,11 +409,23 @@ export class FactoryApplication {
     owner?: string;
     dependencies?: string[];
     repositoryLinks?: string[];
+    stateReason?: string;
+    workState?: WorkState;
   }): Task {
     this.refreshFromPersistence();
     if (!this.projects.some((project) => project.id === projectId)) {
       throw new Error(`Project ${projectId} does not exist.`);
     }
+
+    if (workState === "completed") {
+      throw new Error(
+        "A Task cannot be created completed; complete its active Subtasks first.",
+      );
+    }
+    const normalizedReason =
+      workState === "blocked" || workState === "awaiting_verification"
+        ? requireReason(stateReason, `Task ${workState} requires a reason.`)
+        : undefined;
 
     const task = {
       id: this.idGenerator(),
@@ -372,6 +438,9 @@ export class FactoryApplication {
       owner,
       dependencies,
       repositoryLinks,
+      workState,
+      ...(normalizedReason ? { stateReason: normalizedReason } : {}),
+      sortOrder: this.nextTaskSortOrder(projectId, workState),
       createdAt: this.clock(),
     };
 
@@ -385,13 +454,17 @@ export class FactoryApplication {
     branchName,
     name,
     objective,
+    stateReason,
     taskId,
+    workState,
   }: {
     acceptanceCriteria?: string[];
     branchName?: string | null;
     name?: string;
     objective?: string | null;
+    stateReason?: string | null;
     taskId: string;
+    workState?: WorkState;
   }): Task {
     this.refreshFromPersistence();
     const task = this.tasks.find((candidate) => candidate.id === taskId);
@@ -419,8 +492,65 @@ export class FactoryApplication {
         delete task.branchName;
       }
     }
+
+    if (workState !== undefined) {
+      if (workState === "completed" && !this.taskWouldBeCompleted(task.id)) {
+        throw new Error(
+          "A Task cannot be completed until every non-archived Subtask is complete and accepted.",
+        );
+      }
+      const normalizedReason =
+        workState === "blocked" || workState === "awaiting_verification"
+          ? requireReason(
+              stateReason !== undefined
+                ? (stateReason ?? undefined)
+                : this.getEffectiveTaskWorkState(task) === workState
+                  ? task.stateReason
+                  : undefined,
+              `Task ${workState} requires a reason.`,
+            )
+          : undefined;
+      const previousState = this.getEffectiveTaskWorkState(task);
+      task.workState = workState;
+      task.workStateSource = "manual";
+      if (normalizedReason) task.stateReason = normalizedReason;
+      else delete task.stateReason;
+      if (previousState !== workState) {
+        task.sortOrder = this.nextTaskSortOrder(
+          task.projectId,
+          workState,
+          task.id,
+        );
+      }
+    } else if (stateReason !== undefined) {
+      const currentState = this.getEffectiveTaskWorkState(task);
+      if (
+        currentState !== "blocked" &&
+        currentState !== "awaiting_verification"
+      ) {
+        throw new Error(
+          "A Task state reason can only be set while the Task is blocked or awaiting verification.",
+        );
+      }
+      task.stateReason = requireReason(
+        stateReason ?? undefined,
+        `Task ${currentState} requires a reason.`,
+      );
+    }
     this.save();
     return task;
+  }
+
+  setTaskWorkState({
+    reason,
+    taskId,
+    workState,
+  }: {
+    reason?: string;
+    taskId: string;
+    workState: WorkState;
+  }): Task {
+    return this.updateTask({ stateReason: reason, taskId, workState });
   }
 
   createSubtask({
@@ -442,6 +572,7 @@ export class FactoryApplication {
       name,
       taskId,
       ...(description?.trim() ? { description: description.trim() } : {}),
+      sortOrder: this.nextSubtaskSortOrder(taskId, "planned"),
       createdAt: this.clock(),
     };
 
@@ -530,11 +661,13 @@ export class FactoryApplication {
 
   reportSubtaskStatus({
     evidence,
+    reason,
     reporter,
     reportedState,
     subtaskId,
   }: {
     evidence?: string;
+    reason?: string;
     reporter: string;
     reportedState: ReportedState;
     subtaskId: string;
@@ -547,6 +680,15 @@ export class FactoryApplication {
       throw new Error(`Subtask ${subtaskId} does not exist.`);
     }
 
+    const normalizedReason =
+      reportedState === "blocked" || reportedState === "complete"
+        ? requireReason(
+            reason,
+            `Subtask reports for ${reportedState} require a reason.`,
+          )
+        : reason?.trim() || undefined;
+    const previousState = this.getSubtaskEffectiveWorkState(subtask);
+
     const currentEvidence = evidence?.trim() || undefined;
     // The report remains immutable history; the subtask stores the editable
     // current evidence shown by the dashboard.
@@ -558,35 +700,63 @@ export class FactoryApplication {
       reportedState,
       reporter,
       evidence: currentEvidence,
+      ...(normalizedReason ? { reason: normalizedReason } : {}),
       createdAt: this.clock(),
     };
 
     this.statusReports.push(report);
+    const nextState = this.getSubtaskEffectiveWorkState(subtask);
+    this.moveSubtaskToStateIfChanged(subtask, previousState);
+    this.promoteParentTask(subtask.taskId, { nextState, previousState });
     this.save();
     return report;
   }
 
   verifyStatusReport({
     decision,
+    reason,
     reportId,
     verifier,
   }: {
     decision: VerificationDecision;
+    reason?: string;
     reportId: string;
     verifier: string;
   }): void {
     this.refreshFromPersistence();
-    if (!this.statusReports.some((report) => report.id === reportId)) {
+    const report = this.statusReports.find(
+      (candidate) => candidate.id === reportId,
+    );
+    if (!report) {
       throw new Error(`Status Report ${reportId} does not exist.`);
     }
+
+    const subtask = this.subtasks.find(
+      (candidate) => candidate.id === report.subtaskId,
+    );
+    if (!subtask) {
+      throw new Error(`Subtask ${report.subtaskId} does not exist.`);
+    }
+    const previousState = this.getSubtaskEffectiveWorkState(subtask);
+    const normalizedReason =
+      decision === "rejected" || decision === "deferred"
+        ? requireReason(
+            reason,
+            `Verification decisions of ${decision} require a reason.`,
+          )
+        : reason?.trim() || undefined;
 
     this.verifications.push({
       id: this.idGenerator(),
       reportId,
       decision,
       verifier,
+      ...(normalizedReason ? { reason: normalizedReason } : {}),
       createdAt: this.clock(),
     });
+    const nextState = this.getSubtaskEffectiveWorkState(subtask);
+    this.moveSubtaskToStateIfChanged(subtask, previousState);
+    this.promoteParentTask(subtask.taskId, { nextState, previousState });
     this.save();
   }
 
@@ -599,34 +769,53 @@ export class FactoryApplication {
 
     const subtasks: TaskStatus["subtasks"] = this.subtasks
       .filter((subtask) => subtask.taskId === taskId)
+      .sort((left, right) => this.compareSubtasks(left, right))
       .map((subtask) => {
         const report = this.getCurrentStatusReport(subtask.id);
 
         if (!report) {
           return {
+            id: subtask.id,
+            subtaskId: subtask.id,
             ...(subtask.archiveState
               ? { archiveState: subtask.archiveState }
               : {}),
             ...(subtask.evidence ? { evidence: subtask.evidence } : {}),
+            effectiveState: "planned" as const,
+            ...(subtask.sortOrder !== undefined
+              ? { sortOrder: subtask.sortOrder }
+              : {}),
             verificationState: "unreported" as const,
           };
         }
 
         const currentEvidence =
           subtask.evidence !== undefined ? subtask.evidence : report.evidence;
+        const verification = this.getCurrentVerification(report.id);
+        const effectiveState = this.getSubtaskEffectiveWorkState(subtask);
+        const reason =
+          verification?.decision === "rejected" ||
+          verification?.decision === "deferred"
+            ? (verification.reason ?? report.reason)
+            : report.reason;
 
         return {
           ...(subtask.archiveState
             ? { archiveState: subtask.archiveState }
             : {}),
           id: report.id,
+          subtaskId: subtask.id,
           reportId: report.id,
           reportedState: report.reportedState,
+          effectiveState,
+          ...(subtask.sortOrder !== undefined
+            ? { sortOrder: subtask.sortOrder }
+            : {}),
           ...(currentEvidence ? { evidence: currentEvidence } : {}),
+          ...(reason ? { reason } : {}),
           reporter: report.reporter,
           verificationState:
-            this.getCurrentVerification(report.id)?.decision ??
-            ("awaiting_verification" as const),
+            verification?.decision ?? ("awaiting_verification" as const),
         };
       });
 
@@ -642,12 +831,28 @@ export class FactoryApplication {
           subtask.verificationState === "accepted",
       );
 
+    const taskState = task.archiveState
+      ? task.archiveState
+      : task.workStateSource === "manual" && task.workState
+        ? task.workState
+        : task.workStateSource === "rollup" && task.workState
+          ? task.workState
+          : taskCompleted
+            ? "completed"
+            : (task.workState ??
+              this.deriveTaskWorkState(taskCompleted, activeSubtasks));
+    const stateReason =
+      taskState === "blocked" || taskState === "awaiting_verification"
+        ? (task.stateReason ??
+          activeSubtasks.find((subtask) => subtask.effectiveState === taskState)
+            ?.reason)
+        : undefined;
+
     return {
       taskCompleted,
       ...(task.archiveState ? { archiveState: task.archiveState } : {}),
-      taskState:
-        task.archiveState ??
-        this.deriveTaskWorkState(taskCompleted, activeSubtasks),
+      taskState,
+      ...(stateReason ? { stateReason } : {}),
       subtasks,
     };
   }
@@ -713,10 +918,11 @@ export class FactoryApplication {
   getAttentionProjection(): AttentionItem[] {
     this.refreshFromPersistence();
     const stateOrder: Record<AttentionItem["state"], number> = {
-      planned: 0,
-      active: 1,
-      blocked: 2,
-      awaiting_verification: 3,
+      blocked: 0,
+      awaiting_verification: 1,
+      active: 2,
+      planned: 3,
+      backlog: 4,
     };
 
     return this.tasks
@@ -798,27 +1004,48 @@ export class FactoryApplication {
       ...(project.gitOriginUrl ? { gitOriginUrl: project.gitOriginUrl } : {}),
       tasks: this.tasks
         .filter((task) => task.projectId === project.id)
-        .map((task) => ({
-          id: task.id,
-          name: task.name,
-          projectId: task.projectId,
-          ...(task.branchName ? { branchName: task.branchName } : {}),
-          ...(task.archiveState ? { archiveState: task.archiveState } : {}),
-          subtasks: this.subtasks
-            .filter((subtask) => subtask.taskId === task.id)
-            .map((subtask) => ({
-              id: subtask.id,
-              name: subtask.name,
-              taskId: subtask.taskId,
-              ...(subtask.archiveState
-                ? { archiveState: subtask.archiveState }
-                : {}),
-              ...(subtask.description !== undefined
-                ? { description: subtask.description }
-                : {}),
-              ...(subtask.evidence ? { evidence: subtask.evidence } : {}),
-            })),
-        })),
+        .sort((left, right) => this.compareTasks(left, right))
+        .map((task) => {
+          const taskState = this.getEffectiveTaskWorkState(task);
+          const taskStateReason = this.getTaskStateReason(task, taskState);
+          return {
+            id: task.id,
+            name: task.name,
+            projectId: project.id,
+            ...(task.branchName ? { branchName: task.branchName } : {}),
+            workState: taskState,
+            ...(taskStateReason ? { stateReason: taskStateReason } : {}),
+            ...(task.sortOrder !== undefined
+              ? { sortOrder: task.sortOrder }
+              : {}),
+            ...(task.archiveState ? { archiveState: task.archiveState } : {}),
+            subtasks: this.subtasks
+              .filter((subtask) => subtask.taskId === task.id)
+              .sort((left, right) => this.compareSubtasks(left, right))
+              .map((subtask) => {
+                const subtaskStateReason = this.getSubtaskStateReason(subtask);
+                return {
+                  id: subtask.id,
+                  name: subtask.name,
+                  taskId: subtask.taskId,
+                  workState: this.getSubtaskEffectiveWorkState(subtask),
+                  ...(subtaskStateReason
+                    ? { stateReason: subtaskStateReason }
+                    : {}),
+                  ...(subtask.sortOrder !== undefined
+                    ? { sortOrder: subtask.sortOrder }
+                    : {}),
+                  ...(subtask.archiveState
+                    ? { archiveState: subtask.archiveState }
+                    : {}),
+                  ...(subtask.description !== undefined
+                    ? { description: subtask.description }
+                    : {}),
+                  ...(subtask.evidence ? { evidence: subtask.evidence } : {}),
+                };
+              }),
+          };
+        }),
     };
   }
 
@@ -894,12 +1121,17 @@ export class FactoryApplication {
     owner?: string;
     dependencies: string[];
     repositoryLinks: string[];
+    workState?: WorkState;
+    stateReason?: string;
+    sortOrder?: number;
     archiveState?: ArchiveState;
     trackerLinks: TrackerLink[];
   } {
     this.refreshFromPersistence();
     const task = this.tasks.find((candidate) => candidate.id === taskId);
     if (!task) throw new Error(`Task ${taskId} does not exist.`);
+    const currentWorkState = this.getEffectiveTaskWorkState(task);
+    const taskStateReason = this.getTaskStateReason(task, currentWorkState);
     return {
       id: task.id,
       name: task.name,
@@ -911,9 +1143,405 @@ export class FactoryApplication {
       owner: task.owner,
       dependencies: task.dependencies,
       repositoryLinks: task.repositoryLinks,
+      ...(task.workState ? { workState: task.workState } : {}),
+      ...(taskStateReason ? { stateReason: taskStateReason } : {}),
+      ...(task.sortOrder !== undefined ? { sortOrder: task.sortOrder } : {}),
       ...(task.archiveState ? { archiveState: task.archiveState } : {}),
       trackerLinks: this.trackerLinks.filter((link) => link.taskId === taskId),
     };
+  }
+
+  reorderTasks({
+    orderedTaskIds,
+    projectId,
+    workState,
+  }: {
+    orderedTaskIds: string[];
+    projectId: string;
+    workState: WorkState;
+  }): Task[] {
+    this.refreshFromPersistence();
+    if (!this.projects.some((project) => project.id === projectId)) {
+      throw new Error(`Project ${projectId} does not exist.`);
+    }
+    const group = this.tasks.filter(
+      (task) =>
+        task.projectId === projectId &&
+        task.archiveState === undefined &&
+        this.getEffectiveTaskWorkState(task) === workState,
+    );
+    const wrongStateTask = this.tasks.find(
+      (task) =>
+        orderedTaskIds.includes(task.id) &&
+        task.projectId === projectId &&
+        task.archiveState === undefined &&
+        this.getEffectiveTaskWorkState(task) !== workState,
+    );
+    if (wrongStateTask) {
+      throw new Error(`Tasks must belong to the same state (${workState}).`);
+    }
+    this.validateCompleteOrdering(
+      orderedTaskIds,
+      group.map((task) => task.id),
+      "Task",
+      "project",
+    );
+    orderedTaskIds.forEach((taskId, index) => {
+      const task = this.tasks.find((candidate) => candidate.id === taskId);
+      if (task) task.sortOrder = index;
+    });
+    this.save();
+    return group.sort((left, right) => this.compareTasks(left, right));
+  }
+
+  reorderSubtasks({
+    orderedSubtaskIds,
+    taskId,
+    workState,
+  }: {
+    orderedSubtaskIds: string[];
+    taskId: string;
+    workState: WorkState;
+  }): Subtask[] {
+    this.refreshFromPersistence();
+    if (!this.tasks.some((task) => task.id === taskId)) {
+      throw new Error(`Task ${taskId} does not exist.`);
+    }
+    const group = this.subtasks.filter(
+      (subtask) =>
+        subtask.taskId === taskId &&
+        subtask.archiveState === undefined &&
+        this.getSubtaskEffectiveWorkState(subtask) === workState,
+    );
+    const wrongStateSubtask = this.subtasks.find(
+      (subtask) =>
+        orderedSubtaskIds.includes(subtask.id) &&
+        subtask.taskId === taskId &&
+        subtask.archiveState === undefined &&
+        this.getSubtaskEffectiveWorkState(subtask) !== workState,
+    );
+    if (wrongStateSubtask) {
+      throw new Error(`Subtasks must belong to the same state (${workState}).`);
+    }
+    this.validateCompleteOrdering(
+      orderedSubtaskIds,
+      group.map((subtask) => subtask.id),
+      "Subtask",
+      "task",
+    );
+    orderedSubtaskIds.forEach((subtaskId, index) => {
+      const subtask = this.subtasks.find(
+        (candidate) => candidate.id === subtaskId,
+      );
+      if (subtask) subtask.sortOrder = index;
+    });
+    this.save();
+    return group.sort((left, right) => this.compareSubtasks(left, right));
+  }
+
+  private validateCompleteOrdering(
+    orderedIds: string[],
+    expectedIds: string[],
+    itemName: string,
+    parentName: string,
+  ): void {
+    if (new Set(orderedIds).size !== orderedIds.length) {
+      throw new Error(`${itemName} ordering must not contain duplicate IDs.`);
+    }
+    const expected = new Set(expectedIds);
+    const actual = new Set(orderedIds);
+    const foreignId = orderedIds.find((id) => !expected.has(id));
+    if (foreignId) {
+      const item =
+        itemName === "Task"
+          ? this.tasks.find((candidate) => candidate.id === foreignId)
+          : this.subtasks.find((candidate) => candidate.id === foreignId);
+      if (item) {
+        throw new Error(`${itemName}s must belong to the same ${parentName}.`);
+      }
+      throw new Error(`${itemName} ${foreignId} does not exist.`);
+    }
+    if (actual.size !== expected.size) {
+      throw new Error(
+        `${itemName} ordering must include every item in the requested state.`,
+      );
+    }
+  }
+
+  private taskWouldBeCompleted(taskId: string): boolean {
+    const activeSubtasks = this.subtasks.filter(
+      (subtask) =>
+        subtask.taskId === taskId && subtask.archiveState === undefined,
+    );
+    return (
+      activeSubtasks.length > 0 &&
+      activeSubtasks.every(
+        (subtask) => this.getSubtaskEffectiveWorkState(subtask) === "completed",
+      )
+    );
+  }
+
+  private getEffectiveTaskWorkState(task: Task): WorkState {
+    const activeSubtasks = this.subtasks
+      .filter(
+        (subtask) =>
+          subtask.taskId === task.id && subtask.archiveState === undefined,
+      )
+      .map((subtask) => this.getSubtaskEffectiveWorkState(subtask));
+    if (
+      task.workState &&
+      (task.workStateSource === "manual" || task.workStateSource === "rollup")
+    ) {
+      return task.workState;
+    }
+    if (this.taskWouldBeCompleted(task.id)) return "completed";
+    if (task.workState) return task.workState;
+    if (activeSubtasks.length === 0) return "planned";
+    return this.deriveStateFromEffectiveSubtasks(activeSubtasks);
+  }
+
+  private getSubtaskEffectiveWorkState(subtask: Subtask): WorkState {
+    const report = this.getCurrentStatusReport(subtask.id);
+    if (!report) return "planned";
+
+    const verification = this.getCurrentVerification(report.id);
+    if (
+      verification?.decision === "rejected" ||
+      verification?.decision === "deferred"
+    ) {
+      return "blocked";
+    }
+    if (report.reportedState === "backlog") return "backlog";
+    if (report.reportedState === "not_started") return "planned";
+    if (report.reportedState === "in_progress") return "active";
+    if (report.reportedState === "blocked") return "blocked";
+    return verification?.decision === "accepted"
+      ? "completed"
+      : "awaiting_verification";
+  }
+
+  private deriveStateFromEffectiveSubtasks(states: WorkState[]): WorkState {
+    return states.reduce(
+      (highest, state) =>
+        state === "completed" || compareWorkStates(state, highest) <= 0
+          ? highest
+          : state,
+      "backlog" as WorkState,
+    );
+  }
+
+  private promoteParentTask(
+    taskId: string,
+    childTransition: { nextState: WorkState; previousState: WorkState },
+  ): void {
+    const task = this.tasks.find((candidate) => candidate.id === taskId);
+    if (!task || task.archiveState !== undefined) return;
+
+    const activeSubtasks = this.subtasks.filter(
+      (subtask) =>
+        subtask.taskId === taskId && subtask.archiveState === undefined,
+    );
+    if (!activeSubtasks.length) return;
+
+    const taskCompleted = this.taskWouldBeCompleted(taskId);
+    const currentState = this.getEffectiveTaskWorkState(task);
+    const isManual = task.workStateSource === "manual";
+    const isRollup = task.workStateSource === "rollup";
+
+    if (taskCompleted) {
+      if (!isManual) {
+        this.setTaskRollupState(task, "completed");
+      } else {
+        this.clearTaskStateReasonUnlessNeeded(task, currentState);
+      }
+      return;
+    }
+
+    const childMovedHigher =
+      childTransition.nextState !== "completed" &&
+      compareWorkStates(
+        childTransition.nextState,
+        childTransition.previousState,
+      ) > 0;
+    if (isManual && !childMovedHigher) {
+      this.clearTaskStateReasonUnlessNeeded(task, currentState);
+      return;
+    }
+
+    const candidateSubtask = activeSubtasks
+      .map((subtask) => ({
+        reason: this.getSubtaskStateReason(subtask),
+        state: this.getSubtaskEffectiveWorkState(subtask),
+      }))
+      .filter(({ state }) => state !== "completed")
+      .sort((left, right) => compareWorkStates(right.state, left.state))[0];
+    if (!candidateSubtask) {
+      return;
+    }
+
+    if (
+      !isRollup &&
+      compareWorkStates(candidateSubtask.state, currentState) <= 0
+    ) {
+      this.clearTaskStateReasonUnlessNeeded(task, currentState);
+      return;
+    }
+
+    this.setTaskRollupState(
+      task,
+      candidateSubtask.state,
+      candidateSubtask.reason,
+    );
+  }
+
+  private setTaskRollupState(
+    task: Task,
+    workState: WorkState,
+    reason?: string,
+  ): void {
+    const previousState = this.getEffectiveTaskWorkState(task);
+    task.workState = workState;
+    task.workStateSource = "rollup";
+    if (workState === "blocked" || workState === "awaiting_verification") {
+      task.stateReason = requireReason(
+        reason,
+        `Task ${workState} requires a reason.`,
+      );
+    } else {
+      delete task.stateReason;
+    }
+    if (previousState !== workState) {
+      task.sortOrder = this.nextTaskSortOrder(
+        task.projectId,
+        workState,
+        task.id,
+      );
+    }
+  }
+
+  private clearTaskStateReasonUnlessNeeded(
+    task: Task,
+    workState: ProjectWorkState,
+  ): void {
+    if (workState !== "blocked" && workState !== "awaiting_verification") {
+      delete task.stateReason;
+    }
+  }
+
+  private getSubtaskStateReason(subtask: Subtask): string | undefined {
+    const report = this.getCurrentStatusReport(subtask.id);
+    if (!report) return undefined;
+    const verification = this.getCurrentVerification(report.id);
+    if (
+      verification?.decision === "rejected" ||
+      verification?.decision === "deferred"
+    ) {
+      return verification.reason ?? report.reason;
+    }
+    return report.reason;
+  }
+
+  private getTaskStateReason(
+    task: Task,
+    workState = this.getEffectiveTaskWorkState(task),
+  ): string | undefined {
+    if (workState !== "blocked" && workState !== "awaiting_verification") {
+      return undefined;
+    }
+    if (task.stateReason) return task.stateReason;
+    return this.subtasks
+      .filter(
+        (subtask) =>
+          subtask.taskId === task.id && subtask.archiveState === undefined,
+      )
+      .map((subtask) => ({
+        reason: this.getSubtaskStateReason(subtask),
+        state: this.getSubtaskEffectiveWorkState(subtask),
+      }))
+      .find((candidate) => candidate.state === workState)?.reason;
+  }
+
+  private moveSubtaskToStateIfChanged(
+    subtask: Subtask,
+    previousState: WorkState,
+  ): void {
+    const nextState = this.getSubtaskEffectiveWorkState(subtask);
+    if (subtask.archiveState === undefined && previousState !== nextState) {
+      subtask.sortOrder = this.nextSubtaskSortOrder(
+        subtask.taskId,
+        nextState,
+        subtask.id,
+      );
+    }
+  }
+
+  private nextTaskSortOrder(
+    projectId: string,
+    workState: WorkState,
+    excludingTaskId?: string,
+  ): number {
+    const tasks = this.tasks.filter(
+      (task) =>
+        task.projectId === projectId &&
+        task.id !== excludingTaskId &&
+        task.archiveState === undefined &&
+        this.getEffectiveTaskWorkState(task) === workState,
+    );
+    return (
+      tasks.reduce(
+        (highest, task, index) => Math.max(highest, task.sortOrder ?? index),
+        -1,
+      ) + 1
+    );
+  }
+
+  private nextSubtaskSortOrder(
+    taskId: string,
+    workState: WorkState,
+    excludingSubtaskId?: string,
+  ): number {
+    const subtasks = this.subtasks.filter(
+      (subtask) =>
+        subtask.taskId === taskId &&
+        subtask.id !== excludingSubtaskId &&
+        subtask.archiveState === undefined &&
+        this.getSubtaskEffectiveWorkState(subtask) === workState,
+    );
+    return (
+      subtasks.reduce(
+        (highest, subtask, index) =>
+          Math.max(highest, subtask.sortOrder ?? index),
+        -1,
+      ) + 1
+    );
+  }
+
+  private compareTasks(left: Task, right: Task): number {
+    const leftState = left.archiveState
+      ? 99
+      : WORK_STATE_DISPLAY_ORDER[this.getEffectiveTaskWorkState(left)];
+    const rightState = right.archiveState
+      ? 99
+      : WORK_STATE_DISPLAY_ORDER[this.getEffectiveTaskWorkState(right)];
+    return (
+      leftState - rightState ||
+      (left.sortOrder ?? this.tasks.indexOf(left)) -
+        (right.sortOrder ?? this.tasks.indexOf(right))
+    );
+  }
+
+  private compareSubtasks(left: Subtask, right: Subtask): number {
+    const leftState = left.archiveState
+      ? 99
+      : WORK_STATE_DISPLAY_ORDER[this.getSubtaskEffectiveWorkState(left)];
+    const rightState = right.archiveState
+      ? 99
+      : WORK_STATE_DISPLAY_ORDER[this.getSubtaskEffectiveWorkState(right)];
+    return (
+      leftState - rightState ||
+      (left.sortOrder ?? this.subtasks.indexOf(left)) -
+        (right.sortOrder ?? this.subtasks.indexOf(right))
+    );
   }
 
   private getCurrentStatusReport(subtaskId: string): StatusReport | undefined {
@@ -933,38 +1561,27 @@ export class FactoryApplication {
   ): ProjectWorkState {
     if (taskCompleted) return "completed";
 
-    if (
-      subtasks.some(
-        (subtask) =>
-          subtask.reportedState === "blocked" ||
-          subtask.verificationState === "rejected" ||
-          subtask.verificationState === "deferred",
-      )
-    ) {
+    if (subtasks.some((subtask) => subtask.effectiveState === "blocked")) {
       return "blocked";
     }
 
     if (
       subtasks.some(
-        (subtask) =>
-          subtask.verificationState === "awaiting_verification" &&
-          subtask.reportedState === "complete",
+        (subtask) => subtask.effectiveState === "awaiting_verification",
       )
     ) {
       return "awaiting_verification";
     }
 
-    if (
-      subtasks.some(
-        (subtask) =>
-          subtask.reportedState === "in_progress" ||
-          subtask.verificationState === "accepted",
-      )
-    ) {
+    if (subtasks.some((subtask) => subtask.effectiveState === "active")) {
       return "active";
     }
 
-    return "planned";
+    if (subtasks.some((subtask) => subtask.effectiveState === "planned")) {
+      return "planned";
+    }
+
+    return "backlog";
   }
 
   private getCurrentVerification(reportId: string): Verification | undefined {

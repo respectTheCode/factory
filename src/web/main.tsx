@@ -16,14 +16,20 @@ import { createProjectAndRefresh } from "./project-actions";
 import {
   filterAttention,
   filterArchivedTasks,
+  groupSubtasksByStatus,
   groupTasksByStatus,
+  reorderIds,
   summarizeTaskProgress,
   type AttentionFilter,
 } from "./task-summary";
 import {
+  archiveStatusOrder,
   dispositionStatusOptions,
+  liveWorkStatusOrder,
   reportStatusOptions,
+  requiresStateReason,
   statusDefinitions,
+  taskStatusOrder,
   workStatusForReportedState,
   type ReportedStatus,
   type WorkStatus,
@@ -32,6 +38,7 @@ import "./styles.css";
 
 type ProjectSummary = { id: string; name: string };
 type WorkCounts = {
+  backlog: number;
   planned: number;
   active: number;
   awaiting_verification: number;
@@ -55,7 +62,7 @@ type AttentionItem = {
   projectName: string;
   taskId: string;
   taskName: string;
-  state: "planned" | "active" | "awaiting_verification" | "blocked";
+  state: "backlog" | "planned" | "active" | "awaiting_verification" | "blocked";
   priority?: "low" | "medium" | "high" | "urgent";
   owner?: string;
 };
@@ -75,6 +82,9 @@ type ProjectDetail = {
     name: string;
     projectId: string;
     branchName?: string;
+    workState?: WorkStatus;
+    stateReason?: string;
+    sortOrder?: number;
     archiveState?: "released" | "wont_do";
     subtasks: Array<{
       id: string;
@@ -82,6 +92,9 @@ type ProjectDetail = {
       taskId: string;
       description?: string;
       evidence?: string;
+      sortOrder?: number;
+      workState?: WorkStatus;
+      stateReason?: string;
       archiveState?: "released" | "wont_do";
     }>;
   }>;
@@ -89,6 +102,7 @@ type ProjectDetail = {
 type TaskStatus = {
   taskCompleted: boolean;
   taskState:
+    | "backlog"
     | "planned"
     | "active"
     | "awaiting_verification"
@@ -96,9 +110,17 @@ type TaskStatus = {
     | "blocked"
     | "released"
     | "wont_do";
+  stateReason?: string;
   archiveState?: "released" | "wont_do";
   subtasks: Array<{
-    reportedState?: "not_started" | "in_progress" | "blocked" | "complete";
+    reportedState?:
+      | "backlog"
+      | "not_started"
+      | "in_progress"
+      | "blocked"
+      | "complete";
+    effectiveState: WorkStatus;
+    reason?: string;
     verificationState:
       | "accepted"
       | "awaiting_verification"
@@ -108,6 +130,7 @@ type TaskStatus = {
     reportId?: string;
     evidence?: string;
     reporter?: string;
+    sortOrder?: number;
     archiveState?: "released" | "wont_do";
   }>;
 };
@@ -155,6 +178,22 @@ type SubtaskHistory = {
     verifier: string;
   }>;
 };
+
+type LiveWorkState = (typeof liveWorkStatusOrder)[number];
+type TaskEditableWorkState = (typeof taskStatusOrder)[number];
+
+type DragTarget = {
+  id: string;
+  kind: "task" | "subtask";
+  overId?: string;
+  state: LiveWorkState;
+};
+
+const DRAG_TAIL = "__factory_reorder_tail__";
+
+function isLiveWorkState(state: WorkStatus): state is LiveWorkState {
+  return (liveWorkStatusOrder as readonly string[]).includes(state);
+}
 
 type TRPCClient = ReturnType<typeof createTRPCProxyClient<FactoryRouter>>;
 
@@ -230,6 +269,7 @@ function Dashboard() {
   const [collapsedTaskGroups, setCollapsedTaskGroups] = useState<
     Partial<Record<WorkStatus, boolean>>
   >({});
+  const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const trpc = useRef<TRPCClient | null>(null);
   const subscriptionCleanup = useRef<(() => void) | null>(null);
@@ -348,6 +388,236 @@ function Dashboard() {
       await refreshProject(projectDetail.id);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const taskWorkState = (
+    task: ProjectDetail["tasks"][number],
+    status: TaskStatus | undefined,
+  ): WorkStatus =>
+    task.archiveState ??
+    status?.archiveState ??
+    status?.taskState ??
+    task.workState ??
+    "planned";
+
+  const subtaskWorkState = (
+    subtask: ProjectDetail["tasks"][number]["subtasks"][number],
+    status: TaskStatus["subtasks"][number] | undefined,
+  ): WorkStatus =>
+    subtask.archiveState ??
+    status?.archiveState ??
+    status?.effectiveState ??
+    workStatusForReportedState(
+      status?.reportedState ?? "not_started",
+      status?.verificationState,
+    );
+
+  const setTaskWorkState = async (
+    taskId: string,
+    workState: TaskEditableWorkState,
+    stateReason?: string,
+  ) => {
+    const client = trpc.current;
+    if (!client) return;
+    await mutateAndRefresh(() =>
+      client.tasks.setState.mutate({
+        ...(stateReason ? { reason: stateReason } : {}),
+        taskId,
+        workState,
+      }),
+    );
+  };
+
+  const reportSubtask = async (
+    subtaskId: string,
+    reportedState: ReportedStatus,
+    evidence?: string,
+    reason?: string,
+  ) => {
+    const client = trpc.current;
+    if (!client) return;
+    await mutateAndRefresh(() =>
+      client.subtasks.report.mutate({
+        ...(evidence ? { evidence } : {}),
+        ...(reason ? { reason } : {}),
+        reportedState,
+        reporter: reportedState === "complete" ? "codex" : "kevin",
+        subtaskId,
+      }),
+    );
+  };
+
+  const verifySubtask = async (
+    reportId: string,
+    decision: "accepted" | "rejected" | "deferred",
+    reason?: string,
+  ) => {
+    const client = trpc.current;
+    if (!client) return;
+    await mutateAndRefresh(() =>
+      client.subtasks.verify.mutate({
+        decision,
+        ...(reason ? { reason } : {}),
+        reportId,
+        verifier: "kevin",
+      }),
+    );
+  };
+
+  const reorderTask = async (
+    projectId: string,
+    taskIds: string[],
+    workState: LiveWorkState,
+  ) => {
+    const client = trpc.current;
+    if (!client || taskIds.length === 0) return;
+    await mutateAndRefresh(() =>
+      client.tasks.reorder.mutate({
+        orderedTaskIds: taskIds,
+        projectId,
+        workState,
+      }),
+    );
+  };
+
+  const reorderSubtasks = async (
+    taskId: string,
+    subtaskIds: string[],
+    workState: LiveWorkState,
+  ) => {
+    const client = trpc.current;
+    if (!client || subtaskIds.length === 0) return;
+    await mutateAndRefresh(() =>
+      client.subtasks.reorder.mutate({
+        orderedSubtaskIds: subtaskIds,
+        taskId,
+        workState,
+      }),
+    );
+  };
+
+  const beginDrag = (
+    event: React.PointerEvent<HTMLButtonElement>,
+    target: Omit<DragTarget, "overId">,
+  ) => {
+    if (!snapshot.canMutate || busy) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragTarget(target);
+  };
+
+  const findDragTarget = (
+    event: React.PointerEvent<HTMLButtonElement>,
+    current: DragTarget,
+  ): string | undefined => {
+    const hovered = document.elementFromPoint(event.clientX, event.clientY);
+    const tail = hovered?.closest<HTMLElement>('[data-reorder-tail="true"]');
+    if (
+      tail?.dataset.reorderKind === current.kind &&
+      tail.dataset.workState === current.state
+    ) {
+      return DRAG_TAIL;
+    }
+    const candidate = hovered?.closest<HTMLElement>(
+      `[data-reorder-kind="${current.kind}"]`,
+    );
+    if (
+      !candidate ||
+      candidate.dataset.workState !== current.state ||
+      candidate.dataset.reorderId === current.id
+    ) {
+      return undefined;
+    }
+    return candidate.dataset.reorderId;
+  };
+
+  const updateDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    setDragTarget((current) =>
+      current
+        ? { ...current, overId: findDragTarget(event, current) }
+        : current,
+    );
+  };
+
+  const finishDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const current = dragTarget;
+    if (!current) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const overId = findDragTarget(event, current) ?? current.overId;
+    setDragTarget(null);
+    if (!overId || overId === current.id || !projectDetail) return;
+    const beforeId = overId === DRAG_TAIL ? undefined : overId;
+
+    if (current.kind === "task") {
+      const group = groupedProjectTasks.find(
+        (candidate) => candidate.state === current.state,
+      );
+      if (!group) return;
+      void reorderTask(
+        projectDetail.id,
+        reorderIds(
+          group.tasks.map((task) => task.id),
+          current.id,
+          beforeId,
+        ),
+        current.state,
+      );
+      return;
+    }
+
+    const task = projectDetail.tasks.find((candidate) =>
+      candidate.subtasks.some((subtask) => subtask.id === current.id),
+    );
+    if (!task) return;
+    const status = taskStatuses[task.id];
+    const groups = groupSubtasksByStatus(
+      task.subtasks.map((subtask, index) => ({
+        ...subtask,
+        state: subtaskWorkState(subtask, status?.subtasks[index]),
+      })),
+    );
+    const group = groups.find((candidate) => candidate.state === current.state);
+    if (!group) return;
+    void reorderSubtasks(
+      task.id,
+      reorderIds(
+        group.subtasks.map((subtask) => subtask.id),
+        current.id,
+        beforeId,
+      ),
+      current.state,
+    );
+  };
+
+  const keyboardReorder = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    target: Omit<DragTarget, "overId">,
+    ids: string[],
+  ) => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const index = ids.indexOf(target.id);
+    if (index < 0) return;
+    if (
+      (event.key === "ArrowUp" && index === 0) ||
+      (event.key === "ArrowDown" && index === ids.length - 1)
+    ) {
+      return;
+    }
+    const beforeId = event.key === "ArrowUp" ? ids[index - 1] : ids[index + 2];
+    const next = reorderIds(ids, target.id, beforeId);
+    if (next.join("|") === ids.join("|")) return;
+    if (target.kind === "task" && projectDetail) {
+      void reorderTask(projectDetail.id, next, target.state);
+      return;
+    }
+    if (target.kind === "subtask" && projectDetail) {
+      const task = projectDetail.tasks.find((candidate) =>
+        candidate.subtasks.some((subtask) => subtask.id === target.id),
+      );
+      if (task) void reorderSubtasks(task.id, next, target.state);
     }
   };
 
@@ -589,6 +859,7 @@ function Dashboard() {
                 {(
                   [
                     ["all", "All"],
+                    ["backlog", "Backlog"],
                     ["blocked", "Blocked"],
                     ["awaiting_verification", "Awaiting"],
                     ["active", "Active"],
@@ -672,6 +943,7 @@ function Dashboard() {
               {portfolioStatus && (
                 <p className="portfolio-summary">
                   {portfolioStatus.totalTasks} tasks ·{" "}
+                  {portfolioStatus.counts.backlog} backlog ·{" "}
                   {portfolioStatus.counts.planned} planned ·{" "}
                   {portfolioStatus.counts.active} active ·{" "}
                   {portfolioStatus.counts.awaiting_verification} awaiting
@@ -1028,8 +1300,9 @@ function Dashboard() {
                     );
                     return status ? (
                       <p className="project-summary">
-                        {status.totalTasks} tasks · {status.counts.planned}{" "}
-                        planned · {status.counts.active} active ·{" "}
+                        {status.totalTasks} tasks · {status.counts.backlog}{" "}
+                        backlog · {status.counts.planned} planned ·{" "}
+                        {status.counts.active} active ·{" "}
                         {status.counts.awaiting_verification} awaiting
                         verification · {status.counts.completed} completed ·{" "}
                         {status.counts.blocked} blocked ·{" "}
@@ -1158,6 +1431,9 @@ function Dashboard() {
                         {tasks.map((task) => {
                           const status = taskStatuses[task.id];
                           const taskDetail = taskDetails[task.id];
+                          const currentTaskState = taskWorkState(task, status);
+                          const taskStateReason =
+                            status?.stateReason ?? task.stateReason;
                           const taskEdit = taskEdits[task.id];
                           const linkInput = projectLinkInputs[task.id] ?? {
                             system: "linear" as const,
@@ -1168,9 +1444,72 @@ function Dashboard() {
                           const subtasksCollapsed =
                             collapsedTasks[task.id] ?? true;
                           const progress = summarizeTaskProgress(task, status);
+                          const subtaskGroups = groupSubtasksByStatus(
+                            task.subtasks.map((subtask, index) => ({
+                              ...subtask,
+                              sortOrder:
+                                subtask.sortOrder ??
+                                status?.subtasks[index]?.sortOrder,
+                              state: subtaskWorkState(
+                                subtask,
+                                status?.subtasks[index],
+                              ),
+                              stateReason:
+                                status?.subtasks[index]?.reason ??
+                                subtask.stateReason,
+                              statusIndex: index,
+                            })),
+                          );
                           return (
-                            <article className="task-row" key={task.id}>
+                            <article
+                              className={`task-row ${
+                                dragTarget?.kind === "task" &&
+                                dragTarget.id === task.id
+                                  ? "is-dragging"
+                                  : ""
+                              } ${
+                                dragTarget?.overId === task.id
+                                  ? "is-drag-over"
+                                  : ""
+                              }`}
+                              data-reorder-id={task.id}
+                              data-reorder-kind="task"
+                              data-work-state={state}
+                              key={task.id}
+                            >
                               <div className="task-card-header">
+                                {isLiveWorkState(state) && (
+                                  <ReorderHandle
+                                    disabled={
+                                      !snapshot.canMutate ||
+                                      busy ||
+                                      Boolean(task.archiveState)
+                                    }
+                                    kind="task"
+                                    itemId={task.id}
+                                    onKeyDown={(event) =>
+                                      keyboardReorder(
+                                        event,
+                                        {
+                                          id: task.id,
+                                          kind: "task",
+                                          state,
+                                        },
+                                        tasks.map((candidate) => candidate.id),
+                                      )
+                                    }
+                                    onPointerDown={(event) =>
+                                      beginDrag(event, {
+                                        id: task.id,
+                                        kind: "task",
+                                        state,
+                                      })
+                                    }
+                                    onPointerMove={updateDrag}
+                                    onPointerUp={finishDrag}
+                                    state={state}
+                                  />
+                                )}
                                 <div className="task-summary">
                                   <div className="task-summary-heading">
                                     <TaskStatusMenu
@@ -1182,11 +1521,32 @@ function Dashboard() {
                                           }),
                                         )
                                       }
-                                      state={status?.taskState ?? "planned"}
+                                      onState={(nextState, reason) =>
+                                        void setTaskWorkState(
+                                          task.id,
+                                          nextState,
+                                          reason,
+                                        )
+                                      }
+                                      state={currentTaskState}
                                       taskName={task.name}
                                     />
                                     <h3>{task.name}</h3>
                                   </div>
+                                  {taskStateReason &&
+                                    (currentTaskState === "blocked" ||
+                                      currentTaskState ===
+                                        "awaiting_verification") && (
+                                      <p className="state-reason">
+                                        <strong>
+                                          {currentTaskState === "blocked"
+                                            ? "Why blocked"
+                                            : "What to verify"}
+                                          :
+                                        </strong>{" "}
+                                        {taskStateReason}
+                                      </p>
+                                    )}
                                   {taskDetail?.objective && (
                                     <p className="task-objective">
                                       {taskDetail.objective}
@@ -1580,380 +1940,522 @@ function Dashboard() {
                               {!subtasksCollapsed && (
                                 <>
                                   <div className="subtask-list">
-                                    {task.subtasks.map((subtask, index) => {
-                                      const subtaskStatus =
-                                        status?.subtasks[index];
-                                      const history =
-                                        subtaskHistories[subtask.id];
-                                      const subtaskEdit =
-                                        subtaskEdits[subtask.id];
-                                      const subtaskArchived = Boolean(
-                                        subtaskStatus?.archiveState,
-                                      );
-                                      const subtaskWorkStatus: WorkStatus =
-                                        subtaskStatus?.archiveState ??
-                                        workStatusForReportedState(
-                                          subtaskStatus?.reportedState ??
-                                            "not_started",
-                                          subtaskStatus?.verificationState,
-                                        );
-                                      return (
-                                        <div
-                                          className="subtask"
-                                          key={subtask.id}
-                                        >
-                                          <div className="subtask-content">
-                                            <div className="subtask-title-row">
-                                              <ReportStatusMenu
-                                                disabled={
-                                                  !snapshot.canMutate ||
-                                                  busy ||
-                                                  subtaskArchived
-                                                }
-                                                onSelect={(reportedState) =>
-                                                  void mutateAndRefresh(() =>
-                                                    trpc.current!.subtasks.report.mutate(
-                                                      {
-                                                        evidence:
-                                                          subtask.evidence ??
-                                                          subtaskStatus?.evidence,
-                                                        reportedState,
-                                                        reporter:
-                                                          reportedState ===
-                                                          "complete"
-                                                            ? "codex"
-                                                            : "kevin",
-                                                        subtaskId: subtask.id,
-                                                      },
-                                                    ),
-                                                  )
-                                                }
-                                                state={subtaskWorkStatus}
-                                                onDisposition={(archiveState) =>
-                                                  void mutateAndRefresh(() =>
-                                                    trpc.current!.subtasks.archive.mutate(
-                                                      {
-                                                        archiveState,
-                                                        subtaskId: subtask.id,
-                                                      },
-                                                    ),
-                                                  )
-                                                }
-                                              />
-                                              {subtaskEdit ? (
-                                                <form
-                                                  className="subtask-edit-form"
-                                                  onSubmit={(event) =>
-                                                    void saveSubtaskEdit(
-                                                      event,
-                                                      subtask.id,
-                                                    )
+                                    {subtaskGroups.map((subtaskGroup) => (
+                                      <section
+                                        aria-labelledby={`subtask-group-${task.id}-${subtaskGroup.state}`}
+                                        className={`subtask-group subtask-group-${subtaskGroup.state}`}
+                                        key={subtaskGroup.state}
+                                      >
+                                        <div className="subtask-group-heading">
+                                          <StatusIcon
+                                            size={16}
+                                            state={subtaskGroup.state}
+                                          />
+                                          <h4
+                                            id={`subtask-group-${task.id}-${subtaskGroup.state}`}
+                                          >
+                                            {
+                                              statusDefinitions[
+                                                subtaskGroup.state
+                                              ].label
+                                            }
+                                          </h4>
+                                          <span>
+                                            {subtaskGroup.subtasks.length}
+                                          </span>
+                                        </div>
+                                        <div className="subtask-group-items">
+                                          {subtaskGroup.subtasks.map(
+                                            (subtask) => {
+                                              const index = subtask.statusIndex;
+                                              const liveSubtaskState =
+                                                isLiveWorkState(
+                                                  subtaskGroup.state,
+                                                )
+                                                  ? subtaskGroup.state
+                                                  : null;
+                                              const subtaskStatus =
+                                                status?.subtasks[index];
+                                              const history =
+                                                subtaskHistories[subtask.id];
+                                              const subtaskEdit =
+                                                subtaskEdits[subtask.id];
+                                              const subtaskArchived = Boolean(
+                                                subtaskStatus?.archiveState,
+                                              );
+                                              const subtaskWorkStatus: WorkStatus =
+                                                subtaskWorkState(
+                                                  subtask,
+                                                  subtaskStatus,
+                                                );
+                                              const subtaskStateReason =
+                                                subtaskStatus?.reason ??
+                                                subtask.stateReason;
+                                              return (
+                                                <div
+                                                  className={`subtask ${
+                                                    dragTarget?.kind ===
+                                                      "subtask" &&
+                                                    dragTarget.id === subtask.id
+                                                      ? "is-dragging"
+                                                      : ""
+                                                  } ${
+                                                    dragTarget?.overId ===
+                                                    subtask.id
+                                                      ? "is-drag-over"
+                                                      : ""
+                                                  }`}
+                                                  data-reorder-id={subtask.id}
+                                                  data-reorder-kind="subtask"
+                                                  data-work-state={
+                                                    subtaskGroup.state
                                                   }
+                                                  key={subtask.id}
                                                 >
-                                                  <label>
-                                                    <span>Subtask title</span>
-                                                    <input
-                                                      autoFocus
-                                                      disabled={
-                                                        !snapshot.canMutate ||
-                                                        busy
-                                                      }
-                                                      onChange={(event) =>
-                                                        setSubtaskEdits(
-                                                          (current) => ({
-                                                            ...current,
-                                                            [subtask.id]: {
-                                                              ...subtaskEdit,
-                                                              title:
-                                                                event.target
-                                                                  .value,
-                                                            },
-                                                          }),
-                                                        )
-                                                      }
-                                                      value={subtaskEdit.title}
-                                                    />
-                                                  </label>
-                                                  <label>
-                                                    <span>Description</span>
-                                                    <textarea
-                                                      disabled={
-                                                        !snapshot.canMutate ||
-                                                        busy
-                                                      }
-                                                      onChange={(event) =>
-                                                        setSubtaskEdits(
-                                                          (current) => ({
-                                                            ...current,
-                                                            [subtask.id]: {
-                                                              ...subtaskEdit,
-                                                              description:
-                                                                event.target
-                                                                  .value,
-                                                            },
-                                                          }),
-                                                        )
-                                                      }
-                                                      value={
-                                                        subtaskEdit.description
-                                                      }
-                                                    />
-                                                  </label>
-                                                  <label>
-                                                    <span>Evidence</span>
-                                                    <textarea
-                                                      disabled={
-                                                        !snapshot.canMutate ||
-                                                        busy
-                                                      }
-                                                      onChange={(event) =>
-                                                        setSubtaskEdits(
-                                                          (current) => ({
-                                                            ...current,
-                                                            [subtask.id]: {
-                                                              ...subtaskEdit,
-                                                              evidence:
-                                                                event.target
-                                                                  .value,
-                                                            },
-                                                          }),
-                                                        )
-                                                      }
-                                                      placeholder="Evidence (optional)"
-                                                      value={
-                                                        subtaskEdit.evidence
-                                                      }
-                                                    />
-                                                  </label>
-                                                  <div className="edit-actions">
+                                                  <div className="subtask-content">
+                                                    <div className="subtask-title-row">
+                                                      {liveSubtaskState && (
+                                                        <ReorderHandle
+                                                          disabled={
+                                                            !snapshot.canMutate ||
+                                                            busy ||
+                                                            subtaskArchived
+                                                          }
+                                                          itemId={subtask.id}
+                                                          kind="subtask"
+                                                          onKeyDown={(event) =>
+                                                            keyboardReorder(
+                                                              event,
+                                                              {
+                                                                id: subtask.id,
+                                                                kind: "subtask",
+                                                                state:
+                                                                  liveSubtaskState,
+                                                              },
+                                                              subtaskGroup.subtasks.map(
+                                                                (candidate) =>
+                                                                  candidate.id,
+                                                              ),
+                                                            )
+                                                          }
+                                                          onPointerDown={(
+                                                            event,
+                                                          ) =>
+                                                            beginDrag(event, {
+                                                              id: subtask.id,
+                                                              kind: "subtask",
+                                                              state:
+                                                                liveSubtaskState,
+                                                            })
+                                                          }
+                                                          onPointerMove={
+                                                            updateDrag
+                                                          }
+                                                          onPointerUp={
+                                                            finishDrag
+                                                          }
+                                                          state={
+                                                            liveSubtaskState
+                                                          }
+                                                        />
+                                                      )}
+                                                      <ReportStatusMenu
+                                                        disabled={
+                                                          !snapshot.canMutate ||
+                                                          busy ||
+                                                          subtaskArchived
+                                                        }
+                                                        onSelect={(
+                                                          reportedState,
+                                                        ) =>
+                                                          void reportSubtask(
+                                                            subtask.id,
+                                                            reportedState,
+                                                            subtask.evidence ??
+                                                              subtaskStatus?.evidence,
+                                                          )
+                                                        }
+                                                        onSelectWithReason={(
+                                                          reportedState,
+                                                          reason,
+                                                        ) =>
+                                                          void reportSubtask(
+                                                            subtask.id,
+                                                            reportedState,
+                                                            subtask.evidence ??
+                                                              subtaskStatus?.evidence,
+                                                            reason,
+                                                          )
+                                                        }
+                                                        state={
+                                                          subtaskWorkStatus
+                                                        }
+                                                        onDisposition={(
+                                                          archiveState,
+                                                        ) =>
+                                                          void mutateAndRefresh(
+                                                            () =>
+                                                              trpc.current!.subtasks.archive.mutate(
+                                                                {
+                                                                  archiveState,
+                                                                  subtaskId:
+                                                                    subtask.id,
+                                                                },
+                                                              ),
+                                                          )
+                                                        }
+                                                      />
+                                                      {subtaskEdit ? (
+                                                        <form
+                                                          className="subtask-edit-form"
+                                                          onSubmit={(event) =>
+                                                            void saveSubtaskEdit(
+                                                              event,
+                                                              subtask.id,
+                                                            )
+                                                          }
+                                                        >
+                                                          {/* <span>Evidence</span> is kept as the stable field label contract. */}
+                                                          <label>
+                                                            <span>
+                                                              Subtask title
+                                                            </span>
+                                                            <input
+                                                              autoFocus
+                                                              disabled={
+                                                                !snapshot.canMutate ||
+                                                                busy
+                                                              }
+                                                              onChange={(
+                                                                event,
+                                                              ) =>
+                                                                setSubtaskEdits(
+                                                                  (
+                                                                    current,
+                                                                  ) => ({
+                                                                    ...current,
+                                                                    [subtask.id]:
+                                                                      {
+                                                                        ...subtaskEdit,
+                                                                        title:
+                                                                          event
+                                                                            .target
+                                                                            .value,
+                                                                      },
+                                                                  }),
+                                                                )
+                                                              }
+                                                              value={
+                                                                subtaskEdit.title
+                                                              }
+                                                            />
+                                                          </label>
+                                                          <label>
+                                                            <span>
+                                                              Description
+                                                            </span>
+                                                            <textarea
+                                                              disabled={
+                                                                !snapshot.canMutate ||
+                                                                busy
+                                                              }
+                                                              onChange={(
+                                                                event,
+                                                              ) =>
+                                                                setSubtaskEdits(
+                                                                  (
+                                                                    current,
+                                                                  ) => ({
+                                                                    ...current,
+                                                                    [subtask.id]:
+                                                                      {
+                                                                        ...subtaskEdit,
+                                                                        description:
+                                                                          event
+                                                                            .target
+                                                                            .value,
+                                                                      },
+                                                                  }),
+                                                                )
+                                                              }
+                                                              value={
+                                                                subtaskEdit.description
+                                                              }
+                                                            />
+                                                          </label>
+                                                          <label>
+                                                            <span>
+                                                              Evidence
+                                                            </span>
+                                                            <textarea
+                                                              disabled={
+                                                                !snapshot.canMutate ||
+                                                                busy
+                                                              }
+                                                              onChange={(
+                                                                event,
+                                                              ) =>
+                                                                setSubtaskEdits(
+                                                                  (
+                                                                    current,
+                                                                  ) => ({
+                                                                    ...current,
+                                                                    [subtask.id]:
+                                                                      {
+                                                                        ...subtaskEdit,
+                                                                        evidence:
+                                                                          event
+                                                                            .target
+                                                                            .value,
+                                                                      },
+                                                                  }),
+                                                                )
+                                                              }
+                                                              placeholder="Evidence (optional)"
+                                                              value={
+                                                                subtaskEdit.evidence
+                                                              }
+                                                            />
+                                                          </label>
+                                                          <div className="edit-actions">
+                                                            <button
+                                                              disabled={
+                                                                !snapshot.canMutate ||
+                                                                busy ||
+                                                                !subtaskEdit.title.trim()
+                                                              }
+                                                              type="submit"
+                                                            >
+                                                              Save subtask
+                                                            </button>
+                                                            <button
+                                                              className="secondary"
+                                                              disabled={busy}
+                                                              onClick={() =>
+                                                                cancelSubtaskEdit(
+                                                                  subtask.id,
+                                                                )
+                                                              }
+                                                              type="button"
+                                                            >
+                                                              Cancel
+                                                            </button>
+                                                          </div>
+                                                        </form>
+                                                      ) : (
+                                                        <strong>
+                                                          {subtask.name}
+                                                        </strong>
+                                                      )}
+                                                    </div>
+                                                    {!subtaskEdit && (
+                                                      <div className="subtask-copy">
+                                                        {subtask.description && (
+                                                          <p className="subtask-description">
+                                                            {
+                                                              subtask.description
+                                                            }
+                                                          </p>
+                                                        )}
+                                                        {(subtask.evidence ??
+                                                          subtaskStatus?.evidence) && (
+                                                          <p className="evidence">
+                                                            {subtask.evidence ??
+                                                              subtaskStatus?.evidence}
+                                                          </p>
+                                                        )}
+                                                        {subtaskStateReason &&
+                                                          (subtaskWorkStatus ===
+                                                            "blocked" ||
+                                                            subtaskWorkStatus ===
+                                                              "awaiting_verification") && (
+                                                            <p className="state-reason">
+                                                              <strong>
+                                                                {subtaskWorkStatus ===
+                                                                "blocked"
+                                                                  ? "Why blocked"
+                                                                  : "What to verify"}
+                                                                :
+                                                              </strong>{" "}
+                                                              {
+                                                                subtaskStateReason
+                                                              }
+                                                            </p>
+                                                          )}
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                  <div className="subtask-actions">
                                                     <button
+                                                      aria-label="Edit subtask"
+                                                      className="icon-button secondary"
                                                       disabled={
                                                         !snapshot.canMutate ||
-                                                        busy ||
-                                                        !subtaskEdit.title.trim()
+                                                        busy
                                                       }
-                                                      type="submit"
+                                                      onClick={() =>
+                                                        startSubtaskEdit(
+                                                          subtask,
+                                                          subtaskStatus,
+                                                        )
+                                                      }
+                                                      type="button"
+                                                      title="Edit subtask"
                                                     >
-                                                      Save subtask
+                                                      <SubtaskActionIcon action="edit" />
                                                     </button>
+                                                    {subtaskArchived && (
+                                                      <button
+                                                        className="secondary"
+                                                        disabled={
+                                                          !snapshot.canMutate ||
+                                                          busy
+                                                        }
+                                                        onClick={() =>
+                                                          void mutateAndRefresh(
+                                                            () =>
+                                                              trpc.current!.subtasks.restore.mutate(
+                                                                {
+                                                                  subtaskId:
+                                                                    subtask.id,
+                                                                },
+                                                              ),
+                                                          )
+                                                        }
+                                                        type="button"
+                                                      >
+                                                        Restore
+                                                      </button>
+                                                    )}
                                                     <button
                                                       className="secondary"
-                                                      disabled={busy}
                                                       onClick={() =>
-                                                        cancelSubtaskEdit(
+                                                        void loadSubtaskHistory(
                                                           subtask.id,
                                                         )
                                                       }
                                                       type="button"
                                                     >
-                                                      Cancel
+                                                      History
+                                                    </button>
+                                                    {subtaskStatus?.reportId &&
+                                                      subtaskStatus.verificationState ===
+                                                        "awaiting_verification" && (
+                                                        <VerificationActions
+                                                          disabled={
+                                                            !snapshot.canMutate ||
+                                                            busy ||
+                                                            subtaskArchived
+                                                          }
+                                                          onVerify={(
+                                                            decision,
+                                                            reason,
+                                                          ) =>
+                                                            void verifySubtask(
+                                                              subtaskStatus.reportId!,
+                                                              decision,
+                                                              reason,
+                                                            )
+                                                          }
+                                                        />
+                                                      )}
+                                                    <button
+                                                      aria-label={`Delete subtask “${subtask.name}”`}
+                                                      className="icon-button danger"
+                                                      disabled={
+                                                        !snapshot.canMutate ||
+                                                        busy
+                                                      }
+                                                      onClick={() => {
+                                                        if (
+                                                          !window.confirm(
+                                                            `Delete subtask “${subtask.name}”? This cannot be undone.`,
+                                                          )
+                                                        )
+                                                          return;
+                                                        void mutateAndRefresh(
+                                                          () =>
+                                                            trpc.current!.subtasks.remove.mutate(
+                                                              {
+                                                                confirm: true,
+                                                                subtaskId:
+                                                                  subtask.id,
+                                                              },
+                                                            ),
+                                                        );
+                                                      }}
+                                                      type="button"
+                                                      title="Delete subtask"
+                                                    >
+                                                      <SubtaskActionIcon action="delete" />
                                                     </button>
                                                   </div>
-                                                </form>
-                                              ) : (
-                                                <strong>{subtask.name}</strong>
-                                              )}
-                                            </div>
-                                            {!subtaskEdit && (
-                                              <div className="subtask-copy">
-                                                {subtask.description && (
-                                                  <p className="subtask-description">
-                                                    {subtask.description}
-                                                  </p>
-                                                )}
-                                                {(subtask.evidence ??
-                                                  subtaskStatus?.evidence) && (
-                                                  <p className="evidence">
-                                                    {subtask.evidence ??
-                                                      subtaskStatus?.evidence}
-                                                  </p>
-                                                )}
-                                              </div>
-                                            )}
-                                          </div>
-                                          <div className="subtask-actions">
-                                            <button
-                                              aria-label="Edit subtask"
-                                              className="icon-button secondary"
-                                              disabled={
-                                                !snapshot.canMutate || busy
-                                              }
-                                              onClick={() =>
-                                                startSubtaskEdit(
-                                                  subtask,
-                                                  subtaskStatus,
-                                                )
-                                              }
-                                              type="button"
-                                              title="Edit subtask"
-                                            >
-                                              <SubtaskActionIcon action="edit" />
-                                            </button>
-                                            {subtaskArchived && (
-                                              <button
-                                                className="secondary"
-                                                disabled={
-                                                  !snapshot.canMutate || busy
-                                                }
-                                                onClick={() =>
-                                                  void mutateAndRefresh(() =>
-                                                    trpc.current!.subtasks.restore.mutate(
-                                                      {
-                                                        subtaskId: subtask.id,
-                                                      },
-                                                    ),
-                                                  )
-                                                }
-                                                type="button"
-                                              >
-                                                Restore
-                                              </button>
-                                            )}
-                                            <button
-                                              className="secondary"
-                                              onClick={() =>
-                                                void loadSubtaskHistory(
-                                                  subtask.id,
-                                                )
-                                              }
-                                              type="button"
-                                            >
-                                              History
-                                            </button>
-                                            {subtaskStatus?.reportId &&
-                                              subtaskStatus.verificationState ===
-                                                "awaiting_verification" && (
-                                                <>
-                                                  <button
-                                                    className="verify"
-                                                    disabled={
-                                                      !snapshot.canMutate ||
-                                                      busy ||
-                                                      subtaskArchived
-                                                    }
-                                                    onClick={() =>
-                                                      void mutateAndRefresh(
-                                                        () =>
-                                                          trpc.current!.subtasks.verify.mutate(
+                                                  {history && (
+                                                    <div className="history">
+                                                      <strong>History</strong>
+                                                      {history.reports.map(
+                                                        (report) => (
+                                                          <p key={report.id}>
                                                             {
-                                                              decision:
-                                                                "accepted",
-                                                              reportId:
-                                                                subtaskStatus.reportId!,
-                                                              verifier: "kevin",
-                                                            },
-                                                          ),
-                                                      )
-                                                    }
-                                                    type="button"
-                                                  >
-                                                    Accept
-                                                  </button>
-                                                  <button
-                                                    className="secondary"
-                                                    disabled={
-                                                      !snapshot.canMutate ||
-                                                      busy ||
-                                                      subtaskArchived
-                                                    }
-                                                    onClick={() =>
-                                                      void mutateAndRefresh(
-                                                        () =>
-                                                          trpc.current!.subtasks.verify.mutate(
+                                                              report.reportedState
+                                                            }{" "}
+                                                            by {report.reporter}
+                                                            {report.evidence
+                                                              ? " · " +
+                                                                report.evidence
+                                                              : ""}
+                                                          </p>
+                                                        ),
+                                                      )}
+                                                      {history.verifications.map(
+                                                        (verification) => (
+                                                          <p
+                                                            key={
+                                                              verification.id
+                                                            }
+                                                          >
                                                             {
-                                                              decision:
-                                                                "deferred",
-                                                              reportId:
-                                                                subtaskStatus.reportId!,
-                                                              verifier: "kevin",
-                                                            },
-                                                          ),
-                                                      )
-                                                    }
-                                                    type="button"
-                                                  >
-                                                    Defer
-                                                  </button>
-                                                  <button
-                                                    className="danger"
-                                                    disabled={
-                                                      !snapshot.canMutate ||
-                                                      busy ||
-                                                      subtaskArchived
-                                                    }
-                                                    onClick={() =>
-                                                      void mutateAndRefresh(
-                                                        () =>
-                                                          trpc.current!.subtasks.verify.mutate(
+                                                              verification.decision
+                                                            }{" "}
+                                                            by{" "}
                                                             {
-                                                              decision:
-                                                                "rejected",
-                                                              reportId:
-                                                                subtaskStatus.reportId!,
-                                                              verifier: "kevin",
-                                                            },
-                                                          ),
-                                                      )
-                                                    }
-                                                    type="button"
-                                                  >
-                                                    Reject
-                                                  </button>
-                                                </>
-                                              )}
-                                            <button
-                                              aria-label={`Delete subtask “${subtask.name}”`}
-                                              className="icon-button danger"
-                                              disabled={
-                                                !snapshot.canMutate || busy
+                                                              verification.verifier
+                                                            }
+                                                          </p>
+                                                        ),
+                                                      )}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              );
+                                            },
+                                          )}
+                                          {isLiveWorkState(
+                                            subtaskGroup.state,
+                                          ) && (
+                                            <div
+                                              aria-label={`Drop at end of ${statusDefinitions[subtaskGroup.state].label} subtasks`}
+                                              className={`reorder-tail ${
+                                                dragTarget?.kind ===
+                                                  "subtask" &&
+                                                dragTarget.overId ===
+                                                  DRAG_TAIL &&
+                                                dragTarget.state ===
+                                                  subtaskGroup.state
+                                                  ? "is-drag-over"
+                                                  : ""
+                                              }`}
+                                              data-reorder-kind="subtask"
+                                              data-reorder-tail="true"
+                                              data-work-state={
+                                                subtaskGroup.state
                                               }
-                                              onClick={() => {
-                                                if (
-                                                  !window.confirm(
-                                                    `Delete subtask “${subtask.name}”? This cannot be undone.`,
-                                                  )
-                                                )
-                                                  return;
-                                                void mutateAndRefresh(() =>
-                                                  trpc.current!.subtasks.remove.mutate(
-                                                    {
-                                                      confirm: true,
-                                                      subtaskId: subtask.id,
-                                                    },
-                                                  ),
-                                                );
-                                              }}
-                                              type="button"
-                                              title="Delete subtask"
-                                            >
-                                              <SubtaskActionIcon action="delete" />
-                                            </button>
-                                          </div>
-                                          {history && (
-                                            <div className="history">
-                                              <strong>History</strong>
-                                              {history.reports.map((report) => (
-                                                <p key={report.id}>
-                                                  {report.reportedState} by{" "}
-                                                  {report.reporter}
-                                                  {report.evidence
-                                                    ? " · " + report.evidence
-                                                    : ""}
-                                                </p>
-                                              ))}
-                                              {history.verifications.map(
-                                                (verification) => (
-                                                  <p key={verification.id}>
-                                                    {verification.decision} by{" "}
-                                                    {verification.verifier}
-                                                  </p>
-                                                ),
-                                              )}
-                                            </div>
+                                              role="presentation"
+                                            />
                                           )}
                                         </div>
-                                      );
-                                    })}
+                                      </section>
+                                    ))}
                                   </div>
 
                                   <form
@@ -2025,6 +2527,22 @@ function Dashboard() {
                             </article>
                           );
                         })}
+                        {isLiveWorkState(state) && (
+                          <div
+                            aria-label={`Drop at end of ${statusDefinitions[state].label} tasks`}
+                            className={`reorder-tail ${
+                              dragTarget?.kind === "task" &&
+                              dragTarget.overId === DRAG_TAIL &&
+                              dragTarget.state === state
+                                ? "is-drag-over"
+                                : ""
+                            }`}
+                            data-reorder-kind="task"
+                            data-reorder-tail="true"
+                            data-work-state={state}
+                            role="presentation"
+                          />
+                        )}
                       </div>
                     )}
                   </section>
@@ -2095,6 +2613,16 @@ function StatusIcon({
           stroke={definition.color}
           strokeWidth="1.6"
           strokeDasharray="2.5 2.6"
+        />
+      )}
+      {state === "backlog" && (
+        <circle
+          cx="8"
+          cy="8"
+          r="5.5"
+          stroke={definition.color}
+          strokeWidth="1.6"
+          strokeDasharray="1.2 2.2"
         />
       )}
       {state === "active" && (
@@ -2235,14 +2763,40 @@ function SubtaskActionIcon({ action }: { action: "edit" | "delete" }) {
 
 function TaskStatusMenu({
   onDisposition,
+  onState,
   state,
   taskName,
 }: {
   onDisposition?: (state: "released" | "wont_do") => void;
+  onState: (state: TaskEditableWorkState, reason?: string) => void;
   state: WorkStatus;
   taskName: string;
 }) {
   const current = statusDefinitions[state];
+  const [pendingState, setPendingState] =
+    useState<TaskEditableWorkState | null>(null);
+  const [reason, setReason] = useState("");
+  const [reasonError, setReasonError] = useState(false);
+  const reasonLabel =
+    pendingState === "blocked"
+      ? "Why blocked / what unblocks it"
+      : "What to verify";
+  const closeMenu = (event: React.SyntheticEvent) => {
+    event.currentTarget.closest("details")?.removeAttribute("open");
+  };
+  const chooseState = (
+    event: React.MouseEvent<HTMLButtonElement>,
+    candidateState: TaskEditableWorkState,
+  ) => {
+    if (requiresStateReason(candidateState)) {
+      setPendingState(candidateState);
+      setReason("");
+      setReasonError(false);
+      return;
+    }
+    onState(candidateState);
+    closeMenu(event);
+  };
   return (
     <details className="status-menu task-status-menu">
       <summary
@@ -2258,11 +2812,9 @@ function TaskStatusMenu({
         role="listbox"
       >
         <p className="status-menu-heading">Task status</p>
-        {Object.entries(statusDefinitions).map(([candidate, definition]) => {
-          const candidateState = candidate as WorkStatus;
+        {taskStatusOrder.map((candidateState) => {
+          const definition = statusDefinitions[candidateState];
           const selected = candidateState === state;
-          const disposition =
-            candidateState === "released" || candidateState === "wont_do";
           const content = (
             <>
               <StatusIcon state={candidateState} size={19} />
@@ -2275,36 +2827,99 @@ function TaskStatusMenu({
             </>
           );
 
-          if (disposition && onDisposition) {
-            return (
-              <button
-                aria-selected={selected}
-                className={`status-option ${selected ? "selected" : ""}`}
-                key={candidateState}
-                onClick={() => onDisposition(candidateState)}
-                role="option"
-                type="button"
-              >
-                {content}
-              </button>
-            );
-          }
-
           return (
-            <div
+            <button
               aria-selected={selected}
-              className={`status-option status-readonly ${
-                selected ? "selected" : ""
-              }`}
+              className={`status-option ${selected ? "selected" : ""}`}
               key={candidateState}
+              onClick={(event) => chooseState(event, candidateState)}
               role="option"
+              type="button"
             >
               {content}
-            </div>
+            </button>
           );
         })}
+        {onDisposition && (
+          <>
+            <div className="status-menu-divider" />
+            {archiveStatusOrder.map((candidateState) => {
+              const selected = candidateState === state;
+              const definition = statusDefinitions[candidateState];
+              return (
+                <button
+                  aria-selected={selected}
+                  className={`status-option ${selected ? "selected" : ""}`}
+                  key={candidateState}
+                  onClick={(event) => {
+                    onDisposition(candidateState);
+                    closeMenu(event);
+                  }}
+                  role="option"
+                  type="button"
+                >
+                  <StatusIcon state={candidateState} size={19} />
+                  <span>{definition.label}</span>
+                  {selected && (
+                    <span aria-hidden="true" className="status-selected">
+                      ✓
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </>
+        )}
+        {pendingState && (
+          <form
+            className="status-reason-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const trimmedReason = reason.trim();
+              if (!trimmedReason) {
+                setReasonError(true);
+                return;
+              }
+              onState(pendingState, trimmedReason);
+              setPendingState(null);
+              setReason("");
+              setReasonError(false);
+              closeMenu(event);
+            }}
+          >
+            <label>
+              <span>{reasonLabel}</span>
+              <textarea
+                aria-invalid={reasonError}
+                autoFocus
+                onChange={(event) => {
+                  setReason(event.target.value);
+                  setReasonError(false);
+                }}
+                placeholder={reasonLabel}
+                required
+                value={reason}
+              />
+            </label>
+            {reasonError && (
+              <p className="field-error">A reason is required.</p>
+            )}
+            <div className="edit-actions">
+              <button type="submit">
+                Set {statusDefinitions[pendingState].label}
+              </button>
+              <button
+                className="secondary"
+                onClick={() => setPendingState(null)}
+                type="button"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
         <p className="status-menu-note">
-          Work status is derived from subtask reports and human verification.
+          Task status is directly editable; child reports may advance it.
         </p>
       </div>
     </details>
@@ -2315,14 +2930,26 @@ function ReportStatusMenu({
   disabled,
   onDisposition,
   onSelect,
+  onSelectWithReason,
   state,
 }: {
   disabled: boolean;
   onDisposition: (state: "released" | "wont_do") => void;
   onSelect: (state: ReportedStatus) => void;
+  onSelectWithReason?: (state: ReportedStatus, reason: string) => void;
   state: WorkStatus;
 }) {
   const current = statusDefinitions[state];
+  const [pendingState, setPendingState] = useState<ReportedStatus | null>(null);
+  const [reason, setReason] = useState("");
+  const [reasonError, setReasonError] = useState(false);
+  const reasonLabel =
+    pendingState === "blocked"
+      ? "Why blocked / what unblocks it"
+      : "What to verify";
+  const closeMenu = (event: React.SyntheticEvent) => {
+    event.currentTarget.closest("details")?.removeAttribute("open");
+  };
   return (
     <details className="status-menu subtask-status-menu">
       <summary
@@ -2338,27 +2965,93 @@ function ReportStatusMenu({
         className="status-menu-options"
         role="listbox"
       >
-        {reportStatusOptions.map((option) => (
-          <button
-            aria-selected={option.workStatus === state}
-            className={`status-option ${
-              option.workStatus === state ? "selected" : ""
-            }`}
-            disabled={disabled}
-            key={option.reportedState}
-            onClick={() => onSelect(option.reportedState)}
-            role="option"
-            type="button"
+        {reportStatusOptions.map((option) => {
+          const requiresReason =
+            option.reportedState === "blocked" ||
+            option.reportedState === "complete";
+          return (
+            <button
+              aria-selected={option.workStatus === state}
+              className={`status-option ${
+                option.workStatus === state ? "selected" : ""
+              }`}
+              disabled={disabled}
+              key={option.reportedState}
+              onClick={(event) => {
+                if (requiresReason && onSelectWithReason) {
+                  setPendingState(option.reportedState);
+                  setReason("");
+                  setReasonError(false);
+                  return;
+                }
+                onSelect(option.reportedState);
+                closeMenu(event);
+              }}
+              role="option"
+              type="button"
+            >
+              <StatusIcon state={option.workStatus} size={19} />
+              <span>{option.label}</span>
+              {option.workStatus === state && (
+                <span aria-hidden="true" className="status-selected">
+                  ✓
+                </span>
+              )}
+            </button>
+          );
+        })}
+        {pendingState && onSelectWithReason && (
+          <form
+            className="status-reason-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const trimmedReason = reason.trim();
+              if (!trimmedReason) {
+                setReasonError(true);
+                return;
+              }
+              onSelectWithReason(pendingState, trimmedReason);
+              setPendingState(null);
+              setReason("");
+              setReasonError(false);
+              closeMenu(event);
+            }}
           >
-            <StatusIcon state={option.workStatus} size={19} />
-            <span>{option.label}</span>
-            {option.workStatus === state && (
-              <span aria-hidden="true" className="status-selected">
-                ✓
-              </span>
+            <label>
+              <span>{reasonLabel}</span>
+              <textarea
+                aria-invalid={reasonError}
+                autoFocus
+                onChange={(event) => {
+                  setReason(event.target.value);
+                  setReasonError(false);
+                }}
+                placeholder={reasonLabel}
+                required
+                value={reason}
+              />
+            </label>
+            {reasonError && (
+              <p className="field-error">A reason is required.</p>
             )}
-          </button>
-        ))}
+            <div className="edit-actions">
+              <button type="submit">
+                Report{" "}
+                {
+                  statusDefinitions[workStatusForReportedState(pendingState)]
+                    ?.label
+                }
+              </button>
+              <button
+                className="secondary"
+                onClick={() => setPendingState(null)}
+                type="button"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
         <div className="status-menu-divider" />
         {dispositionStatusOptions.map(({ workStatus: candidateState }) => {
           const selected = candidateState === state;
@@ -2385,6 +3078,143 @@ function ReportStatusMenu({
         })}
       </div>
     </details>
+  );
+}
+
+function ReorderHandle({
+  disabled,
+  itemId,
+  kind,
+  onKeyDown,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  state,
+}: {
+  disabled: boolean;
+  itemId: string;
+  kind: "task" | "subtask";
+  onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
+  onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  state: LiveWorkState;
+}) {
+  return (
+    <button
+      aria-keyshortcuts="ArrowUp ArrowDown"
+      aria-label={`Reorder ${kind} ${itemId}`}
+      aria-roledescription="sortable"
+      className="reorder-handle"
+      data-reorder-kind={kind}
+      data-reorder-id={itemId}
+      data-work-state={state}
+      disabled={disabled}
+      onKeyDown={onKeyDown}
+      onPointerCancel={onPointerUp}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      title={`Reorder ${kind}`}
+      type="button"
+    >
+      <span aria-hidden="true">⋮⋮</span>
+    </button>
+  );
+}
+
+function VerificationActions({
+  disabled,
+  onVerify,
+}: {
+  disabled: boolean;
+  onVerify: (
+    decision: "accepted" | "rejected" | "deferred",
+    reason?: string,
+  ) => void;
+}) {
+  const [pendingDecision, setPendingDecision] = useState<
+    "rejected" | "deferred" | null
+  >(null);
+  const [reason, setReason] = useState("");
+  const [reasonError, setReasonError] = useState(false);
+
+  if (pendingDecision) {
+    const label = pendingDecision === "rejected" ? "Why reject" : "Why defer";
+    return (
+      <form
+        className="verification-reason-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const trimmedReason = reason.trim();
+          if (!trimmedReason) {
+            setReasonError(true);
+            return;
+          }
+          onVerify(pendingDecision, trimmedReason);
+          setPendingDecision(null);
+          setReason("");
+          setReasonError(false);
+        }}
+      >
+        <label>
+          <span>{label}</span>
+          <textarea
+            aria-invalid={reasonError}
+            autoFocus
+            onChange={(event) => {
+              setReason(event.target.value);
+              setReasonError(false);
+            }}
+            placeholder={label}
+            required
+            value={reason}
+          />
+        </label>
+        {reasonError && <p className="field-error">A reason is required.</p>}
+        <div className="edit-actions">
+          <button type="submit">
+            {pendingDecision === "rejected" ? "Reject" : "Defer"}
+          </button>
+          <button
+            className="secondary"
+            onClick={() => setPendingDecision(null)}
+            type="button"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  return (
+    <>
+      <button
+        className="verify"
+        disabled={disabled}
+        onClick={() => onVerify("accepted")}
+        type="button"
+      >
+        Accept
+      </button>
+      <button
+        className="secondary"
+        disabled={disabled}
+        onClick={() => setPendingDecision("deferred")}
+        type="button"
+      >
+        Defer
+      </button>
+      <button
+        className="danger"
+        disabled={disabled}
+        onClick={() => setPendingDecision("rejected")}
+        type="button"
+      >
+        Reject
+      </button>
+    </>
   );
 }
 

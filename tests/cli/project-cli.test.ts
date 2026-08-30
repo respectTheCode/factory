@@ -382,6 +382,8 @@ describe("project CLI", () => {
         "codex",
         "--evidence",
         "Build 2026-08-22 passed in CI.",
+        "--reason",
+        "Confirm the production build meets the release checklist.",
         "--database",
         databasePath,
       ]);

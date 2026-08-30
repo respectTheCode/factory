@@ -31,6 +31,7 @@ describe("project removal", () => {
       });
       const remainingReport = app.reportSubtaskStatus({
         evidence: "Current release is ready.",
+        reason: "Check the current release against the acceptance criteria.",
         reporter: "codex",
         reportedState: "complete",
         subtaskId: remainingSubtask.id,
@@ -63,6 +64,7 @@ describe("project removal", () => {
       });
       const removedReport = app.reportSubtaskStatus({
         evidence: "Archive confirmed.",
+        reason: "Check the archived result against the acceptance criteria.",
         reporter: "codex",
         reportedState: "complete",
         subtaskId: removedSubtask.id,

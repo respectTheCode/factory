@@ -27,6 +27,9 @@ function addTaskWithCurrentState(
     taskId: task.id,
   });
   const report = app.reportSubtaskStatus({
+    ...(reportedState === "blocked" || reportedState === "complete"
+      ? { reason: "Check the next action against the acceptance criteria." }
+      : {}),
     reporter: "codex",
     reportedState,
     subtaskId: subtask.id,
@@ -79,6 +82,7 @@ describe("project status projection", () => {
       projectName: "Factory V1",
       totalTasks: 5,
       counts: {
+        backlog: 0,
         planned: 1,
         active: 1,
         awaiting_verification: 1,
@@ -109,6 +113,7 @@ describe("project status projection", () => {
     expect(app.getPortfolioStatus()).toEqual({
       totalTasks: 5,
       counts: {
+        backlog: 0,
         planned: 1,
         active: 1,
         awaiting_verification: 1,
@@ -123,6 +128,7 @@ describe("project status projection", () => {
           projectName: "Factory V1",
           totalTasks: 2,
           counts: {
+            backlog: 0,
             planned: 1,
             active: 1,
             awaiting_verification: 0,
@@ -137,6 +143,7 @@ describe("project status projection", () => {
           projectName: "Grail roadmap",
           totalTasks: 3,
           counts: {
+            backlog: 0,
             planned: 0,
             active: 0,
             awaiting_verification: 1,

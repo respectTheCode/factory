@@ -28,23 +28,29 @@ record. A Status Report does not replace Kevin's Verification.
 
 ### 3.1 Projects, Tasks, and Subtasks
 
-- **FR-001** — Factory must store Projects and Tasks as durable, addressable records.
+- **FR-001** — Factory must store Projects and Tasks as durable, addressable records. Every Task
+  has a stored Work State: `backlog`, `planned`, `active`, `awaiting_verification`, `blocked`, or
+  `completed`.
 - **FR-002** — A Task must support an objective, acceptance criteria, priority, owner,
   dependencies, and links to zero or more repositories.
 - **FR-003** — A Task must contain zero or more Subtasks. A Subtask must support a title,
   description, a current reported state, and a quick Archive State of `released` or `wont_do`.
-- **FR-004** — A Task must support the same quick Archive States, independently of its derived
-  work state. Restoring an archived Task or Subtask returns it to its prior derived/reporting
+- **FR-004** — A Task must support the same quick Archive States, independently of its Work
+  State. Restoring an archived Task or Subtask returns it to its prior work/reporting
   behavior without deleting history.
 - **FR-005** — Factory must support native Tasks that have no Notion or Linear record.
-- **FR-006** — Factory must show Project- and portfolio-level work by planned, active,
-  awaiting-verification, completed, blocked, released, and wont-do state.
+- **FR-006** — Factory must show Project- and portfolio-level live work in this canonical order:
+  completed, blocked, awaiting-verification, active, planned, and backlog. Released and wont-do
+  are separate archive dispositions rather than positions in the live-work sequence.
 - **FR-007** — A Project may store a Git origin URL so a coding checkout can be associated with
   the correct Factory Project. The URL is context metadata, not a repository mirror or sync
   target.
 - **FR-008** — A Task may store a branch name. Branch names may contain a Linear or Notion
   identifier for agent context, but Factory must not infer or write external tracker state from
   that name.
+- **FR-009** — Tasks and Subtasks must have a durable manual order within their current Work
+  State. The dashboard must support pointer/touch drag reordering and keyboard reordering;
+  reordering never moves an item to another state.
 
 ### 3.2 Tracker Links
 
@@ -59,7 +65,8 @@ record. A Status Report does not replace Kevin's Verification.
 ### 3.3 Agent reports and human verification
 
 - **FR-020** — A Codex skill or hook must be able to submit a Subtask Status Report through the
-  Factory CLI, including `subtaskId`, reported state, reporter, time, and optional evidence.
+  Factory CLI, including `subtaskId`, reported state, reporter, time, optional evidence, and an
+  actionable reason when the reported state is `blocked`.
 - **FR-021** — Noninteractive CLI calls may create Status Reports but must not mark a Subtask or
   Task verified or completed.
 - **FR-022** — A human must be able to verify, reject, or defer a reported Subtask state from
@@ -68,11 +75,21 @@ record. A Status Report does not replace Kevin's Verification.
   report or verification must not erase the earlier observation.
 - **FR-024** — A Task can be marked completed only by human verification. An agent-reported
   complete state places the relevant Subtask or Task in awaiting-verification, not completed.
+- **FR-025** — Blocked and awaiting-verification Tasks and Subtasks must expose an actionable
+  reason: what unblocks the work or what the human needs to check. Entering either state without
+  its required reason must be rejected.
+- **FR-026** — A Subtask moving to a higher non-completed Work State promotes its parent Task.
+  A human may directly move a Task among backlog, planned, active, awaiting-verification, and
+  blocked in either direction, including planned to active or active to planned. An explicit
+  human Task state is not silently lowered by later Subtask reports. Completed remains governed
+  only by the verification rule.
 
 #### V1 report and completion rules
 
 - A Status Report's `reportedState` is one of `not_started`, `in_progress`, `blocked`, or
   `complete`. `awaiting-verification` is a derived Factory state, never an agent report.
+- A blocked report includes what unblocks it. A complete report includes what the human should
+  verify; Factory uses that reason while the Subtask is awaiting verification.
 - Status Reports are append-only. The current report is the most recently accepted report by
   Factory; a newer report replaces the prior current report and reopens verification, including
   after an earlier report was accepted.
@@ -82,6 +99,10 @@ record. A Status Report does not replace Kevin's Verification.
 - A Task is completed only when it has at least one Subtask and every Subtask's current report
   is `complete` with a latest Verification of `accepted`. A Task with no Subtasks remains
   planned. Human acceptance attests that the Task's visible acceptance criteria are satisfied.
+- A Task whose state is controlled by Subtask rollup follows the highest current non-completed
+  Subtask state and may move down again when those Subtasks change. A direct human Task-state
+  choice remains in force until a Subtask later moves to a higher non-completed state or the
+  completion rule is satisfied; a same-state report does not override a human hold.
 - Task dependencies are informational in v1 and do not independently block completion.
 - `released` and `wont_do` are explicit Archive States, distinct from human-verified
   `completed`. Archived Tasks disappear from Attention but remain addressable, counted, and
@@ -168,6 +189,12 @@ record. A Status Report does not replace Kevin's Verification.
 8. **Live connection:** If the Tailscale or tRPC WebSocket connection drops, the installed PWA
    changes to `reconnecting` and then `disconnected`, displays the last successful connection
    time, and disables edits. It refreshes data before re-enabling edits after reconnecting.
+9. **Ordered work:** Kevin drags Tasks or Subtasks within one state group (or uses Arrow keys on
+   the reorder handle), reloads Factory, and sees the same order. State groups remain in the
+   canonical order.
+10. **Work-state control:** A Subtask becoming active promotes a planned parent Task; Kevin can
+    still put the parent back into planned or move it to active directly. Blocked and
+    awaiting-verification transitions cannot be saved without their actionable reason.
 
 ## 6. V2, not v1
 

@@ -433,6 +433,7 @@ describe("Factory planning WebSocket transport", () => {
         params: {
           input: {
             evidence: "Build 2026-08-22 passed in CI.",
+            reason: "Confirm the production build meets the release checklist.",
             reportedState: "complete",
             reporter: "codex",
             subtaskId: subtask.id,
@@ -534,6 +535,7 @@ describe("Factory planning WebSocket transport", () => {
         params: {
           input: {
             evidence: "Build 2026-08-22 passed in CI.",
+            reason: "Confirm the production build meets the release checklist.",
             reportedState: "complete",
             reporter: "codex",
             subtaskId: subtask.id,
@@ -755,6 +757,7 @@ describe("Factory planning WebSocket transport", () => {
         params: {
           input: {
             evidence: "Build 2026-08-23 passed in CI.",
+            reason: "Confirm the production build meets the release checklist.",
             reportedState: "complete",
             reporter: "codex",
             subtaskId: subtask.id,

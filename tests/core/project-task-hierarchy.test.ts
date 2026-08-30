@@ -72,8 +72,12 @@ describe("project planning", () => {
               id: subtask.id,
               name: "Check the install flow",
               taskId: task.id,
+              sortOrder: 0,
+              workState: "planned",
             },
           ],
+          sortOrder: 0,
+          workState: "planned",
         },
       ],
     });

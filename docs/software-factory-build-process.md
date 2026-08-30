@@ -20,6 +20,12 @@ dashboard, CLI, and Codex skills.
 - The Factory core is independent of React, tRPC, WebSockets, the CLI, and Notion/Linear.
   Those are adapters around the same core behavior.
 - A Status Report is an agent claim; only a human Verification can complete a Task.
+- Task Work State is durable and directly editable except for completion. Subtask rollup may
+  promote a parent through non-completed states. An explicit human Task state remains in force
+  until a later higher Subtask transition or the completion rule; a same-state report does not
+  override a human hold.
+- Tasks and Subtasks retain a durable order within each Work State. Live state groups use the
+  canonical display order: completed, blocked, awaiting verification, active, planned, backlog.
 - `released` and `wont_do` are explicit Archive States for quick Task/Subtask disposition;
   they are retained in history and restored rather than deleted.
 - The parent agent owns the working tree, test execution, UI checks, and commits. Bounded
@@ -55,7 +61,14 @@ go to stderr.
 
 - Creating a Project with a Task makes that Task retrievable through the Project.
 - An agent report of `complete` makes its Subtask awaiting verification; it cannot complete the
-  Task.
+  Task. It includes the concrete check the human should perform.
+- A blocked report includes what unblocks the work. Blocked and awaiting-verification state
+  changes without an actionable reason are rejected.
+- Moving a Subtask to a higher non-completed state promotes a rollup-controlled parent Task;
+  moving all relevant Subtasks down recomputes that rollup state. A direct human Task-state
+  change may move either direction, including planned to active and active to planned.
+- Task and Subtask reorder commands accept the complete ordered ID list for one current state
+  group and persist that order without changing state.
 - A Task or Subtask may be archived as `released` or `wont_do` from the dashboard, tRPC, or CLI.
   Archived Tasks leave Attention, while archived Subtasks do not silently change their parent.
 - A human verification retains the original Status Report and is the only action that can make
@@ -166,7 +179,8 @@ checkout to Factory work. A skill-shaped,
 noninteractive command may submit a Status Report but cannot verify or complete work. Document
 the initial skill command and hook payload after the CLI contract is stable. The current agent
 loop reads `project attention`, `task detail`, and `subtask history`, then uses `subtask report`
-for `in_progress`, `blocked`, or `complete`; `subtask verify` remains human-only. Tracker links
+for `in_progress`, `blocked`, or `complete`, supplying `--reason` for blocked and complete
+reports; `subtask verify` remains human-only. Tracker links
 can be attached through the CLI without writing to Notion or Linear. `task archive` and
 `subtask archive` provide quick `released`/`wont_do` dispositions, with matching restore
 commands. Include a `schemaVersion` in machine JSON before skills depend on it.
@@ -184,8 +198,9 @@ human verification, and Tracker Links. It must surface `connecting`, `connected`
 `reconnecting`, and `disconnected`, including the last successful connection time when not
 connected. The manifest, standalone mode, icons, and app-shell-only service-worker cache belong
 here; mutable data remains network-fetched. The dashboard also exposes an Attention projection
-of non-completed Tasks, grouped by blocked, awaiting-verification, active, and planned state,
-with a direct path into the owning Project.
+of non-completed Tasks in blocked, awaiting-verification, active, planned, and backlog order,
+with a direct path into the owning Project. Project pages show the complete canonical state
+sequence and support pointer/touch drag and keyboard reordering within each state group.
 Dashboard views use browser-addressable Project routes so navigation survives reloads and the
 browser Back/Forward controls restore Home, Project Tasks, and Project Settings.
 

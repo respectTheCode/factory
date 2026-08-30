@@ -67,6 +67,7 @@ describe("subtask descriptions", () => {
 
     const report = app.reportSubtaskStatus({
       evidence: "bun test passed",
+      reason: "Check the result against the acceptance criteria.",
       reportedState: "complete",
       reporter: "codex",
       subtaskId: subtask.id,

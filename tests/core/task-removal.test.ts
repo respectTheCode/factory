@@ -33,6 +33,7 @@ describe("task and subtask removal", () => {
       });
       const removedReport = app.reportSubtaskStatus({
         evidence: "This record should be deleted with its subtask.",
+        reason: "Check the removed result against the acceptance criteria.",
         reporter: "codex",
         reportedState: "complete",
         subtaskId: removedSubtask.id,
@@ -112,6 +113,7 @@ describe("task and subtask removal", () => {
       });
       app.verifyStatusReport({
         decision: "deferred",
+        reason: "The deferred work needs another review.",
         reportId: removedReport.id,
         verifier: "kevin",
       });
