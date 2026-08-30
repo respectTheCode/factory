@@ -278,6 +278,25 @@ function Dashboard() {
   const subscriptionCleanup = useRef<(() => void) | null>(null);
 
   useEffect(() => {
+    const dismissOpenMenus = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      const openMenus = document.querySelectorAll<HTMLDetailsElement>(
+        "details.task-menu[open], details.status-menu[open]",
+      );
+      for (const menu of openMenus) {
+        if (!menu.contains(event.target)) {
+          menu.removeAttribute("open");
+        }
+      }
+    };
+
+    document.addEventListener("pointerdown", dismissOpenMenus);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOpenMenus);
+    };
+  }, []);
+
+  useEffect(() => {
     const client = createWSClient({
       onClose: () => {
         subscriptionCleanup.current?.();

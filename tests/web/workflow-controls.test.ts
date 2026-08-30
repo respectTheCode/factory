@@ -60,4 +60,18 @@ describe("PWA workflow controls", () => {
     );
     expect(stylesheet).toContain(".subtask.mobile-row-collapsed .subtask-copy");
   });
+
+  test("dismisses More and status menus only when a pointer lands outside them", () => {
+    expect(source).toContain(
+      '"details.task-menu[open], details.status-menu[open]"',
+    );
+    expect(source).toContain(
+      'document.addEventListener("pointerdown", dismissOpenMenus)',
+    );
+    expect(source).toContain(
+      'document.removeEventListener("pointerdown", dismissOpenMenus)',
+    );
+    expect(source).toContain("if (!menu.contains(event.target))");
+    expect(source).toContain('menu.removeAttribute("open")');
+  });
 });
