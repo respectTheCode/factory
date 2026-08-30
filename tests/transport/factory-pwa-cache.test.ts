@@ -43,10 +43,10 @@ describe("Factory PWA cache policy", () => {
       const shellMarkup = await shell.text();
       expect(shellMarkup).toContain('content="#141210"');
       expect(shellMarkup).toContain(
-        "/fonts/ibm-plex-sans-latin-400-normal.woff2?v=17",
+        "/fonts/ibm-plex-sans-latin-400-normal.woff2?v=18",
       );
       expect(shellMarkup).toContain("apple-touch-icon");
-      expect(shellMarkup).toContain("/icons/apple-touch-icon.png?v=17");
+      expect(shellMarkup).toContain("/icons/apple-touch-icon.png?v=18");
 
       const manifestResponse = await fetch(
         new URL("/manifest.webmanifest", server.url),
@@ -77,6 +77,26 @@ describe("Factory PWA cache policy", () => {
           type: "image/png",
         },
       ]);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("keeps the document asset version aligned with the service-worker shell", async () => {
+    const server = createFactoryServer({ databasePath: ":memory:", port: 0 });
+
+    try {
+      const [shellMarkup, workerSource] = await Promise.all([
+        fetch(new URL("/", server.url)).then((response) => response.text()),
+        fetch(new URL("/service-worker.js", server.url)).then((response) =>
+          response.text(),
+        ),
+      ]);
+      const documentVersion = /\/main\.js\?v=(\d+)/.exec(shellMarkup)?.[1];
+      const workerVersion = /\/main\.js\?v=(\d+)/.exec(workerSource)?.[1];
+
+      expect(documentVersion).toBeDefined();
+      expect(documentVersion).toBe(workerVersion);
     } finally {
       server.stop();
     }
