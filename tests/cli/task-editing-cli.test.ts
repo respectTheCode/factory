@@ -110,6 +110,8 @@ describe("task editing CLI", () => {
         "Updated subtask title",
         "--description",
         "Updated subtask description",
+        "--evidence",
+        "Updated subtask evidence",
         "--database",
         databasePath,
       ]);
@@ -118,6 +120,7 @@ describe("task editing CLI", () => {
         schemaVersion: 1,
         subtask: {
           description: "Updated subtask description",
+          evidence: "Updated subtask evidence",
           name: "Updated subtask title",
           taskId: task.task.id,
         },

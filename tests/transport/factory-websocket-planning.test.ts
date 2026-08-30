@@ -132,6 +132,7 @@ describe("Factory planning WebSocket transport", () => {
         params: {
           input: {
             description: "Updated subtask description",
+            evidence: "Updated subtask evidence",
             name: "Updated subtask title",
             subtaskId: subtask.id,
           },
@@ -160,6 +161,7 @@ describe("Factory planning WebSocket transport", () => {
                 subtasks: [
                   {
                     description: "Updated subtask description",
+                    evidence: "Updated subtask evidence",
                     name: "Updated subtask title",
                   },
                 ],

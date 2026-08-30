@@ -462,13 +462,21 @@ function main(args: string[]): void {
   }
 
   if (resource === "subtask" && action === "update") {
+    const evidence = parsed.flags.get("evidence");
     const title = parsed.flags.get("title");
     const description = parsed.flags.get("description");
-    if (title === undefined && description === undefined) {
-      throw new Error("Provide at least one of --title or --description.");
+    if (
+      title === undefined &&
+      description === undefined &&
+      evidence === undefined
+    ) {
+      throw new Error(
+        "Provide at least one of --title, --description, or --evidence.",
+      );
     }
     const subtask = application.updateSubtask({
       description,
+      evidence,
       name: title,
       subtaskId: requiredFlag(parsed.flags, "subtask-id"),
     });

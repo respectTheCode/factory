@@ -1,14 +1,3 @@
-import {
-  CheckCircle,
-  CircleDashed,
-  CircleHalf,
-  Eye,
-  SealCheck,
-  WarningCircle,
-  XCircle,
-  type Icon,
-} from "@phosphor-icons/react";
-
 export type WorkStatus =
   | "planned"
   | "active"
@@ -33,22 +22,22 @@ export type VerificationStatus =
 
 export type StatusDefinition = {
   color: string;
-  icon: Icon;
+  dial: WorkStatus;
   label: string;
 };
 
 export const statusDefinitions: Record<WorkStatus, StatusDefinition> = {
-  planned: { color: "#f97316", icon: CircleDashed, label: "Planned" },
-  active: { color: "#facc15", icon: CircleHalf, label: "Active" },
+  planned: { color: "#A2988A", dial: "planned", label: "Planned" },
+  active: { color: "#4AA3E0", dial: "active", label: "Active" },
   awaiting_verification: {
-    color: "#22c55e",
-    icon: Eye,
+    color: "#F0B429",
+    dial: "awaiting_verification",
     label: "Awaiting verification",
   },
-  completed: { color: "#818cf8", icon: CheckCircle, label: "Completed" },
-  blocked: { color: "#ef4444", icon: WarningCircle, label: "Blocked" },
-  released: { color: "#6366f1", icon: SealCheck, label: "Released" },
-  wont_do: { color: "#94a3b8", icon: XCircle, label: "Won't do" },
+  completed: { color: "#2FBE6B", dial: "completed", label: "Completed" },
+  blocked: { color: "#E5484D", dial: "blocked", label: "Blocked" },
+  released: { color: "#2FBE6B", dial: "released", label: "Released" },
+  wont_do: { color: "#635A4D", dial: "wont_do", label: "Won't do" },
 };
 
 export const reportStatusOptions: Array<{

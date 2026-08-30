@@ -52,6 +52,19 @@ describe("subtask descriptions", () => {
       ],
     });
 
+    app.updateSubtask({
+      evidence: "Draft evidence before any status report.",
+      subtaskId: subtask.id,
+    });
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      subtasks: [
+        {
+          evidence: "Draft evidence before any status report.",
+          verificationState: "unreported",
+        },
+      ],
+    });
+
     const report = app.reportSubtaskStatus({
       evidence: "bun test passed",
       reportedState: "complete",
@@ -68,8 +81,16 @@ describe("subtask descriptions", () => {
       taskCompleted: true,
       subtasks: [
         {
+          evidence: "bun test passed",
           reportedState: "complete",
           verificationState: "accepted",
+        },
+      ],
+    });
+    expect(app.getProjectHierarchy(project.id)).toMatchObject({
+      tasks: [
+        {
+          subtasks: [{ evidence: "bun test passed" }],
         },
       ],
     });

@@ -83,16 +83,26 @@ describe("task editing", () => {
 
     const updatedSubtask = app.updateSubtask({
       description: "Updated subtask description",
+      evidence: "The edited evidence is current.",
       name: "Updated subtask title",
       subtaskId: subtask.id,
     });
 
     expect(updatedSubtask).toMatchObject({
       description: "Updated subtask description",
+      evidence: "The edited evidence is current.",
       id: subtask.id,
       name: "Updated subtask title",
       taskId: task.id,
     });
     expect(app.getSubtaskReportHistory(subtask.id)).toEqual([report]);
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      subtasks: [
+        {
+          evidence: "The edited evidence is current.",
+          reportedState: "in_progress",
+        },
+      ],
+    });
   });
 });

@@ -1,16 +1,36 @@
-const cacheName = "software-factory-shell-v13";
+const cacheName = "software-factory-shell-v17";
 const appShell = [
   "/",
-  "/main.js",
-  "/main.css",
+  "/main.js?v=17",
+  "/main.css?v=17",
   "/icon.svg",
-  "/manifest.webmanifest",
+  "/icons/icon-192.png?v=17",
+  "/icons/icon-512.png?v=17",
+  "/icons/apple-touch-icon.png?v=17",
+  "/manifest.webmanifest?v=17",
+  "/fonts/ibm-plex-sans-latin-400-normal.woff2?v=17",
+  "/fonts/ibm-plex-sans-latin-500-normal.woff2?v=17",
+  "/fonts/ibm-plex-sans-latin-600-normal.woff2?v=17",
+  "/fonts/ibm-plex-sans-latin-700-normal.woff2?v=17",
+  "/fonts/ibm-plex-mono-latin-400-normal.woff2?v=17",
+  "/fonts/ibm-plex-mono-latin-500-normal.woff2?v=17",
+  "/fonts/ibm-plex-mono-latin-600-normal.woff2?v=17",
 ];
 const appShellPaths = new Set([
   "/main.js",
   "/main.css",
   "/icon.svg",
+  "/icons/icon-192.png",
+  "/icons/icon-512.png",
+  "/icons/apple-touch-icon.png",
   "/manifest.webmanifest",
+  "/fonts/ibm-plex-sans-latin-400-normal.woff2",
+  "/fonts/ibm-plex-sans-latin-500-normal.woff2",
+  "/fonts/ibm-plex-sans-latin-600-normal.woff2",
+  "/fonts/ibm-plex-sans-latin-700-normal.woff2",
+  "/fonts/ibm-plex-mono-latin-400-normal.woff2",
+  "/fonts/ibm-plex-mono-latin-500-normal.woff2",
+  "/fonts/ibm-plex-mono-latin-600-normal.woff2",
 ]);
 const worker = self as unknown as {
   addEventListener: (

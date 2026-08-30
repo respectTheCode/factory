@@ -41,6 +41,7 @@ type Subtask = {
   name: string;
   taskId: string;
   description?: string;
+  evidence?: string;
   archiveState?: ArchiveState;
   createdAt: Date;
 };
@@ -167,6 +168,7 @@ export type ProjectHierarchy = {
       name: string;
       taskId: string;
       description?: string;
+      evidence?: string;
       archiveState?: ArchiveState;
     }>;
   }>;
@@ -450,10 +452,12 @@ export class FactoryApplication {
 
   updateSubtask({
     description,
+    evidence,
     name,
     subtaskId,
   }: {
     description?: string | null;
+    evidence?: string | null;
     name?: string;
     subtaskId: string;
   }): Subtask {
@@ -474,6 +478,11 @@ export class FactoryApplication {
       } else {
         delete subtask.description;
       }
+    }
+    if (evidence !== undefined) {
+      // Keep an empty value as an explicit override so legacy reports with
+      // evidence do not reappear after the evidence is cleared in the editor.
+      subtask.evidence = evidence?.trim() ?? "";
     }
     this.save();
     return subtask;
@@ -531,16 +540,24 @@ export class FactoryApplication {
     subtaskId: string;
   }): StatusReport {
     this.refreshFromPersistence();
-    if (!this.subtasks.some((subtask) => subtask.id === subtaskId)) {
+    const subtask = this.subtasks.find(
+      (candidate) => candidate.id === subtaskId,
+    );
+    if (!subtask) {
       throw new Error(`Subtask ${subtaskId} does not exist.`);
     }
+
+    const currentEvidence = evidence?.trim() || undefined;
+    // The report remains immutable history; the subtask stores the editable
+    // current evidence shown by the dashboard.
+    subtask.evidence = currentEvidence ?? "";
 
     const report = {
       id: this.idGenerator(),
       subtaskId,
       reportedState,
       reporter,
-      evidence,
+      evidence: currentEvidence,
       createdAt: this.clock(),
     };
 
@@ -590,9 +607,13 @@ export class FactoryApplication {
             ...(subtask.archiveState
               ? { archiveState: subtask.archiveState }
               : {}),
+            ...(subtask.evidence ? { evidence: subtask.evidence } : {}),
             verificationState: "unreported" as const,
           };
         }
+
+        const currentEvidence =
+          subtask.evidence !== undefined ? subtask.evidence : report.evidence;
 
         return {
           ...(subtask.archiveState
@@ -601,7 +622,7 @@ export class FactoryApplication {
           id: report.id,
           reportId: report.id,
           reportedState: report.reportedState,
-          evidence: report.evidence,
+          ...(currentEvidence ? { evidence: currentEvidence } : {}),
           reporter: report.reporter,
           verificationState:
             this.getCurrentVerification(report.id)?.decision ??
@@ -795,6 +816,7 @@ export class FactoryApplication {
               ...(subtask.description !== undefined
                 ? { description: subtask.description }
                 : {}),
+              ...(subtask.evidence ? { evidence: subtask.evidence } : {}),
             })),
         })),
     };

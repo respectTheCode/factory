@@ -152,6 +152,7 @@ function createRouter(
         .input(
           z.object({
             description: z.string().nullable().optional(),
+            evidence: z.string().nullable().optional(),
             name: z.string().trim().min(1).optional(),
             subtaskId: z.string().min(1),
           }),
@@ -436,10 +437,27 @@ function getStaticFile(pathname: string): string | null {
   const files: Record<string, string> = {
     "/": "src/web/index.html",
     "/icon.svg": "src/web/icon.svg",
+    "/icons/icon-192.png": "src/web/icons/icon-192.png",
+    "/icons/icon-512.png": "src/web/icons/icon-512.png",
+    "/icons/apple-touch-icon.png": "src/web/icons/apple-touch-icon.png",
     "/manifest.webmanifest": "src/web/manifest.webmanifest",
     "/main.css": "dist/main.css",
     "/main.js": "dist/main.js",
     "/service-worker.js": "dist/service-worker.js",
+    "/fonts/ibm-plex-sans-latin-400-normal.woff2":
+      "src/web/fonts/ibm-plex-sans-latin-400-normal.woff2",
+    "/fonts/ibm-plex-sans-latin-500-normal.woff2":
+      "src/web/fonts/ibm-plex-sans-latin-500-normal.woff2",
+    "/fonts/ibm-plex-sans-latin-600-normal.woff2":
+      "src/web/fonts/ibm-plex-sans-latin-600-normal.woff2",
+    "/fonts/ibm-plex-sans-latin-700-normal.woff2":
+      "src/web/fonts/ibm-plex-sans-latin-700-normal.woff2",
+    "/fonts/ibm-plex-mono-latin-400-normal.woff2":
+      "src/web/fonts/ibm-plex-mono-latin-400-normal.woff2",
+    "/fonts/ibm-plex-mono-latin-500-normal.woff2":
+      "src/web/fonts/ibm-plex-mono-latin-500-normal.woff2",
+    "/fonts/ibm-plex-mono-latin-600-normal.woff2":
+      "src/web/fonts/ibm-plex-mono-latin-600-normal.woff2",
   };
 
   return files[pathname] ?? null;

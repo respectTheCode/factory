@@ -7,7 +7,7 @@ import {
 } from "../../src/web/status-presentation";
 
 describe("status presentation", () => {
-  test("assigns a distinct icon, color, and label to every Factory work state", () => {
+  test("assigns a Ledger dial, signal color, and label to every Factory work state", () => {
     expect(Object.keys(statusDefinitions)).toEqual([
       "planned",
       "active",
@@ -19,15 +19,22 @@ describe("status presentation", () => {
     ]);
 
     const definitions = Object.values(statusDefinitions);
-    expect(
-      new Set(definitions.map((definition) => definition.color)).size,
-    ).toBe(definitions.length);
-    expect(new Set(definitions.map((definition) => definition.icon)).size).toBe(
+    expect(new Set(definitions.map((definition) => definition.color))).toEqual(
+      new Set([
+        "#A2988A",
+        "#4AA3E0",
+        "#F0B429",
+        "#2FBE6B",
+        "#E5484D",
+        "#635A4D",
+      ]),
+    );
+    expect(new Set(definitions.map((definition) => definition.dial)).size).toBe(
       definitions.length,
     );
 
     for (const definition of definitions) {
-      expect(definition.icon).toBeDefined();
+      expect(definition.dial).toBeDefined();
       expect(definition.color).toMatch(/^#/);
       expect(definition.label.length).toBeGreaterThan(0);
     }
