@@ -111,15 +111,6 @@ describe("attention projection", () => {
 
     expect(attention).toEqual([
       {
-        projectId: alpha.id,
-        projectName: "Alpha roadmap",
-        taskId: alphaPlanned.id,
-        taskName: "Draft release",
-        state: "planned",
-        priority: "low",
-        owner: "kevin",
-      },
-      {
         projectId: zeta.id,
         projectName: "Zeta launch",
         taskId: zetaBlocked.id,
@@ -145,6 +136,15 @@ describe("attention projection", () => {
         state: "active",
         priority: "medium",
         owner: "sam",
+      },
+      {
+        projectId: alpha.id,
+        projectName: "Alpha roadmap",
+        taskId: alphaPlanned.id,
+        taskName: "Draft release",
+        state: "planned",
+        priority: "low",
+        owner: "kevin",
       },
       {
         projectId: zeta.id,

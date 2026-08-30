@@ -242,13 +242,6 @@ describe("Factory status WebSocket transport", () => {
           type: "data",
           data: [
             {
-              projectId: alpha.id,
-              projectName: "Alpha roadmap",
-              state: "planned",
-              taskId: plannedTask.id,
-              taskName: "Draft release",
-            },
-            {
               owner: "sam",
               priority: "high",
               projectId: zeta.id,
@@ -256,6 +249,13 @@ describe("Factory status WebSocket transport", () => {
               state: "active",
               taskId: activeTask.id,
               taskName: "Build deployment",
+            },
+            {
+              projectId: alpha.id,
+              projectName: "Alpha roadmap",
+              state: "planned",
+              taskId: plannedTask.id,
+              taskName: "Draft release",
             },
           ],
         },

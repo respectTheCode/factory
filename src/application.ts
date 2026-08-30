@@ -955,8 +955,8 @@ export class FactoryApplication {
       })
       .sort(
         (left, right) =>
-          left.projectName.localeCompare(right.projectName) ||
           stateOrder[left.state] - stateOrder[right.state] ||
+          left.projectName.localeCompare(right.projectName) ||
           left.taskName.localeCompare(right.taskName),
       );
   }
