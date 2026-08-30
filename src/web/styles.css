@@ -1964,3 +1964,173 @@ option {
   flex: 1 1 100%;
   min-width: 220px;
 }
+
+.mobile-row-toggle {
+  display: none;
+}
+
+@media (max-width: 540px) {
+  .task-row {
+    padding: 4px 6px;
+  }
+
+  .task-card-header {
+    align-items: center;
+    display: grid;
+    gap: 4px;
+    grid-template-columns: auto minmax(0, 1fr);
+    min-height: 44px;
+  }
+
+  .task-card-header > .reorder-handle {
+    grid-column: 1;
+  }
+
+  .task-card-header > .task-summary {
+    grid-column: 2;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .task-card-header:not(:has(> .reorder-handle)) > .task-summary {
+    grid-column: 1 / -1;
+  }
+
+  .task-summary-heading {
+    align-items: center;
+    display: grid;
+    gap: 4px;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .desktop-row-title {
+    display: none;
+  }
+
+  .mobile-row-toggle {
+    align-items: center;
+    background: transparent;
+    color: var(--ink);
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    min-height: 44px;
+    min-width: 0;
+    padding: 0 4px;
+    text-align: left;
+    width: 100% !important;
+  }
+
+  .mobile-row-toggle:hover,
+  .mobile-row-toggle:focus-visible {
+    background: var(--raised);
+    color: var(--ink);
+  }
+
+  .mobile-row-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-row-chevron {
+    color: var(--ink-faint);
+    flex: 0 0 auto;
+  }
+
+  .task-row.mobile-row-collapsed > :not(.task-card-header),
+  .task-row.mobile-row-collapsed .task-summary > :not(.task-summary-heading),
+  .task-row.mobile-row-collapsed .task-actions {
+    display: none;
+  }
+
+  .task-row.mobile-row-expanded {
+    padding: 10px;
+  }
+
+  .task-row.mobile-row-expanded .task-card-header {
+    align-items: start;
+  }
+
+  .task-row.mobile-row-expanded .task-actions {
+    grid-column: 1 / -1;
+  }
+
+  .task-card-header .reorder-handle,
+  .subtask-content .reorder-handle,
+  .task-summary-heading .status-trigger,
+  .subtask-title-row .status-trigger {
+    width: 44px;
+  }
+
+  .subtask {
+    padding: 4px 0;
+  }
+
+  .subtask-content {
+    align-items: center;
+    display: grid;
+    gap: 4px;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    min-height: 44px;
+    width: 100%;
+  }
+
+  .subtask-title-row > .reorder-handle {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .subtask-title-row > .subtask-status-menu {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .subtask-title-row > .mobile-row-toggle {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .subtask-content:not(:has(.reorder-handle))
+    .subtask-title-row
+    > .subtask-status-menu {
+    grid-column: 1;
+  }
+
+  .subtask-content:not(:has(.reorder-handle))
+    .subtask-title-row
+    > .mobile-row-toggle {
+    grid-column: 2 / -1;
+  }
+
+  .subtask.mobile-row-collapsed .subtask-copy,
+  .subtask.mobile-row-collapsed .subtask-actions,
+  .subtask.mobile-row-collapsed > .history {
+    display: none;
+  }
+
+  .subtask.mobile-row-expanded {
+    padding: 10px 0;
+  }
+
+  .subtask.mobile-row-expanded .subtask-copy {
+    grid-column: 3;
+    grid-row: 2;
+  }
+
+  .subtask.mobile-row-expanded
+    .subtask-content:not(:has(.reorder-handle))
+    .subtask-copy {
+    grid-column: 2 / -1;
+  }
+
+  .subtask.mobile-row-expanded .subtask-actions {
+    width: 100%;
+  }
+
+  .subtask:has(.subtask-edit-form) .subtask-title-row > .subtask-edit-form {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}

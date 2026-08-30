@@ -269,6 +269,9 @@ function Dashboard() {
   const [collapsedTaskGroups, setCollapsedTaskGroups] = useState<
     Partial<Record<WorkStatus, boolean>>
   >({});
+  const [expandedMobileRows, setExpandedMobileRows] = useState<
+    Record<string, boolean>
+  >({});
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const trpc = useRef<TRPCClient | null>(null);
@@ -365,7 +368,15 @@ function Dashboard() {
 
   useEffect(() => {
     setShowArchivedTasks(false);
+    setExpandedMobileRows({});
   }, [projectDetail?.id]);
+
+  const toggleMobileRow = (rowKey: string) => {
+    setExpandedMobileRows((current) => ({
+      ...current,
+      [rowKey]: !current[rowKey],
+    }));
+  };
 
   const stopProjectSubscription = () => {
     subscriptionCleanup.current?.();
@@ -1443,6 +1454,10 @@ function Dashboard() {
                           };
                           const subtasksCollapsed =
                             collapsedTasks[task.id] ?? true;
+                          const taskRowKey = `task:${task.id}`;
+                          const taskRowExpanded = Boolean(
+                            expandedMobileRows[taskRowKey],
+                          );
                           const progress = summarizeTaskProgress(task, status);
                           const subtaskGroups = groupSubtasksByStatus(
                             task.subtasks.map((subtask, index) => ({
@@ -1463,6 +1478,10 @@ function Dashboard() {
                           return (
                             <article
                               className={`task-row ${
+                                taskRowExpanded
+                                  ? "mobile-row-expanded"
+                                  : "mobile-row-collapsed"
+                              } ${
                                 dragTarget?.kind === "task" &&
                                 dragTarget.id === task.id
                                   ? "is-dragging"
@@ -1531,7 +1550,17 @@ function Dashboard() {
                                       state={currentTaskState}
                                       taskName={task.name}
                                     />
-                                    <h3>{task.name}</h3>
+                                    <h3 className="desktop-row-title">
+                                      {task.name}
+                                    </h3>
+                                    <MobileRowToggle
+                                      expanded={taskRowExpanded}
+                                      kind="task"
+                                      name={task.name}
+                                      onToggle={() =>
+                                        toggleMobileRow(taskRowKey)
+                                      }
+                                    />
                                   </div>
                                   {taskStateReason &&
                                     (currentTaskState === "blocked" ||
@@ -1991,9 +2020,20 @@ function Dashboard() {
                                               const subtaskStateReason =
                                                 subtaskStatus?.reason ??
                                                 subtask.stateReason;
+                                              const subtaskRowKey = `subtask:${subtask.id}`;
+                                              const subtaskRowExpanded =
+                                                Boolean(
+                                                  expandedMobileRows[
+                                                    subtaskRowKey
+                                                  ],
+                                                );
                                               return (
                                                 <div
                                                   className={`subtask ${
+                                                    subtaskRowExpanded
+                                                      ? "mobile-row-expanded"
+                                                      : "mobile-row-collapsed"
+                                                  } ${
                                                     dragTarget?.kind ===
                                                       "subtask" &&
                                                     dragTarget.id === subtask.id
@@ -2243,9 +2283,23 @@ function Dashboard() {
                                                           </div>
                                                         </form>
                                                       ) : (
-                                                        <strong>
+                                                        <strong className="desktop-row-title">
                                                           {subtask.name}
                                                         </strong>
+                                                      )}
+                                                      {!subtaskEdit && (
+                                                        <MobileRowToggle
+                                                          expanded={
+                                                            subtaskRowExpanded
+                                                          }
+                                                          kind="subtask"
+                                                          name={subtask.name}
+                                                          onToggle={() =>
+                                                            toggleMobileRow(
+                                                              subtaskRowKey,
+                                                            )
+                                                          }
+                                                        />
                                                       )}
                                                     </div>
                                                     {!subtaskEdit && (
@@ -3078,6 +3132,33 @@ function ReportStatusMenu({
         })}
       </div>
     </details>
+  );
+}
+
+function MobileRowToggle({
+  expanded,
+  kind,
+  name,
+  onToggle,
+}: {
+  expanded: boolean;
+  kind: "task" | "subtask";
+  name: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      aria-expanded={expanded}
+      aria-label={`${expanded ? "Collapse" : "Expand"} ${kind} ${name}`}
+      className="mobile-row-toggle"
+      onClick={onToggle}
+      type="button"
+    >
+      <span className="mobile-row-title">{name}</span>
+      <span aria-hidden="true" className="mobile-row-chevron">
+        {expanded ? "▾" : "▸"}
+      </span>
+    </button>
   );
 }
 

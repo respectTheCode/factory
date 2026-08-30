@@ -44,4 +44,20 @@ describe("PWA workflow controls", () => {
     expect(source).toContain("groupSubtasksByStatus");
     expect(source).toContain('className="subtask-group-heading"');
   });
+
+  test("uses one-line mobile task and subtask disclosures without changing desktop content", () => {
+    expect(source).toContain("expandedMobileRows");
+    expect(source).toContain("<MobileRowToggle");
+    expect(source).toContain('kind="task"');
+    expect(source).toContain('kind="subtask"');
+    expect(source).toContain("mobile-row-expanded");
+    expect(source).toContain("mobile-row-collapsed");
+    expect(source).toContain("aria-expanded={expanded}");
+    expect(stylesheet).toContain(".mobile-row-toggle {");
+    expect(stylesheet).toContain("text-overflow: ellipsis");
+    expect(stylesheet).toContain(
+      ".task-row.mobile-row-collapsed > :not(.task-card-header)",
+    );
+    expect(stylesheet).toContain(".subtask.mobile-row-collapsed .subtask-copy");
+  });
 });
