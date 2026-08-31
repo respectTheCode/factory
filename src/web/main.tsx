@@ -263,15 +263,10 @@ function Dashboard() {
   const [subtaskHistories, setSubtaskHistories] = useState<
     Record<string, SubtaskHistory>
   >({});
-  const [collapsedTasks, setCollapsedTasks] = useState<Record<string, boolean>>(
-    {},
-  );
   const [collapsedTaskGroups, setCollapsedTaskGroups] = useState<
     Partial<Record<WorkStatus, boolean>>
   >({});
-  const [expandedMobileRows, setExpandedMobileRows] = useState<
-    Record<string, boolean>
-  >({});
+  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const trpc = useRef<TRPCClient | null>(null);
@@ -387,11 +382,11 @@ function Dashboard() {
 
   useEffect(() => {
     setShowArchivedTasks(false);
-    setExpandedMobileRows({});
+    setExpandedRows({});
   }, [projectDetail?.id]);
 
-  const toggleMobileRow = (rowKey: string) => {
-    setExpandedMobileRows((current) => ({
+  const toggleRow = (rowKey: string) => {
+    setExpandedRows((current) => ({
       ...current,
       [rowKey]: !current[rowKey],
     }));
@@ -1471,11 +1466,9 @@ function Dashboard() {
                             title: "",
                             url: "",
                           };
-                          const subtasksCollapsed =
-                            collapsedTasks[task.id] ?? true;
                           const taskRowKey = `task:${task.id}`;
                           const taskRowExpanded = Boolean(
-                            expandedMobileRows[taskRowKey],
+                            expandedRows[taskRowKey],
                           );
                           const progress = summarizeTaskProgress(task, status);
                           const subtaskGroups = groupSubtasksByStatus(
@@ -1496,10 +1489,11 @@ function Dashboard() {
                           );
                           return (
                             <article
+                              aria-labelledby={`task-${task.id}-title`}
                               className={`task-row ${
                                 taskRowExpanded
-                                  ? "mobile-row-expanded"
-                                  : "mobile-row-collapsed"
+                                  ? "row-expanded"
+                                  : "row-collapsed"
                               } ${
                                 dragTarget?.kind === "task" &&
                                 dragTarget.id === task.id
@@ -1569,16 +1563,17 @@ function Dashboard() {
                                       state={currentTaskState}
                                       taskName={task.name}
                                     />
-                                    <h3 className="desktop-row-title">
+                                    <h3
+                                      className="visually-hidden"
+                                      id={`task-${task.id}-title`}
+                                    >
                                       {task.name}
                                     </h3>
-                                    <MobileRowToggle
+                                    <RowToggle
                                       expanded={taskRowExpanded}
                                       kind="task"
                                       name={task.name}
-                                      onToggle={() =>
-                                        toggleMobileRow(taskRowKey)
-                                      }
+                                      onToggle={() => toggleRow(taskRowKey)}
                                     />
                                   </div>
                                   {taskStateReason &&
@@ -1640,25 +1635,6 @@ function Dashboard() {
                                   aria-label={`Quick status for ${task.name}`}
                                   className="task-actions"
                                 >
-                                  <button
-                                    aria-expanded={!subtasksCollapsed}
-                                    className={
-                                      subtasksCollapsed
-                                        ? "primary"
-                                        : "secondary"
-                                    }
-                                    onClick={() =>
-                                      setCollapsedTasks((current) => ({
-                                        ...current,
-                                        [task.id]: !subtasksCollapsed,
-                                      }))
-                                    }
-                                    type="button"
-                                  >
-                                    {subtasksCollapsed
-                                      ? `Show ${progress.totalSubtasks} subtasks`
-                                      : "Hide subtasks"}
-                                  </button>
                                   <details className="task-menu">
                                     <summary>More</summary>
                                     <div className="task-menu-options">
@@ -1985,7 +1961,7 @@ function Dashboard() {
                                 </details>
                               ) : null}
 
-                              {!subtasksCollapsed && (
+                              {taskRowExpanded && (
                                 <>
                                   <div className="subtask-list">
                                     {subtaskGroups.map((subtaskGroup) => (
@@ -2042,16 +2018,14 @@ function Dashboard() {
                                               const subtaskRowKey = `subtask:${subtask.id}`;
                                               const subtaskRowExpanded =
                                                 Boolean(
-                                                  expandedMobileRows[
-                                                    subtaskRowKey
-                                                  ],
+                                                  expandedRows[subtaskRowKey],
                                                 );
                                               return (
                                                 <div
                                                   className={`subtask ${
                                                     subtaskRowExpanded
-                                                      ? "mobile-row-expanded"
-                                                      : "mobile-row-collapsed"
+                                                      ? "row-expanded"
+                                                      : "row-collapsed"
                                                   } ${
                                                     dragTarget?.kind ===
                                                       "subtask" &&
@@ -2302,19 +2276,14 @@ function Dashboard() {
                                                           </div>
                                                         </form>
                                                       ) : (
-                                                        <strong className="desktop-row-title">
-                                                          {subtask.name}
-                                                        </strong>
-                                                      )}
-                                                      {!subtaskEdit && (
-                                                        <MobileRowToggle
+                                                        <RowToggle
                                                           expanded={
                                                             subtaskRowExpanded
                                                           }
                                                           kind="subtask"
                                                           name={subtask.name}
                                                           onToggle={() =>
-                                                            toggleMobileRow(
+                                                            toggleRow(
                                                               subtaskRowKey,
                                                             )
                                                           }
@@ -3154,7 +3123,7 @@ function ReportStatusMenu({
   );
 }
 
-function MobileRowToggle({
+function RowToggle({
   expanded,
   kind,
   name,
@@ -3169,12 +3138,12 @@ function MobileRowToggle({
     <button
       aria-expanded={expanded}
       aria-label={`${expanded ? "Collapse" : "Expand"} ${kind} ${name}`}
-      className="mobile-row-toggle"
+      className="row-toggle"
       onClick={onToggle}
       type="button"
     >
-      <span className="mobile-row-title">{name}</span>
-      <span aria-hidden="true" className="mobile-row-chevron">
+      <span className="row-title">{name}</span>
+      <span aria-hidden="true" className="row-chevron">
         {expanded ? "▾" : "▸"}
       </span>
     </button>

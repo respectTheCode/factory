@@ -45,20 +45,34 @@ describe("PWA workflow controls", () => {
     expect(source).toContain('className="subtask-group-heading"');
   });
 
-  test("uses one-line mobile task and subtask disclosures without changing desktop content", () => {
-    expect(source).toContain("expandedMobileRows");
-    expect(source).toContain("<MobileRowToggle");
+  test("uses one-line task and subtask disclosures on every viewport", () => {
+    expect(source).toContain("expandedRows");
+    expect(source).toContain("<RowToggle");
     expect(source).toContain('kind="task"');
     expect(source).toContain('kind="subtask"');
-    expect(source).toContain("mobile-row-expanded");
-    expect(source).toContain("mobile-row-collapsed");
+    expect(source).toContain("row-expanded");
+    expect(source).toContain("row-collapsed");
     expect(source).toContain("aria-expanded={expanded}");
-    expect(stylesheet).toContain(".mobile-row-toggle {");
+    expect(source).not.toContain("expandedMobileRows");
+    expect(source).not.toContain("MobileRowToggle");
+    expect(stylesheet).toContain("/* Shared task and subtask disclosures. */");
+    expect(stylesheet).toContain(".row-toggle {");
     expect(stylesheet).toContain("text-overflow: ellipsis");
     expect(stylesheet).toContain(
-      ".task-row.mobile-row-collapsed > :not(.task-card-header)",
+      ".task-row.row-collapsed > :not(.task-card-header)",
     );
-    expect(stylesheet).toContain(".subtask.mobile-row-collapsed .subtask-copy");
+    expect(stylesheet).toContain(".subtask.row-collapsed .subtask-copy");
+  });
+
+  test("uses task expansion as the only subtask visibility control", () => {
+    expect(source).not.toContain("collapsedTasks");
+    expect(source).not.toContain("setCollapsedTasks");
+    expect(source).not.toContain("subtasksCollapsed");
+    expect(source).not.toContain("Hide subtasks");
+    expect(source).not.toContain("Show ${progress.totalSubtasks} subtasks");
+    expect(source).toContain("{taskRowExpanded && (");
+    expect(source).toContain('className="subtask-list"');
+    expect(source).toContain('className="subtask-create"');
   });
 
   test("dismisses More and status menus only when a pointer lands outside them", () => {
