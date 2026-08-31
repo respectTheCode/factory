@@ -371,6 +371,10 @@ textarea {
   min-width: 0;
 }
 
+.task-card-header .task-summary {
+  flex: 1 1 auto;
+}
+
 .task-summary-heading {
   align-items: flex-start;
   display: flex;
@@ -403,6 +407,72 @@ textarea {
 .task-next {
   color: var(--ink-dim);
   font-size: 0.75rem;
+}
+
+.github-status {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.github-actions-summary {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+  justify-content: flex-end;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.github-actions-label,
+.github-actions-count {
+  font-size: 0.68rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.github-actions-label {
+  color: var(--ink-faint);
+  font-weight: 700;
+}
+
+.github-actions-count {
+  font-weight: 600;
+}
+
+.github-actions-running {
+  color: var(--sig-warn);
+}
+
+.github-actions-passing {
+  color: var(--sig-ok);
+}
+
+.github-actions-failing {
+  color: var(--sig-down);
+}
+
+.github-actions-skipped {
+  color: var(--sig-info);
+}
+
+.github-status a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.github-status-ok span {
+  color: var(--sig-ok);
+}
+
+.github-status-not_found span,
+.github-status-permission_denied span,
+.github-status-unavailable span {
+  color: var(--sig-warn);
 }
 
 .task-progress {
@@ -1520,6 +1590,16 @@ header {
   font: 700 15px/1 var(--sans);
   letter-spacing: 0.18em;
 }
+.brand-link {
+  color: inherit;
+  display: inline-flex;
+  min-width: 0;
+  text-decoration: none;
+}
+.brand-link:hover,
+.brand-link:focus-visible {
+  color: var(--ink);
+}
 .brand-lockup {
   align-items: center;
   display: inline-flex;
@@ -1988,6 +2068,14 @@ option {
 }
 
 .row-title {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-width: 0;
+}
+
+.row-title-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

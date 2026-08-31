@@ -7,6 +7,7 @@ import {
   type VerificationDecision,
   type WorkState,
 } from "./application";
+import { createGitHubStatusReader, parseGitHubPullRequestUrl } from "./github";
 
 const SCHEMA_VERSION = 1 as const;
 
@@ -186,6 +187,23 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+async function readGitHubStatus(pullRequestUrl: string | undefined) {
+  if (!pullRequestUrl) {
+    return {
+      checkRuns: [],
+      checkRunsStatus: "not_requested" as const,
+      fetchedAt: new Date().toISOString(),
+      status: "not_linked" as const,
+      workflowRuns: [],
+      workflowRunsStatus: "not_requested" as const,
+    };
+  }
+
+  return createGitHubStatusReader({
+    token: Bun.env.GITHUB_TOKEN ?? Bun.env.GH_TOKEN,
+  }).read(parseGitHubPullRequestUrl(pullRequestUrl));
+}
+
 function projectSummary(project: {
   gitOriginUrl?: string;
   id: string;
@@ -242,7 +260,7 @@ function projectsMatchingGitOrigin(
     );
 }
 
-function main(args: string[]): void {
+async function main(args: string[]): Promise<void> {
   const parsed = parseArgs(args);
   const [resource, action] = parsed.command;
 
@@ -430,6 +448,8 @@ function main(args: string[]): void {
       name: requiredFlag(parsed.flags, "name"),
       objective: parsed.flags.get("objective")?.trim() || undefined,
       owner: parsed.flags.get("owner")?.trim() || undefined,
+      pullRequestUrl:
+        parsed.flags.get("pull-request-url") ?? parsed.flags.get("pr"),
       priority: priorityFlag(parsed.flags),
       projectId: requiredFlag(parsed.flags, "project-id"),
       repositoryLinks: listFlag(parsed.flags, "repository-links"),
@@ -477,14 +497,17 @@ function main(args: string[]): void {
     const description = parsed.flags.get("description");
     const branchName =
       parsed.flags.get("branch-name") ?? parsed.flags.get("branch");
+    const pullRequestUrl =
+      parsed.flags.get("pull-request-url") ?? parsed.flags.get("pr");
     if (
       title === undefined &&
       description === undefined &&
       acceptanceCriteria === undefined &&
-      branchName === undefined
+      branchName === undefined &&
+      pullRequestUrl === undefined
     ) {
       throw new Error(
-        "Provide at least one of --title, --description, --acceptance-criteria, or --branch-name.",
+        "Provide at least one of --title, --description, --acceptance-criteria, --branch-name, or --pull-request-url.",
       );
     }
     const taskId = requiredFlag(parsed.flags, "task-id");
@@ -501,6 +524,7 @@ function main(args: string[]): void {
       branchName,
       name: title,
       objective: description,
+      pullRequestUrl,
       taskId,
     });
     output({ task });
@@ -511,6 +535,14 @@ function main(args: string[]): void {
     output({
       status: application.getTaskStatus(requiredFlag(parsed.flags, "task-id")),
     });
+    return;
+  }
+
+  if (resource === "task" && action === "github-status") {
+    const task = application.getTaskDetail(
+      requiredFlag(parsed.flags, "task-id"),
+    );
+    output({ status: await readGitHubStatus(task.pullRequestUrl) });
     return;
   }
 
@@ -545,6 +577,8 @@ function main(args: string[]): void {
     const subtask = application.createSubtask({
       description: parsed.flags.get("description")?.trim() || undefined,
       name: requiredFlag(parsed.flags, "name"),
+      pullRequestUrl:
+        parsed.flags.get("pull-request-url") ?? parsed.flags.get("pr"),
       taskId: requiredFlag(parsed.flags, "task-id"),
     });
     output({ subtask });
@@ -555,19 +589,23 @@ function main(args: string[]): void {
     const evidence = parsed.flags.get("evidence");
     const title = parsed.flags.get("title");
     const description = parsed.flags.get("description");
+    const pullRequestUrl =
+      parsed.flags.get("pull-request-url") ?? parsed.flags.get("pr");
     if (
       title === undefined &&
       description === undefined &&
-      evidence === undefined
+      evidence === undefined &&
+      pullRequestUrl === undefined
     ) {
       throw new Error(
-        "Provide at least one of --title, --description, or --evidence.",
+        "Provide at least one of --title, --description, --evidence, or --pull-request-url.",
       );
     }
     const subtask = application.updateSubtask({
       description,
       evidence,
       name: title,
+      pullRequestUrl,
       subtaskId: requiredFlag(parsed.flags, "subtask-id"),
     });
     output({ subtask });
@@ -620,6 +658,14 @@ function main(args: string[]): void {
     return;
   }
 
+  if (resource === "subtask" && action === "github-status") {
+    const subtask = application.getSubtaskDetail(
+      requiredFlag(parsed.flags, "subtask-id"),
+    );
+    output({ status: await readGitHubStatus(subtask.pullRequestUrl) });
+    return;
+  }
+
   if (resource === "subtask" && action === "history") {
     const subtaskId = requiredFlag(parsed.flags, "subtask-id");
     output({
@@ -639,15 +685,13 @@ function main(args: string[]): void {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link, task create|update|detail|state|status|reorder|archive|restore|link, subtask create|update|report|reorder|status|archive|restore|history|verify",
+    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link, task create|update|detail|state|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify",
   );
 }
 
 if (import.meta.main) {
-  try {
-    main(Bun.argv.slice(2));
-  } catch (error) {
+  void main(Bun.argv.slice(2)).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
-  }
+  });
 }

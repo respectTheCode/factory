@@ -48,6 +48,37 @@ FACTORY_DB=factory-dev.sqlite bun run dev
 
 Deploy again only after the checkout has passed its intended checks.
 
+## Enable private GitHub PR and Actions reads
+
+The GitHub integration is read-only. For an interactive development server, provide a
+server-process token when starting Factory:
+
+```bash
+export GITHUB_TOKEN
+FACTORY_PORT=3001 bun run start
+```
+
+For the stable LaunchAgent, provision the token into the macOS login Keychain under the service
+name `com.app-press.factory.github-token` and reload the agent. The deployed service launcher
+reads that item at process start and exports it only to the Factory server process; the plist
+contains no credential and the token is not stored in the repository, Factory database, browser,
+or agent output. Use a token with the minimum read access to the private repositories and Actions
+needed by the dashboard. If the Keychain item is absent, the dashboard labels GitHub as not
+configured and keeps Factory state usable.
+
+To provision or rotate the item from an already authenticated GitHub CLI session without printing
+the token:
+
+```bash
+github_token="$(gh auth token)"
+security add-generic-password -U \
+  -s "com.app-press.factory.github-token" \
+  -a "$(id -un)" \
+  -w "${github_token}"
+unset github_token
+bun run service:deploy
+```
+
 ## Start an interactive port-3000 server
 
 ```bash

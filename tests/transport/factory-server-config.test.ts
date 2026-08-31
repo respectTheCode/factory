@@ -25,6 +25,18 @@ describe("Factory server configuration", () => {
     });
   });
 
+  test("passes a private GitHub token to the server without changing defaults", () => {
+    expect(
+      getFactoryServerOptions({
+        FACTORY_PORT: "3001",
+        GH_TOKEN: "server-only-token",
+      }),
+    ).toMatchObject({
+      githubToken: "server-only-token",
+      port: 3001,
+    });
+  });
+
   test.each(["", "0", "3000.5", "65536", "not-a-port"])(
     "rejects invalid port %p",
     (configuredPort) => {

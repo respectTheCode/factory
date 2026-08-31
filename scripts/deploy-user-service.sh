@@ -31,6 +31,7 @@ trap 'rm -rf "${FACTORY_STAGE_DIR}"; rm -f "${FACTORY_PLIST_STAGE}"' EXIT
 cd "${FACTORY_REPOSITORY_DIR}"
 bun run build
 bun build ./src/server.ts --target bun --outfile "${FACTORY_STAGE_DIR}/server.js"
+install -m 0755 scripts/factory-service-launcher.sh "${FACTORY_STAGE_DIR}/factory-service-launcher.sh"
 
 mkdir -p "${FACTORY_STAGE_DIR}/dist" "${FACTORY_STAGE_DIR}/src/web/fonts" "${FACTORY_STAGE_DIR}/src/web/icons"
 cp dist/main.css dist/main.js dist/service-worker.js "${FACTORY_STAGE_DIR}/dist/"

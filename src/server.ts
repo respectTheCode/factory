@@ -6,6 +6,12 @@ import { observable } from "@trpc/server/observable";
 import { z } from "zod";
 
 import { createFactoryApplication, type ProjectHierarchy } from "./application";
+import {
+  createGitHubStatusReader,
+  parseGitHubPullRequestUrl,
+  type GitHubStatusReader,
+  type GitHubStatusSnapshot,
+} from "./github";
 
 type ConnectionEvent = "close" | "error" | "message";
 type ConnectionListener = (...args: unknown[]) => void;
@@ -73,8 +79,39 @@ class ProjectUpdateBus {
 
 function createRouter(
   application: ReturnType<typeof createFactoryApplication>,
+  githubStatusReader: GitHubStatusReader,
 ) {
   const projectUpdates = new ProjectUpdateBus(application);
+
+  const githubStatus = async (
+    pullRequestUrl: string | undefined,
+  ): Promise<GitHubStatusSnapshot> => {
+    if (!pullRequestUrl) {
+      return {
+        checkRuns: [],
+        checkRunsStatus: "not_requested",
+        fetchedAt: new Date().toISOString(),
+        status: "not_linked",
+        workflowRuns: [],
+        workflowRunsStatus: "not_requested",
+      };
+    }
+    try {
+      return await githubStatusReader.read(
+        parseGitHubPullRequestUrl(pullRequestUrl),
+      );
+    } catch {
+      return {
+        checkRuns: [],
+        checkRunsStatus: "not_requested",
+        error: "The stored pull request URL is invalid.",
+        fetchedAt: new Date().toISOString(),
+        status: "unavailable",
+        workflowRuns: [],
+        workflowRunsStatus: "not_requested",
+      };
+    }
+  };
 
   return trpc.router({
     projects: trpc.router({
@@ -156,6 +193,7 @@ function createRouter(
           z.object({
             description: z.string().optional(),
             name: z.string().min(1),
+            pullRequestUrl: z.string().nullable().optional(),
             taskId: z.string().min(1),
           }),
         )
@@ -170,6 +208,7 @@ function createRouter(
             description: z.string().nullable().optional(),
             evidence: z.string().nullable().optional(),
             name: z.string().trim().min(1).optional(),
+            pullRequestUrl: z.string().nullable().optional(),
             subtaskId: z.string().min(1),
           }),
         )
@@ -270,6 +309,13 @@ function createRouter(
         .query(({ input }) =>
           application.getSubtaskVerificationHistory(input.subtaskId),
         ),
+      githubStatus: trpc.procedure
+        .input(z.object({ subtaskId: z.string().min(1) }))
+        .query(({ input }) =>
+          githubStatus(
+            application.getSubtaskDetail(input.subtaskId).pullRequestUrl,
+          ),
+        ),
     }),
     tasks: trpc.router({
       create: trpc.procedure
@@ -281,6 +327,7 @@ function createRouter(
             name: z.string().min(1),
             objective: z.string().optional(),
             owner: z.string().optional(),
+            pullRequestUrl: z.string().nullable().optional(),
             priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
             projectId: z.string().min(1),
             repositoryLinks: z.array(z.string().url()).default([]),
@@ -309,6 +356,11 @@ function createRouter(
       detail: trpc.procedure
         .input(z.object({ taskId: z.string().min(1) }))
         .query(({ input }) => application.getTaskDetail(input.taskId)),
+      githubStatus: trpc.procedure
+        .input(z.object({ taskId: z.string().min(1) }))
+        .query(({ input }) =>
+          githubStatus(application.getTaskDetail(input.taskId).pullRequestUrl),
+        ),
       update: trpc.procedure
         .input(
           z.object({
@@ -316,6 +368,7 @@ function createRouter(
             branchName: z.string().trim().min(1).nullable().optional(),
             name: z.string().trim().min(1).optional(),
             objective: z.string().nullable().optional(),
+            pullRequestUrl: z.string().nullable().optional(),
             taskId: z.string().min(1),
           }),
         )
@@ -396,6 +449,7 @@ export type FactoryRouter = ReturnType<typeof createRouter>;
 
 export type FactoryServerOptions = {
   databasePath: string;
+  githubToken?: string;
   hostname: string;
   port: number;
 };
@@ -419,6 +473,9 @@ export function getFactoryServerOptions(
 
   return {
     databasePath: environment.FACTORY_DB ?? "factory.sqlite",
+    ...(environment.GITHUB_TOKEN || environment.GH_TOKEN
+      ? { githubToken: environment.GITHUB_TOKEN ?? environment.GH_TOKEN }
+      : {}),
     hostname: environment.FACTORY_HOST ?? "127.0.0.1",
     port,
   };
@@ -426,15 +483,22 @@ export function getFactoryServerOptions(
 
 export function createFactoryServer({
   databasePath = "factory.sqlite",
+  githubStatusReader,
+  githubToken,
   hostname = "127.0.0.1",
   port,
 }: {
   databasePath?: string;
+  githubStatusReader?: GitHubStatusReader;
+  githubToken?: string;
   hostname?: string;
   port: number;
 }): FactoryServer {
   const application = createFactoryApplication({ databasePath });
-  const router = createRouter(application);
+  const router = createRouter(
+    application,
+    githubStatusReader ?? createGitHubStatusReader({ token: githubToken }),
+  );
   const onConnection = getWSConnectionHandler({
     createContext: () => ({}),
     router,

@@ -6,8 +6,7 @@
   <string>com.app-press.factory</string>
   <key>ProgramArguments</key>
   <array>
-    <string>__BUN_PATH__</string>
-    <string>__SERVICE_ROOT__/current/server.js</string>
+    <string>__SERVICE_ROOT__/current/factory-service-launcher.sh</string>
   </array>
   <key>WorkingDirectory</key>
   <string>__SERVICE_ROOT__/current</string>
@@ -15,6 +14,8 @@
   <dict>
     <key>FACTORY_DB</key>
     <string>__DATABASE_PATH__</string>
+    <key>FACTORY_BUN_PATH</key>
+    <string>__BUN_PATH__</string>
     <key>FACTORY_HOST</key>
     <string>0.0.0.0</string>
     <key>FACTORY_PORT</key>

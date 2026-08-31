@@ -62,6 +62,17 @@ record. A Status Report does not replace Kevin's Verification.
 - **FR-013** — Factory must visibly distinguish a native Task state from an external Tracker
   Link; a link's title or URL must never be presented as Factory-owned status.
 
+### 3.2.1 GitHub pull request observations
+
+- **FR-014** — A Task or Subtask may store one canonical GitHub pull request URL. Agents must be
+  able to attach, replace, or clear that reference through the Factory CLI.
+- **FR-015** — The dashboard and CLI may read the linked private pull request and GitHub Actions
+  runs for its exact head commit, including explicit `not configured`, `not found`, denied-access,
+  and unavailable states. GitHub reads must not write to GitHub or Factory Work State.
+- **FR-016** — GitHub credentials must remain server-side and outside the Factory SQLite state,
+  CLI JSON, browser state, and logs. The first integration may use a server process environment
+  token; the operator must explicitly provision that token for the trusted private deployment.
+
 ### 3.3 Agent reports and human verification
 
 - **FR-020** — A Codex skill or hook must be able to submit a Subtask Status Report through the
@@ -178,21 +189,24 @@ record. A Status Report does not replace Kevin's Verification.
 4. **Human verification:** Kevin verifies the reported Subtask from mobile. Factory retains the
    original report, records the Verification, and updates the Task only when its acceptance
    criteria are satisfied.
-5. **Quick disposition:** Kevin can mark a Task or Subtask `released` or `wont_do` from the
+5. **Private PR observation:** An agent attaches a private GitHub PR to a Task or Subtask. The
+   dashboard shows the PR and current PR/Actions observation when the server has access, and
+   clearly labels missing credentials or denied access without changing Factory state.
+6. **Quick disposition:** Kevin can mark a Task or Subtask `released` or `wont_do` from the
    dashboard or CLI, restore it later, and see its history intact; a Subtask disposition does
    not change the parent Task automatically.
-6. **Private mobile access:** The dashboard is available over Tailscale Serve from a phone on
+7. **Private mobile access:** The dashboard is available over Tailscale Serve from a phone on
    Kevin's tailnet and unavailable from the public internet.
-7. **Installed mobile app:** Kevin can install the dashboard as a PWA on a phone. It launches
+8. **Installed mobile app:** Kevin can install the dashboard as a PWA on a phone. It launches
    in standalone mode; if Tailscale is disconnected, it clearly shows that live task data and
    edits are unavailable rather than presenting stale data as current.
-8. **Live connection:** If the Tailscale or tRPC WebSocket connection drops, the installed PWA
+9. **Live connection:** If the Tailscale or tRPC WebSocket connection drops, the installed PWA
    changes to `reconnecting` and then `disconnected`, displays the last successful connection
    time, and disables edits. It refreshes data before re-enabling edits after reconnecting.
-9. **Ordered work:** Kevin drags Tasks or Subtasks within one state group (or uses Arrow keys on
-   the reorder handle), reloads Factory, and sees the same order. State groups remain in the
-   canonical order.
-10. **Work-state control:** A Subtask becoming active promotes a planned parent Task; Kevin can
+10. **Ordered work:** Kevin drags Tasks or Subtasks within one state group (or uses Arrow keys on
+    the reorder handle), reloads Factory, and sees the same order. State groups remain in the
+    canonical order.
+11. **Work-state control:** A Subtask becoming active promotes a planned parent Task; Kevin can
     still put the parent back into planned or move it to active directly. Blocked and
     awaiting-verification transitions cannot be saved without their actionable reason.
 

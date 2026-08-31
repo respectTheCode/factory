@@ -3,6 +3,8 @@ import { dirname, resolve } from "node:path";
 
 import { Database } from "bun:sqlite";
 
+import { parseGitHubPullRequestUrl } from "./github";
+
 export type FactoryClock = () => Date;
 export type FactoryIdGenerator = () => string;
 
@@ -36,6 +38,7 @@ type Task = {
   name: string;
   projectId: string;
   branchName?: string;
+  pullRequestUrl?: string;
   objective?: string;
   acceptanceCriteria: string[];
   priority?: "low" | "medium" | "high" | "urgent";
@@ -56,6 +59,7 @@ type Subtask = {
   taskId: string;
   description?: string;
   evidence?: string;
+  pullRequestUrl?: string;
   sortOrder?: number;
   archiveState?: ArchiveState;
   createdAt: Date;
@@ -195,6 +199,14 @@ function requireReason(reason: string | undefined, message: string): string {
   return trimmed;
 }
 
+function normalizePullRequestUrl(
+  value: string | null | undefined,
+): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (!value?.trim()) return null;
+  return parseGitHubPullRequestUrl(value).url;
+}
+
 function compareWorkStates(left: WorkState, right: WorkState): number {
   return WORK_STATE_RANK[left] - WORK_STATE_RANK[right];
 }
@@ -208,6 +220,7 @@ export type ProjectHierarchy = {
     name: string;
     projectId: string;
     branchName?: string;
+    pullRequestUrl?: string;
     workState?: WorkState;
     stateReason?: string;
     sortOrder?: number;
@@ -218,6 +231,7 @@ export type ProjectHierarchy = {
       taskId: string;
       description?: string;
       evidence?: string;
+      pullRequestUrl?: string;
       workState?: WorkState;
       stateReason?: string;
       sortOrder?: number;
@@ -390,6 +404,7 @@ export class FactoryApplication {
   createTask({
     branchName,
     name,
+    pullRequestUrl,
     projectId,
     objective,
     acceptanceCriteria = [],
@@ -402,6 +417,7 @@ export class FactoryApplication {
   }: {
     branchName?: string;
     name: string;
+    pullRequestUrl?: string | null;
     projectId: string;
     objective?: string;
     acceptanceCriteria?: string[];
@@ -427,11 +443,15 @@ export class FactoryApplication {
         ? requireReason(stateReason, `Task ${workState} requires a reason.`)
         : undefined;
 
+    const normalizedPullRequestUrl = normalizePullRequestUrl(pullRequestUrl);
     const task = {
       id: this.idGenerator(),
       name,
       projectId,
       ...(branchName?.trim() ? { branchName: branchName.trim() } : {}),
+      ...(normalizedPullRequestUrl
+        ? { pullRequestUrl: normalizedPullRequestUrl }
+        : {}),
       objective,
       acceptanceCriteria,
       priority,
@@ -454,6 +474,7 @@ export class FactoryApplication {
     branchName,
     name,
     objective,
+    pullRequestUrl,
     stateReason,
     taskId,
     workState,
@@ -462,6 +483,7 @@ export class FactoryApplication {
     branchName?: string | null;
     name?: string;
     objective?: string | null;
+    pullRequestUrl?: string | null;
     stateReason?: string | null;
     taskId: string;
     workState?: WorkState;
@@ -490,6 +512,14 @@ export class FactoryApplication {
         task.branchName = branchName.trim();
       } else {
         delete task.branchName;
+      }
+    }
+    if (pullRequestUrl !== undefined) {
+      const normalizedPullRequestUrl = normalizePullRequestUrl(pullRequestUrl);
+      if (normalizedPullRequestUrl) {
+        task.pullRequestUrl = normalizedPullRequestUrl;
+      } else {
+        delete task.pullRequestUrl;
       }
     }
 
@@ -556,10 +586,12 @@ export class FactoryApplication {
   createSubtask({
     description,
     name,
+    pullRequestUrl,
     taskId,
   }: {
     description?: string;
     name: string;
+    pullRequestUrl?: string | null;
     taskId: string;
   }): Subtask {
     this.refreshFromPersistence();
@@ -567,11 +599,15 @@ export class FactoryApplication {
       throw new Error(`Task ${taskId} does not exist.`);
     }
 
+    const normalizedPullRequestUrl = normalizePullRequestUrl(pullRequestUrl);
     const subtask = {
       id: this.idGenerator(),
       name,
       taskId,
       ...(description?.trim() ? { description: description.trim() } : {}),
+      ...(normalizedPullRequestUrl
+        ? { pullRequestUrl: normalizedPullRequestUrl }
+        : {}),
       sortOrder: this.nextSubtaskSortOrder(taskId, "planned"),
       createdAt: this.clock(),
     };
@@ -585,11 +621,13 @@ export class FactoryApplication {
     description,
     evidence,
     name,
+    pullRequestUrl,
     subtaskId,
   }: {
     description?: string | null;
     evidence?: string | null;
     name?: string;
+    pullRequestUrl?: string | null;
     subtaskId: string;
   }): Subtask {
     this.refreshFromPersistence();
@@ -614,6 +652,14 @@ export class FactoryApplication {
       // Keep an empty value as an explicit override so legacy reports with
       // evidence do not reappear after the evidence is cleared in the editor.
       subtask.evidence = evidence?.trim() ?? "";
+    }
+    if (pullRequestUrl !== undefined) {
+      const normalizedPullRequestUrl = normalizePullRequestUrl(pullRequestUrl);
+      if (normalizedPullRequestUrl) {
+        subtask.pullRequestUrl = normalizedPullRequestUrl;
+      } else {
+        delete subtask.pullRequestUrl;
+      }
     }
     this.save();
     return subtask;
@@ -1013,6 +1059,9 @@ export class FactoryApplication {
             name: task.name,
             projectId: project.id,
             ...(task.branchName ? { branchName: task.branchName } : {}),
+            ...(task.pullRequestUrl
+              ? { pullRequestUrl: task.pullRequestUrl }
+              : {}),
             workState: taskState,
             ...(taskStateReason ? { stateReason: taskStateReason } : {}),
             ...(task.sortOrder !== undefined
@@ -1028,6 +1077,9 @@ export class FactoryApplication {
                   id: subtask.id,
                   name: subtask.name,
                   taskId: subtask.taskId,
+                  ...(subtask.pullRequestUrl
+                    ? { pullRequestUrl: subtask.pullRequestUrl }
+                    : {}),
                   workState: this.getSubtaskEffectiveWorkState(subtask),
                   ...(subtaskStateReason
                     ? { stateReason: subtaskStateReason }
@@ -1115,6 +1167,7 @@ export class FactoryApplication {
     name: string;
     projectId: string;
     branchName?: string;
+    pullRequestUrl?: string;
     objective?: string;
     acceptanceCriteria: string[];
     priority?: "low" | "medium" | "high" | "urgent";
@@ -1137,6 +1190,7 @@ export class FactoryApplication {
       name: task.name,
       projectId: task.projectId,
       ...(task.branchName ? { branchName: task.branchName } : {}),
+      ...(task.pullRequestUrl ? { pullRequestUrl: task.pullRequestUrl } : {}),
       objective: task.objective,
       acceptanceCriteria: task.acceptanceCriteria,
       priority: task.priority,
@@ -1148,6 +1202,33 @@ export class FactoryApplication {
       ...(task.sortOrder !== undefined ? { sortOrder: task.sortOrder } : {}),
       ...(task.archiveState ? { archiveState: task.archiveState } : {}),
       trackerLinks: this.trackerLinks.filter((link) => link.taskId === taskId),
+    };
+  }
+
+  getSubtaskDetail(subtaskId: string): {
+    id: string;
+    name: string;
+    taskId: string;
+    description?: string;
+    evidence?: string;
+    pullRequestUrl?: string;
+  } {
+    this.refreshFromPersistence();
+    const subtask = this.subtasks.find(
+      (candidate) => candidate.id === subtaskId,
+    );
+    if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
+    return {
+      id: subtask.id,
+      name: subtask.name,
+      taskId: subtask.taskId,
+      ...(subtask.description !== undefined
+        ? { description: subtask.description }
+        : {}),
+      ...(subtask.evidence !== undefined ? { evidence: subtask.evidence } : {}),
+      ...(subtask.pullRequestUrl
+        ? { pullRequestUrl: subtask.pullRequestUrl }
+        : {}),
     };
   }
 

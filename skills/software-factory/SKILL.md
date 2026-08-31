@@ -48,6 +48,9 @@ bun run src/cli.ts task update --task-id TASK_ID \
   --title "Task title" --description "What success looks like" \
   --acceptance-criteria "First check|Second check" \
   --branch-name "GRA-143-preview-environments" --database "$FACTORY_DB"
+bun run src/cli.ts task update --task-id TASK_ID \
+  --pull-request-url "https://github.com/org/repository/pull/123" \
+  --database "$FACTORY_DB"
 bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts task state --task-id TASK_ID --state active --database "$FACTORY_DB"
 bun run src/cli.ts task state --task-id TASK_ID --state blocked \
@@ -55,18 +58,22 @@ bun run src/cli.ts task state --task-id TASK_ID --state blocked \
 bun run src/cli.ts task reorder --project-id PROJECT_ID --state planned \
   --task-ids TASK_ID_2\|TASK_ID_1 --database "$FACTORY_DB"
 bun run src/cli.ts task status --task-id TASK_ID --json --database "$FACTORY_DB"
+bun run src/cli.ts task github-status --task-id TASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts task archive --task-id TASK_ID --state released --database "$FACTORY_DB"
 bun run src/cli.ts task restore --task-id TASK_ID --database "$FACTORY_DB"
 bun run src/cli.ts task link --task-id TASK_ID --system linear --stable-id GRA-143 --url "https://…" --database "$FACTORY_DB"
 bun run src/cli.ts subtask create --task-id TASK_ID --name "Subtask name" --description "What must be checked" --database "$FACTORY_DB"
 bun run src/cli.ts subtask update --subtask-id SUBTASK_ID \
-  --title "Subtask title" --description "What must be checked" --database "$FACTORY_DB"
+  --title "Subtask title" --description "What must be checked" \
+  --pull-request-url "https://github.com/org/repository/pull/124" \
+  --database "$FACTORY_DB"
 bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state in_progress --reporter codex --evidence "What changed" --database "$FACTORY_DB"
 bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state backlog \
   --reason "What I need to check before starting" --reporter codex --database "$FACTORY_DB"
 bun run src/cli.ts subtask reorder --task-id TASK_ID --state planned \
   --subtask-ids SUBTASK_ID_2\|SUBTASK_ID_1 --database "$FACTORY_DB"
 bun run src/cli.ts subtask status --json --task-id TASK_ID --database "$FACTORY_DB"
+bun run src/cli.ts subtask github-status --subtask-id SUBTASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts subtask archive --subtask-id SUBTASK_ID --state wont_do --database "$FACTORY_DB"
 bun run src/cli.ts subtask restore --subtask-id SUBTASK_ID --database "$FACTORY_DB"
@@ -106,9 +113,17 @@ bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" \
 Task and Subtask edits accept any combination of their editable fields. `--title` updates the
 stored `name`; Task `--description` updates its stored `objective`, while Subtask `--description`
 updates its stored `description`. A blank description clears it. Task edits also retain the
-existing `--branch-name` update; at least one edit field is required, and titles must not be
-blank. `--acceptance-criteria` replaces the Task's criteria, using `|` between entries; an empty
-value clears them.
+existing `--branch-name` update and accept `--pull-request-url` (or the shorter `--pr`) to attach
+or replace a canonical GitHub PR URL. Pass an empty PR URL to clear it. At least one edit field is
+required, and titles must not be blank. `--acceptance-criteria` replaces the Task's criteria,
+using `|` between entries; an empty value clears them.
+
+The `task github-status` and `subtask github-status` reads fetch the linked private GitHub PR and
+the Actions runs for its exact head commit. They are read-only observations and never change
+Factory Work State or human Verification. The Factory server reads `GITHUB_TOKEN` (or `GH_TOKEN`)
+from its process environment; credentials are not stored in SQLite or emitted in CLI output. A
+missing token, denied private-repository access, or unavailable GitHub service is reported as an
+explicit status instead of being treated as passing.
 
 Agents may change acceptance criteria only during the planning phase. Run `task status` first and
 make the edit only when the Task state is `planned`, before implementation begins. The CLI rejects

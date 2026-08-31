@@ -3,7 +3,13 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import type { FactoryRouter } from "../server";
+import type { GitHubStatusSnapshot } from "../github";
 import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
+import {
+  githubActionsSummaryLabel,
+  summarizeGitHubActions,
+  type GitHubActionsSummary,
+} from "./github-status";
 import {
   dashboardPath,
   dashboardViewFromPath,
@@ -82,6 +88,7 @@ type ProjectDetail = {
     name: string;
     projectId: string;
     branchName?: string;
+    pullRequestUrl?: string;
     workState?: WorkStatus;
     stateReason?: string;
     sortOrder?: number;
@@ -92,6 +99,7 @@ type ProjectDetail = {
       taskId: string;
       description?: string;
       evidence?: string;
+      pullRequestUrl?: string;
       sortOrder?: number;
       workState?: WorkStatus;
       stateReason?: string;
@@ -136,6 +144,7 @@ type TaskStatus = {
 };
 type TaskDetail = {
   branchName?: string;
+  pullRequestUrl?: string;
   id: string;
   name: string;
   projectId: string;
@@ -263,6 +272,9 @@ function Dashboard() {
   const [subtaskHistories, setSubtaskHistories] = useState<
     Record<string, SubtaskHistory>
   >({});
+  const [githubStatuses, setGithubStatuses] = useState<
+    Record<string, GitHubStatusSnapshot>
+  >({});
   const [collapsedTaskGroups, setCollapsedTaskGroups] = useState<
     Partial<Record<WorkStatus, boolean>>
   >({});
@@ -306,6 +318,7 @@ function Dashboard() {
         setSubtaskEdits({});
         setTaskStatuses({});
         setSubtaskHistories({});
+        setGithubStatuses({});
         setSnapshot(connection.snapshot());
       },
       onOpen: () => {
@@ -336,6 +349,42 @@ function Dashboard() {
       void client.close();
     };
   }, [connection]);
+
+  const refreshGitHubStatuses = async (detail: ProjectDetail) => {
+    const client = trpc.current;
+    if (!client) return;
+    const resources = detail.tasks.flatMap((task) => [
+      ...(task.pullRequestUrl
+        ? [{ key: `task:${task.id}`, kind: "task" as const, id: task.id }]
+        : []),
+      ...task.subtasks.flatMap((subtask) =>
+        subtask.pullRequestUrl
+          ? [
+              {
+                key: `subtask:${subtask.id}`,
+                kind: "subtask" as const,
+                id: subtask.id,
+              },
+            ]
+          : [],
+      ),
+    ]);
+    const entries = await Promise.all(
+      resources.map(
+        async (resource) =>
+          [
+            resource.key,
+            resource.kind === "task"
+              ? await client.tasks.githubStatus.query({ taskId: resource.id })
+              : await client.subtasks.githubStatus.query({
+                  subtaskId: resource.id,
+                }),
+          ] as const,
+      ),
+    );
+    if (trpc.current !== client) return;
+    setGithubStatuses(Object.fromEntries(entries));
+  };
 
   const refreshProject = async (projectId: string) => {
     const client = trpc.current;
@@ -374,7 +423,17 @@ function Dashboard() {
     setProjectDetail(detail);
     setTaskDetails(Object.fromEntries(details));
     setTaskStatuses(Object.fromEntries(statuses));
+    void refreshGitHubStatuses(detail);
   };
+
+  useEffect(() => {
+    if (!projectDetail) return;
+    const projectId = projectDetail.id;
+    const refreshInterval = setInterval(() => {
+      void refreshProject(projectId);
+    }, 60_000);
+    return () => clearInterval(refreshInterval);
+  }, [projectDetail?.id]);
 
   useEffect(() => {
     setProjectGitOriginInput(projectDetail?.gitOriginUrl ?? "");
@@ -836,13 +895,23 @@ function Dashboard() {
   return (
     <main>
       <header>
-        <div className="brand-lockup">
-          <img alt="Factory" className="brand-mark" src="/icon.svg" />
-          <div>
-            <div className="wordmark">FACTORY</div>
-            <p className="eyebrow">Project operations</p>
+        <a
+          aria-label="Factory dashboard"
+          className="brand-link"
+          href="/"
+          onClick={(event) => {
+            event.preventDefault();
+            window.location.assign("/");
+          }}
+        >
+          <div className="brand-lockup">
+            <img alt="Factory" className="brand-mark" src="/icon.svg" />
+            <div>
+              <div className="wordmark">FACTORY</div>
+              <p className="eyebrow">Project operations</p>
+            </div>
           </div>
-        </div>
+        </a>
         <ConnectionIndicator snapshot={snapshot} />
       </header>
 
@@ -1470,6 +1539,13 @@ function Dashboard() {
                           const taskRowExpanded = Boolean(
                             expandedRows[taskRowKey],
                           );
+                          const taskActionsSummary = summarizeGitHubActions([
+                            githubStatuses[`task:${task.id}`],
+                            ...task.subtasks.map(
+                              (subtask) =>
+                                githubStatuses[`subtask:${subtask.id}`],
+                            ),
+                          ]);
                           const progress = summarizeTaskProgress(task, status);
                           const subtaskGroups = groupSubtasksByStatus(
                             task.subtasks.map((subtask, index) => ({
@@ -1574,6 +1650,7 @@ function Dashboard() {
                                       kind="task"
                                       name={task.name}
                                       onToggle={() => toggleRow(taskRowKey)}
+                                      actionsSummary={taskActionsSummary}
                                     />
                                   </div>
                                   {taskStateReason &&
@@ -1610,6 +1687,14 @@ function Dashboard() {
                                         ? `${progress.completedSubtasks}/${progress.totalSubtasks} subtasks done`
                                         : "No subtasks yet"}
                                     </span>
+                                    {task.pullRequestUrl && (
+                                      <GitHubStatusBadge
+                                        pullRequestUrl={task.pullRequestUrl}
+                                        status={
+                                          githubStatuses[`task:${task.id}`]
+                                        }
+                                      />
+                                    )}
                                   </div>
                                   {progress.totalSubtasks > 0 && (
                                     <progress
@@ -2020,6 +2105,12 @@ function Dashboard() {
                                                 Boolean(
                                                   expandedRows[subtaskRowKey],
                                                 );
+                                              const subtaskActionsSummary =
+                                                summarizeGitHubActions([
+                                                  githubStatuses[
+                                                    `subtask:${subtask.id}`
+                                                  ],
+                                                ]);
                                               return (
                                                 <div
                                                   className={`subtask ${
@@ -2287,6 +2378,9 @@ function Dashboard() {
                                                               subtaskRowKey,
                                                             )
                                                           }
+                                                          actionsSummary={
+                                                            subtaskActionsSummary
+                                                          }
                                                         />
                                                       )}
                                                     </div>
@@ -2324,6 +2418,18 @@ function Dashboard() {
                                                               }
                                                             </p>
                                                           )}
+                                                        {subtask.pullRequestUrl && (
+                                                          <GitHubStatusBadge
+                                                            pullRequestUrl={
+                                                              subtask.pullRequestUrl
+                                                            }
+                                                            status={
+                                                              githubStatuses[
+                                                                `subtask:${subtask.id}`
+                                                              ]
+                                                            }
+                                                          />
+                                                        )}
                                                       </div>
                                                     )}
                                                   </div>
@@ -3124,30 +3230,128 @@ function ReportStatusMenu({
 }
 
 function RowToggle({
+  actionsSummary,
   expanded,
   kind,
   name,
   onToggle,
 }: {
+  actionsSummary?: GitHubActionsSummary;
   expanded: boolean;
   kind: "task" | "subtask";
   name: string;
   onToggle: () => void;
 }) {
+  const rowLabel = `${expanded ? "Collapse" : "Expand"} ${kind} ${name}`;
   return (
     <button
       aria-expanded={expanded}
-      aria-label={`${expanded ? "Collapse" : "Expand"} ${kind} ${name}`}
+      aria-label={`${rowLabel}${actionsSummary ? `; Actions: ${githubActionsSummaryLabel(actionsSummary)}` : ""}`}
       className="row-toggle"
       onClick={onToggle}
       type="button"
     >
-      <span className="row-title">{name}</span>
+      <span className="row-title">
+        <span className="row-title-text">{name}</span>
+        {actionsSummary && (
+          <GitHubActionsSummaryBadge summary={actionsSummary} />
+        )}
+      </span>
       <span aria-hidden="true" className="row-chevron">
         {expanded ? "▾" : "▸"}
       </span>
     </button>
   );
+}
+
+function GitHubActionsSummaryBadge({
+  summary,
+}: {
+  summary: GitHubActionsSummary;
+}) {
+  return (
+    <span
+      aria-label={`Actions: ${githubActionsSummaryLabel(summary)}`}
+      className="github-actions-summary"
+    >
+      <span className="github-actions-label">Actions</span>
+      {summary.running > 0 && (
+        <span className="github-actions-count github-actions-running">
+          {summary.running} running
+        </span>
+      )}
+      <span className="github-actions-count github-actions-passing">
+        {summary.passing} passing
+      </span>
+      <span className="github-actions-count github-actions-failing">
+        {summary.failing} failing
+      </span>
+      <span className="github-actions-count github-actions-skipped">
+        {summary.skipped} skipped
+      </span>
+    </span>
+  );
+}
+
+function GitHubStatusBadge({
+  pullRequestUrl,
+  status,
+}: {
+  pullRequestUrl: string;
+  status?: GitHubStatusSnapshot;
+}) {
+  const label = githubStatusLabel(status);
+  return (
+    <span
+      className={`github-status github-status-${status?.status ?? "loading"}`}
+    >
+      <a href={pullRequestUrl} rel="noreferrer" target="_blank">
+        {status?.pullRequest ? `PR #${status.pullRequest.number}` : "GitHub PR"}
+      </a>
+      <span>{label}</span>
+    </span>
+  );
+}
+
+function githubStatusLabel(status?: GitHubStatusSnapshot): string {
+  if (!status) return "checking…";
+  if (status.status === "not_configured") return "GitHub not configured";
+  if (status.status === "permission_denied") return "access denied";
+  if (status.status === "not_found") return "not found";
+  if (status.status === "unavailable") return "unavailable";
+  if (status.status !== "ok" || !status.pullRequest) return "not linked";
+  if (status.pullRequest.state === "closed") {
+    return status.pullRequest.mergedAt ? "merged" : "closed";
+  }
+  const pullRequestState = status.pullRequest.draft ? "draft" : "open";
+  if (status.workflowRunsStatus === "unavailable") {
+    return `${pullRequestState} · Actions unavailable`;
+  }
+  if (status.workflowRuns.length === 0) {
+    return `${pullRequestState} · no Actions runs`;
+  }
+  if (
+    status.workflowRuns.some((run) =>
+      ["queued", "in_progress", "waiting", "requested", "pending"].includes(
+        run.status,
+      ),
+    )
+  ) {
+    return `${pullRequestState} · Actions running`;
+  }
+  if (
+    status.workflowRuns.some((run) =>
+      ["failure", "timed_out", "cancelled", "action_required"].includes(
+        run.conclusion ?? "",
+      ),
+    )
+  ) {
+    return `${pullRequestState} · Actions failing`;
+  }
+  if (status.workflowRuns.every((run) => run.conclusion === "success")) {
+    return `${pullRequestState} · Actions passing`;
+  }
+  return `${pullRequestState} · Actions pending`;
 }
 
 function ReorderHandle({
