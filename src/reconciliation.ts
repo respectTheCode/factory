@@ -240,11 +240,11 @@ export type ReconciliationInput = {
   recentActivityWindowMs?: number;
 };
 
-function linkFor(
+function linksFor(
   session: ReconciliationSession,
   links: ReconciliationLink[],
-): ReconciliationLink | undefined {
-  return links.find(
+): ReconciliationLink[] {
+  return links.filter(
     (link) =>
       link.provider === session.provider &&
       link.externalThreadId === session.externalThreadId,
@@ -325,12 +325,12 @@ export function computeReconciliationFindings({
   }
 
   for (const session of sessions) {
-    const link = linkFor(session, links);
+    const sessionLinks = linksFor(session, links);
     const projectTargets = targets.filter(
       (target) => target.projectId === session.projectId,
     );
 
-    if (!link) {
+    if (sessionLinks.length === 0) {
       if (!isRecentlyActive(session, now, recentActivityWindowMs)) continue;
       const match = matchReconciliationTarget(session, projectTargets);
       if (match.status === "ambiguous") {
@@ -371,121 +371,123 @@ export function computeReconciliationFindings({
       continue;
     }
 
-    const target = targetForLink(link, projectTargets);
-    if (!target) {
-      addFinding(findings, {
-        candidateIds: [],
-        dedupeKey: `ambiguous_target:${session.provider}:${session.externalThreadId}`,
-        explanation:
-          "The linked Factory target no longer exists in this Project.",
-        externalThreadId: session.externalThreadId,
-        kind: "ambiguous_target",
-        observedAt: session.sourceUpdatedAt,
-        projectId: session.projectId,
-        severity: "attention",
-        suggestedAction:
-          "Choose an existing Factory Task or Subtask explicitly.",
-      });
-      continue;
-    }
+    for (const link of sessionLinks) {
+      const target = targetForLink(link, projectTargets);
+      if (!target) {
+        addFinding(findings, {
+          candidateIds: [],
+          dedupeKey: `ambiguous_target:${session.provider}:${session.externalThreadId}`,
+          explanation:
+            "The linked Factory target no longer exists in this Project.",
+          externalThreadId: session.externalThreadId,
+          kind: "ambiguous_target",
+          observedAt: session.sourceUpdatedAt,
+          projectId: session.projectId,
+          severity: "attention",
+          suggestedAction:
+            "Choose an existing Factory Task or Subtask explicitly.",
+        });
+        continue;
+      }
 
-    if (
-      target.branchName !== undefined &&
-      session.branch !== undefined &&
-      target.branchName !== session.branch
-    ) {
-      addFinding(findings, {
-        candidateIds: [target.subtaskId ?? target.taskId],
-        dedupeKey: `branch_mismatch:${session.provider}:${session.externalThreadId}:${target.subtaskId ?? target.taskId}`,
-        explanation: `The linked T3 session is on ${session.branch}, while the Factory target is assigned ${target.branchName}.`,
-        externalThreadId: session.externalThreadId,
-        kind: "branch_mismatch",
-        observedAt: session.sourceUpdatedAt,
-        projectId: session.projectId,
-        severity: "attention",
-        suggestedAction:
-          "Confirm the target or update the Factory branch metadata.",
-        ...(target.subtaskId ? { subtaskId: target.subtaskId } : {}),
-        taskId: target.taskId,
-      });
-    }
+      if (
+        target.branchName !== undefined &&
+        session.branch !== undefined &&
+        target.branchName !== session.branch
+      ) {
+        addFinding(findings, {
+          candidateIds: [target.subtaskId ?? target.taskId],
+          dedupeKey: `branch_mismatch:${session.provider}:${session.externalThreadId}:${target.subtaskId ?? target.taskId}`,
+          explanation: `The linked T3 session is on ${session.branch}, while the Factory target is assigned ${target.branchName}.`,
+          externalThreadId: session.externalThreadId,
+          kind: "branch_mismatch",
+          observedAt: session.sourceUpdatedAt,
+          projectId: session.projectId,
+          severity: "attention",
+          suggestedAction:
+            "Confirm the target or update the Factory branch metadata.",
+          ...(target.subtaskId ? { subtaskId: target.subtaskId } : {}),
+          taskId: target.taskId,
+        });
+      }
 
-    const completedTurnIsRecentOrNewerThanReport =
-      session.latestTurnState === "completed" &&
-      session.latestTurnCompletedAt !== undefined &&
-      (now.getTime() - session.latestTurnCompletedAt.getTime() <=
-        recentActivityWindowMs ||
-        (target.latestReportAt !== undefined &&
-          target.latestReportAt.getTime() <
-            session.latestTurnCompletedAt.getTime()));
-    if (
-      (session.latestSessionState === "running" ||
-        session.latestTurnState === "running" ||
-        completedTurnIsRecentOrNewerThanReport) &&
-      (target.workState === "backlog" || target.workState === "planned")
-    ) {
-      addFinding(findings, {
-        candidateIds: [target.subtaskId ?? target.taskId],
-        dedupeKey: `planned_but_running:${session.provider}:${session.externalThreadId}:${target.subtaskId ?? target.taskId}`,
-        explanation: `T3 shows ${target.workState === "planned" ? "planned" : "backlog"} Factory work with active or newer turn activity.`,
-        externalThreadId: session.externalThreadId,
-        kind: "planned_but_running",
-        observedAt: session.sourceUpdatedAt,
-        projectId: session.projectId,
-        severity: "info",
-        suggestedAction:
-          "Review the observed activity and submit an explicit status report if needed.",
-        ...(target.subtaskId ? { subtaskId: target.subtaskId } : {}),
-        taskId: target.taskId,
-      });
-    }
+      const completedTurnIsRecentOrNewerThanReport =
+        session.latestTurnState === "completed" &&
+        session.latestTurnCompletedAt !== undefined &&
+        (now.getTime() - session.latestTurnCompletedAt.getTime() <=
+          recentActivityWindowMs ||
+          (target.latestReportAt !== undefined &&
+            target.latestReportAt.getTime() <
+              session.latestTurnCompletedAt.getTime()));
+      if (
+        (session.latestSessionState === "running" ||
+          session.latestTurnState === "running" ||
+          completedTurnIsRecentOrNewerThanReport) &&
+        (target.workState === "backlog" || target.workState === "planned")
+      ) {
+        addFinding(findings, {
+          candidateIds: [target.subtaskId ?? target.taskId],
+          dedupeKey: `planned_but_running:${session.provider}:${session.externalThreadId}:${target.subtaskId ?? target.taskId}`,
+          explanation: `T3 shows ${target.workState === "planned" ? "planned" : "backlog"} Factory work with active or newer turn activity.`,
+          externalThreadId: session.externalThreadId,
+          kind: "planned_but_running",
+          observedAt: session.sourceUpdatedAt,
+          projectId: session.projectId,
+          severity: "info",
+          suggestedAction:
+            "Review the observed activity and submit an explicit status report if needed.",
+          ...(target.subtaskId ? { subtaskId: target.subtaskId } : {}),
+          taskId: target.taskId,
+        });
+      }
 
-    if (
-      target.subtaskId &&
-      target.latestReportAt &&
-      target.latestReportAt.getTime() < session.sourceUpdatedAt.getTime()
-    ) {
-      addFinding(findings, {
-        candidateIds: [target.subtaskId],
-        dedupeKey: `reported_state_stale:${session.provider}:${session.externalThreadId}:${target.subtaskId}`,
-        explanation:
-          "Observed T3 activity is newer than the latest Factory Status Report.",
-        externalThreadId: session.externalThreadId,
-        kind: "reported_state_stale",
-        observedAt: session.sourceUpdatedAt,
-        projectId: session.projectId,
-        severity: "attention",
-        suggestedAction:
-          "Review the session and submit a current Status Report.",
-        subtaskId: target.subtaskId,
-        taskId: target.taskId,
-      });
-    }
+      if (
+        target.subtaskId &&
+        target.latestReportAt &&
+        target.latestReportAt.getTime() < session.sourceUpdatedAt.getTime()
+      ) {
+        addFinding(findings, {
+          candidateIds: [target.subtaskId],
+          dedupeKey: `reported_state_stale:${session.provider}:${session.externalThreadId}:${target.subtaskId}`,
+          explanation:
+            "Observed T3 activity is newer than the latest Factory Status Report.",
+          externalThreadId: session.externalThreadId,
+          kind: "reported_state_stale",
+          observedAt: session.sourceUpdatedAt,
+          projectId: session.projectId,
+          severity: "attention",
+          suggestedAction:
+            "Review the session and submit a current Status Report.",
+          subtaskId: target.subtaskId,
+          taskId: target.taskId,
+        });
+      }
 
-    if (
-      session.latestSessionState === "error" ||
-      session.latestTurnState === "error" ||
-      session.hasPendingApprovals ||
-      session.hasPendingUserInput
-    ) {
-      addFinding(findings, {
-        candidateIds: [target.subtaskId ?? target.taskId],
-        dedupeKey: `session_needs_attention:${session.provider}:${session.externalThreadId}:${target.subtaskId ?? target.taskId}`,
-        explanation:
-          session.latestSessionState === "error" ||
-          session.latestTurnState === "error"
-            ? "T3 reports an error for the linked session."
-            : "T3 reports pending approval or user input for the linked session.",
-        externalThreadId: session.externalThreadId,
-        kind: "session_needs_attention",
-        observedAt: session.sourceUpdatedAt,
-        projectId: session.projectId,
-        severity: "attention",
-        suggestedAction:
-          "Inspect the T3 session and resolve the pending action.",
-        ...(target.subtaskId ? { subtaskId: target.subtaskId } : {}),
-        taskId: target.taskId,
-      });
+      if (
+        session.latestSessionState === "error" ||
+        session.latestTurnState === "error" ||
+        session.hasPendingApprovals ||
+        session.hasPendingUserInput
+      ) {
+        addFinding(findings, {
+          candidateIds: [target.subtaskId ?? target.taskId],
+          dedupeKey: `session_needs_attention:${session.provider}:${session.externalThreadId}:${target.subtaskId ?? target.taskId}`,
+          explanation:
+            session.latestSessionState === "error" ||
+            session.latestTurnState === "error"
+              ? "T3 reports an error for the linked session."
+              : "T3 reports pending approval or user input for the linked session.",
+          externalThreadId: session.externalThreadId,
+          kind: "session_needs_attention",
+          observedAt: session.sourceUpdatedAt,
+          projectId: session.projectId,
+          severity: "attention",
+          suggestedAction:
+            "Inspect the T3 session and resolve the pending action.",
+          ...(target.subtaskId ? { subtaskId: target.subtaskId } : {}),
+          taskId: target.taskId,
+        });
+      }
     }
   }
 

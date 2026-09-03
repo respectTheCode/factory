@@ -105,6 +105,7 @@ describe("T3 CLI integration", () => {
       method: string;
       path: string;
     }> = [];
+    let duplicateRunningThread = false;
     const t3Server = Bun.serve({
       fetch(request) {
         const url = new URL(request.url);
@@ -117,7 +118,15 @@ describe("T3 CLI integration", () => {
           return Response.json({ serverVersion: "0.0.38" });
         }
         if (url.pathname === "/api/orchestration/shell") {
-          return Response.json(shellPayload());
+          const payload = shellPayload();
+          if (duplicateRunningThread) {
+            payload.threads.push({
+              ...payload.threads[0]!,
+              id: "t3-thread-cli-duplicate",
+              title: "Duplicate running CLI thread",
+            });
+          }
+          return Response.json(payload);
         }
         if (url.pathname === "/api/orchestration/threads/t3-thread-cli") {
           return Response.json(detailPayload());
@@ -200,6 +209,8 @@ describe("T3 CLI integration", () => {
           "CLI integration",
           "--project-id",
           project.project.id,
+          "--branch-name",
+          "feature/t3-cli",
           "--database",
           database,
         ],
@@ -207,6 +218,50 @@ describe("T3 CLI integration", () => {
       );
       const taskId = (JSON.parse(task.stdout) as { task: { id: string } }).task
         .id;
+      const autoLinked = await runCli(
+        [
+          "session",
+          "auto-link",
+          "--project-id",
+          project.project.id,
+          "--task-id",
+          taskId,
+          "--branch-name",
+          "feature/t3-cli",
+          "--json",
+          "--database",
+          database,
+        ],
+        environment,
+      );
+      expect(autoLinked.exitCode).toBe(0);
+      const autoLinkResult = JSON.parse(autoLinked.stdout) as {
+        link: { associationId: string };
+      };
+      expect(autoLinkResult).toMatchObject({
+        link: {
+          candidateThreadIds: ["t3-thread-cli"],
+          status: "linked",
+          threadId: "t3-thread-cli",
+        },
+      });
+
+      const secondTask = await runCli(
+        [
+          "task",
+          "create",
+          "--name",
+          "Second CLI task",
+          "--project-id",
+          project.project.id,
+          "--database",
+          database,
+        ],
+        environment,
+      );
+      const secondTaskId = (
+        JSON.parse(secondTask.stdout) as { task: { id: string } }
+      ).task.id;
       const linked = await runCli(
         [
           "session",
@@ -216,7 +271,7 @@ describe("T3 CLI integration", () => {
           "--project-id",
           project.project.id,
           "--task-id",
-          taskId,
+          secondTaskId,
           "--json",
           "--database",
           database,
@@ -225,7 +280,7 @@ describe("T3 CLI integration", () => {
       );
       expect(linked.exitCode).toBe(0);
       expect(JSON.parse(linked.stdout)).toMatchObject({
-        link: { run: { taskId } },
+        link: { association: { taskId: secondTaskId } },
       });
 
       const unlinked = await runCli(
@@ -234,6 +289,8 @@ describe("T3 CLI integration", () => {
           "unlink",
           "--thread-id",
           "t3-thread-cli",
+          "--association-id",
+          autoLinkResult.link.associationId,
           "--json",
           "--database",
           database,
@@ -242,7 +299,35 @@ describe("T3 CLI integration", () => {
       );
       expect(unlinked.exitCode).toBe(0);
       expect(JSON.parse(unlinked.stdout)).toMatchObject({
-        link: { run: { state: "observed" } },
+        link: {
+          association: { taskId },
+          run: { state: "observed" },
+        },
+      });
+
+      duplicateRunningThread = true;
+      const ambiguous = await runCli(
+        [
+          "session",
+          "auto-link",
+          "--project-id",
+          project.project.id,
+          "--task-id",
+          taskId,
+          "--branch-name",
+          "feature/t3-cli",
+          "--json",
+          "--database",
+          database,
+        ],
+        environment,
+      );
+      expect(ambiguous.exitCode).toBe(0);
+      expect(JSON.parse(ambiguous.stdout)).toMatchObject({
+        link: {
+          candidateThreadIds: ["t3-thread-cli", "t3-thread-cli-duplicate"],
+          status: "ambiguous",
+        },
       });
       expect(requests.every((request) => request.method === "GET")).toBe(true);
       expect(

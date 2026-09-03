@@ -120,8 +120,6 @@ export type RunState =
 export type Run = {
   id: string;
   projectId: string;
-  taskId?: string;
-  subtaskId?: string;
   state: RunState;
   createdAt: Date;
   updatedAt: Date;
@@ -150,6 +148,14 @@ export type CodeSession = {
   sourceStream?: string;
   sourceDigest: string;
   sourceCurrent?: boolean;
+};
+
+export type CodeSessionAssociation = {
+  id: string;
+  codeSessionId: string;
+  taskId: string;
+  subtaskId?: string;
+  createdAt: Date;
 };
 
 /**
@@ -264,6 +270,7 @@ export type FactoryState = {
   trackerLinks?: TrackerLink[];
   runs?: Run[];
   codeSessions?: CodeSession[];
+  codeSessionAssociations?: CodeSessionAssociation[];
   codeSessionObservations?: CodeSessionObservation[];
   sessionEvidence?: SessionEvidence[];
   reconciliationFindings?: ReconciliationFinding[];
@@ -272,6 +279,7 @@ export type FactoryState = {
 export type ProjectT3Activity = {
   observation: CodeSessionObservation;
   codeSession?: CodeSession;
+  associations: CodeSessionAssociation[];
   run?: Run;
 };
 
@@ -309,6 +317,41 @@ function removeMatching<T>(items: T[], matches: (item: T) => boolean): void {
     const item = items[index];
     if (item !== undefined && matches(item)) items.splice(index, 1);
   }
+}
+
+type LegacyTargetedRun = Run & {
+  taskId?: string;
+  subtaskId?: string;
+};
+
+function normalizeExecutionState(state: FactoryState | undefined): {
+  runs: Run[];
+  codeSessions: CodeSession[];
+  associations: CodeSessionAssociation[];
+} {
+  const legacyRuns = (state?.runs ?? []) as LegacyTargetedRun[];
+  const runs = legacyRuns.map(
+    ({ taskId: _taskId, subtaskId: _subtaskId, ...run }) => run,
+  );
+  const codeSessions = state?.codeSessions ?? [];
+  const associations =
+    state?.codeSessionAssociations ??
+    codeSessions.flatMap((session) => {
+      const run = legacyRuns.find(
+        (candidate) => candidate.id === session.runId,
+      );
+      if (!run?.taskId) return [];
+      return [
+        {
+          id: `legacy-${session.id}`,
+          codeSessionId: session.id,
+          taskId: run.taskId,
+          ...(run.subtaskId === undefined ? {} : { subtaskId: run.subtaskId }),
+          createdAt: run.updatedAt,
+        },
+      ];
+    });
+  return { associations, codeSessions, runs };
 }
 
 const WORK_STATE_RANK: Record<WorkState, number> = {
@@ -419,6 +462,7 @@ export class FactoryApplication {
   private readonly trackerLinks: TrackerLink[];
   private readonly runs: Run[];
   private readonly codeSessions: CodeSession[];
+  private readonly codeSessionAssociations: CodeSessionAssociation[];
   private readonly codeSessionObservations: CodeSessionObservation[];
   private readonly sessionEvidence: SessionEvidence[];
   private readonly reconciliationFindings: ReconciliationFinding[];
@@ -440,8 +484,10 @@ export class FactoryApplication {
     this.statusReports = state?.statusReports ?? [];
     this.verifications = state?.verifications ?? [];
     this.trackerLinks = state?.trackerLinks ?? [];
-    this.runs = state?.runs ?? [];
-    this.codeSessions = state?.codeSessions ?? [];
+    const executionState = normalizeExecutionState(state);
+    this.runs = executionState.runs;
+    this.codeSessions = executionState.codeSessions;
+    this.codeSessionAssociations = executionState.associations;
     this.codeSessionObservations = state?.codeSessionObservations ?? [];
     this.sessionEvidence = state?.sessionEvidence ?? [];
     this.reconciliationFindings = state?.reconciliationFindings ?? [];
@@ -565,6 +611,9 @@ export class FactoryApplication {
     );
     removeMatching(this.runs, (run) => runIds.has(run.id));
     removeMatching(this.codeSessions, (session) => sessionIds.has(session.id));
+    removeMatching(this.codeSessionAssociations, (association) =>
+      sessionIds.has(association.codeSessionId),
+    );
     removeMatching(
       this.codeSessionObservations,
       (observation) => observation.projectId === projectId,
@@ -605,12 +654,13 @@ export class FactoryApplication {
       reportIds.has(verification.reportId),
     );
     removeMatching(this.trackerLinks, (link) => link.taskId === taskId);
-    for (const run of this.runs) {
-      if (run.taskId === taskId) delete run.taskId;
-      if (run.subtaskId !== undefined && subtaskIds.has(run.subtaskId)) {
-        delete run.subtaskId;
-      }
-    }
+    removeMatching(
+      this.codeSessionAssociations,
+      (association) =>
+        association.taskId === taskId ||
+        (association.subtaskId !== undefined &&
+          subtaskIds.has(association.subtaskId)),
+    );
     for (const finding of this.reconciliationFindings) {
       if (finding.taskId === taskId) delete finding.taskId;
       if (
@@ -643,9 +693,10 @@ export class FactoryApplication {
     removeMatching(this.verifications, (verification) =>
       reportIds.has(verification.reportId),
     );
-    for (const run of this.runs) {
-      if (run.subtaskId === subtaskId) delete run.subtaskId;
-    }
+    removeMatching(
+      this.codeSessionAssociations,
+      (association) => association.subtaskId === subtaskId,
+    );
     for (const finding of this.reconciliationFindings) {
       if (finding.subtaskId === subtaskId) delete finding.subtaskId;
       finding.candidateIds = finding.candidateIds.filter(
@@ -1580,6 +1631,7 @@ export class FactoryApplication {
   linkT3Thread(input: LinkT3ThreadInput): {
     run: Run;
     codeSession: CodeSession;
+    association: CodeSessionAssociation;
   } {
     this.refreshFromPersistence();
     this.refreshT3Observations({ observations: [input.observation] });
@@ -1601,44 +1653,59 @@ export class FactoryApplication {
       subtaskId: input.subtaskId,
       taskId: input.taskId,
     });
-    const existingSession = this.codeSessions.find(
+    let codeSession = this.codeSessions.find(
       (candidate) =>
         candidate.provider === observation.provider &&
         candidate.externalThreadId === observation.externalThreadId,
     );
     let run: Run;
-    if (existingSession) {
-      run = this.requireRun(existingSession.runId);
+    if (codeSession) {
+      run = this.requireRun(codeSession.runId);
       if (run.projectId !== observation.projectId) {
         throw new Error("T3 thread Run belongs to another Factory Project.");
       }
-      this.setRunTarget(run, target);
-      this.applyObservationToCodeSession(existingSession, observation);
-      this.save();
-      this.reconcileT3Project({ projectId: observation.projectId });
-      return { codeSession: existingSession, run };
+      this.applyObservationToCodeSession(codeSession, observation);
+      run.updatedAt = this.clock();
+    } else {
+      const now = this.clock();
+      run = {
+        id: this.idGenerator(),
+        projectId: observation.projectId,
+        state: "observed",
+        createdAt: now,
+        updatedAt: now,
+      };
+      const { projectId: _projectId, ...sessionObservation } = observation;
+      codeSession = {
+        ...sessionObservation,
+        id: this.idGenerator(),
+        runId: run.id,
+      };
+      this.runs.push(run);
+      this.codeSessions.push(codeSession);
     }
 
-    const now = this.clock();
-    run = {
-      id: this.idGenerator(),
-      projectId: observation.projectId,
-      state: "observed",
-      createdAt: now,
-      updatedAt: now,
-      ...target,
-    };
-    const { projectId: _projectId, ...sessionObservation } = observation;
-    const codeSession: CodeSession = {
-      ...sessionObservation,
-      id: this.idGenerator(),
-      runId: run.id,
-    };
-    this.runs.push(run);
-    this.codeSessions.push(codeSession);
+    const existingAssociation = this.codeSessionAssociations.find(
+      (candidate) =>
+        candidate.codeSessionId === codeSession.id &&
+        candidate.taskId === target.taskId &&
+        candidate.subtaskId === target.subtaskId,
+    );
+    const association =
+      existingAssociation ??
+      ({
+        id: this.idGenerator(),
+        codeSessionId: codeSession.id,
+        taskId: target.taskId,
+        ...(target.subtaskId === undefined
+          ? {}
+          : { subtaskId: target.subtaskId }),
+        createdAt: this.clock(),
+      } satisfies CodeSessionAssociation);
+    if (!existingAssociation) this.codeSessionAssociations.push(association);
     this.save();
     this.reconcileT3Project({ projectId: observation.projectId });
-    return { codeSession, run };
+    return { association, codeSession, run };
   }
 
   /**
@@ -1646,12 +1713,18 @@ export class FactoryApplication {
    * current observation, and evidence remain available for provenance.
    */
   unlinkT3Thread({
+    associationId,
     externalThreadId,
     provider = "t3",
   }: {
+    associationId?: string;
     externalThreadId: string;
     provider?: "t3";
-  }): { codeSession: CodeSession; run: Run } {
+  }): {
+    association: CodeSessionAssociation;
+    codeSession: CodeSession;
+    run: Run;
+  } {
     this.refreshFromPersistence();
     const codeSession = this.codeSessions.find(
       (candidate) =>
@@ -1662,12 +1735,33 @@ export class FactoryApplication {
       throw new Error(`T3 thread ${externalThreadId} is not linked.`);
     }
     const run = this.requireRun(codeSession.runId);
-    delete run.taskId;
-    delete run.subtaskId;
+    const associations = this.codeSessionAssociations.filter(
+      (candidate) => candidate.codeSessionId === codeSession.id,
+    );
+    if (associations.length === 0) {
+      throw new Error(`T3 thread ${externalThreadId} is not linked.`);
+    }
+    if (associationId === undefined && associations.length > 1) {
+      throw new Error(
+        `T3 thread ${externalThreadId} has multiple associations; provide an association ID.`,
+      );
+    }
+    const association = associationId
+      ? associations.find((candidate) => candidate.id === associationId)
+      : associations[0];
+    if (!association) {
+      throw new Error(
+        `T3 association ${associationId} does not belong to thread ${externalThreadId}.`,
+      );
+    }
+    removeMatching(
+      this.codeSessionAssociations,
+      (candidate) => candidate.id === association.id,
+    );
     run.updatedAt = this.clock();
     this.save();
     this.reconcileT3Project({ projectId: run.projectId });
-    return { codeSession, run };
+    return { association, codeSession, run };
   }
 
   listProjectT3Activity(projectId: string): ProjectT3Activity[] {
@@ -1689,6 +1783,11 @@ export class FactoryApplication {
           ? this.runs.find((candidate) => candidate.id === codeSession.runId)
           : undefined;
         return {
+          associations: codeSession
+            ? this.codeSessionAssociations.filter(
+                (association) => association.codeSessionId === codeSession.id,
+              )
+            : [],
           observation,
           ...(codeSession ? { codeSession } : {}),
           ...(run ? { run } : {}),
@@ -1715,6 +1814,11 @@ export class FactoryApplication {
       ? this.runs.find((candidate) => candidate.id === codeSession.runId)
       : undefined;
     return {
+      associations: codeSession
+        ? this.codeSessionAssociations.filter(
+            (association) => association.codeSessionId === codeSession.id,
+          )
+        : [],
       observation,
       ...(codeSession ? { codeSession } : {}),
       ...(run ? { run } : {}),
@@ -1834,25 +1938,28 @@ export class FactoryApplication {
         observation.sourceCurrent !== false,
     );
     const targets = this.reconciliationTargets(project);
-    const links: ReconciliationLink[] = this.codeSessions
-      .map((session) => {
-        const run = this.runs.find(
-          (candidate) => candidate.id === session.runId,
-        );
-        if (
-          !run ||
-          run.projectId !== projectId ||
-          (!run.taskId && !run.subtaskId)
-        )
-          return undefined;
-        return {
-          externalThreadId: session.externalThreadId,
-          provider: session.provider,
-          ...(run.taskId ? { taskId: run.taskId } : {}),
-          ...(run.subtaskId ? { subtaskId: run.subtaskId } : {}),
-        };
-      })
-      .filter((link): link is ReconciliationLink => link !== undefined);
+    const sessionsById = new Map(
+      this.codeSessions.map((session) => [session.id, session]),
+    );
+    const links = this.codeSessionAssociations.flatMap<ReconciliationLink>(
+      (association) => {
+        const session = sessionsById.get(association.codeSessionId);
+        const run = session
+          ? this.runs.find((candidate) => candidate.id === session.runId)
+          : undefined;
+        if (!session || !run || run.projectId !== projectId) return [];
+        return [
+          {
+            externalThreadId: session.externalThreadId,
+            provider: session.provider,
+            taskId: association.taskId,
+            ...(association.subtaskId
+              ? { subtaskId: association.subtaskId }
+              : {}),
+          },
+        ];
+      },
+    );
 
     const drafts = computeReconciliationFindings({
       links,
@@ -2158,7 +2265,7 @@ export class FactoryApplication {
     projectId: string;
     subtaskId?: string;
     taskId?: string;
-  }): { taskId?: string; subtaskId?: string } {
+  }): { taskId: string; subtaskId?: string } {
     if (subtaskId !== undefined) {
       const subtask = this.subtasks.find(
         (candidate) => candidate.id === subtaskId,
@@ -2189,25 +2296,21 @@ export class FactoryApplication {
       return { taskId };
     }
 
-    return {};
-  }
-
-  private setRunTarget(
-    run: Run,
-    target: { taskId?: string; subtaskId?: string },
-  ): void {
-    if (target.taskId) run.taskId = target.taskId;
-    else delete run.taskId;
-    if (target.subtaskId) run.subtaskId = target.subtaskId;
-    else delete run.subtaskId;
-    run.updatedAt = this.clock();
+    throw new Error("A T3 thread association requires a Task or Subtask.");
   }
 
   private applyObservationToCodeSession(
     session: CodeSession,
-    observation: CodeSessionObservationInput & { sourceCurrent?: boolean },
+    observation: CodeSessionObservationInput & {
+      id?: string;
+      sourceCurrent?: boolean;
+    },
   ): void {
-    const { projectId: _projectId, ...sessionObservation } = observation;
+    const {
+      id: _observationId,
+      projectId: _projectId,
+      ...sessionObservation
+    } = observation;
     Object.assign(session, sessionObservation);
   }
 
@@ -2694,11 +2797,17 @@ export class FactoryApplication {
       this.trackerLinks.length,
       ...(state.trackerLinks ?? []),
     );
-    this.runs.splice(0, this.runs.length, ...(state.runs ?? []));
+    const executionState = normalizeExecutionState(state);
+    this.runs.splice(0, this.runs.length, ...executionState.runs);
     this.codeSessions.splice(
       0,
       this.codeSessions.length,
-      ...(state.codeSessions ?? []),
+      ...executionState.codeSessions,
+    );
+    this.codeSessionAssociations.splice(
+      0,
+      this.codeSessionAssociations.length,
+      ...executionState.associations,
     );
     this.codeSessionObservations.splice(
       0,
@@ -2727,6 +2836,7 @@ export class FactoryApplication {
       trackerLinks: this.trackerLinks,
       runs: this.runs,
       codeSessions: this.codeSessions,
+      codeSessionAssociations: this.codeSessionAssociations,
       codeSessionObservations: this.codeSessionObservations,
       sessionEvidence: this.sessionEvidence,
       reconciliationFindings: this.reconciliationFindings,
@@ -2943,6 +3053,16 @@ function hydrateState(state: FactoryState): FactoryState {
       observedAt: new Date(session.observedAt),
       sourceUpdatedAt: new Date(session.sourceUpdatedAt),
     })),
+    ...(state.codeSessionAssociations === undefined
+      ? {}
+      : {
+          codeSessionAssociations: state.codeSessionAssociations.map(
+            (association) => ({
+              ...association,
+              createdAt: new Date(association.createdAt),
+            }),
+          ),
+        }),
     codeSessionObservations: (state.codeSessionObservations ?? []).map(
       (observation) => ({
         ...observation,

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 
 import { describe, expect, test } from "bun:test";
 
@@ -72,9 +73,16 @@ describe("T3 session persistence", () => {
 
       const reopened = createFactoryApplication({ databasePath });
       expect(reopened.getT3ThreadDetail(input.externalThreadId)).toMatchObject({
+        associations: [
+          {
+            id: linked.association.id,
+            subtaskId: subtask.id,
+            taskId: task.id,
+          },
+        ],
         codeSession: { id: linked.codeSession.id, runId: linked.run.id },
         observation: { sourceSequence: 10 },
-        run: { id: linked.run.id, subtaskId: subtask.id },
+        run: { id: linked.run.id },
       });
       expect(reopened.listSessionEvidence(input.externalThreadId)).toEqual([
         evidence,
@@ -114,7 +122,62 @@ describe("T3 session persistence", () => {
     }
   });
 
-  test("clears deleted Task/Subtask targets while retaining Run provenance", () => {
+  test("migrates a legacy Run target into a Code Session association", () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-t3-link-migration-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+
+    try {
+      const first = createFactoryApplication({ databasePath });
+      const project = first.createProject({ name: "Factory" });
+      const task = first.createTask({ name: "Task", projectId: project.id });
+      const input = observation(project.id);
+      first.refreshT3Observations({ observations: [input] });
+      const linked = first.linkT3Thread({
+        observation: input,
+        taskId: task.id,
+      });
+
+      const database = new Database(databasePath);
+      const row = database
+        .query("SELECT state FROM factory_state WHERE id = 1")
+        .get() as { state: string };
+      const state = JSON.parse(row.state) as {
+        codeSessionAssociations?: unknown[];
+        runs: Array<{ id: string; taskId?: string }>;
+      };
+      delete state.codeSessionAssociations;
+      const run = state.runs.find(
+        (candidate) => candidate.id === linked.run.id,
+      );
+      if (!run) throw new Error("Legacy fixture lost its Run.");
+      run.taskId = task.id;
+      database
+        .query("UPDATE factory_state SET state = $state WHERE id = 1")
+        .run({ $state: JSON.stringify(state) });
+      database.close();
+
+      const reopened = createFactoryApplication({ databasePath });
+      expect(reopened.getT3ThreadDetail(input.externalThreadId)).toMatchObject({
+        associations: [
+          {
+            codeSessionId: linked.codeSession.id,
+            id: `legacy-${linked.codeSession.id}`,
+            taskId: task.id,
+          },
+        ],
+        run: { id: linked.run.id },
+      });
+      expect(
+        reopened.getT3ThreadDetail(input.externalThreadId).run,
+      ).not.toHaveProperty("taskId");
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test("removes deleted Task/Subtask associations while retaining Run provenance", () => {
     const temporaryDirectory = mkdtempSync(
       join(tmpdir(), "software-factory-t3-removal-"),
     );
@@ -131,20 +194,24 @@ describe("T3 session persistence", () => {
         observation: input,
         subtaskId: subtask.id,
       });
-
-      app.removeSubtask(subtask.id);
-      expect(app.getT3ThreadDetail(input.externalThreadId).run).toMatchObject({
-        id: linked.run.id,
+      const taskLink = app.linkT3Thread({
+        observation: input,
         taskId: task.id,
       });
-      expect(
-        app.getT3ThreadDetail(input.externalThreadId).run,
-      ).not.toHaveProperty("subtaskId");
+
+      app.removeSubtask(subtask.id);
+      expect(app.getT3ThreadDetail(input.externalThreadId)).toMatchObject({
+        associations: [{ id: taskLink.association.id, taskId: task.id }],
+        run: { id: linked.run.id },
+      });
 
       app.removeTask(task.id);
       expect(
-        app.getT3ThreadDetail(input.externalThreadId).run,
-      ).not.toHaveProperty("taskId");
+        app.getT3ThreadDetail(input.externalThreadId).associations,
+      ).toEqual([]);
+      expect(app.getT3ThreadDetail(input.externalThreadId).run).toMatchObject({
+        id: linked.run.id,
+      });
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }

@@ -50,7 +50,7 @@ Reports, and Verification.
 2. Server-only credential loading from an operator-managed secret file.
 3. Live shell observations for T3 projects and threads.
 4. Bounded thread-detail reads on explicit request.
-5. Durable Factory links from one T3 thread to one Run and optionally one Task or Subtask.
+5. Durable zero-to-many Factory Work Associations from each T3 thread to Tasks or Subtasks.
 6. Deterministic candidate matching and explicit ambiguity.
 7. Reconciliation findings that describe observed drift without changing work state.
 8. A CLI JSON contract and PWA presentation for connection health, activity, links, and findings.
@@ -80,7 +80,10 @@ The adapter must not expose a generic request method. Its interface is:
 ```ts
 type T3ActivityReader = {
   readShell(): Promise<T3ShellObservation>;
-  readThread(input: { threadId: string; turnLimit: number }): Promise<T3ThreadObservation>;
+  readThread(input: {
+    threadId: string;
+    turnLimit: number;
+  }): Promise<T3ThreadObservation>;
 };
 ```
 
@@ -135,18 +138,23 @@ Project reads fail and never reuse stale observations as if they were current.
 type Run = {
   id: string;
   projectId: string;
-  taskId?: string;
-  subtaskId?: string;
-  state: "observed" | "active" | "waiting_on_human" | "succeeded" | "failed" | "cancelled";
+  state:
+    | "observed"
+    | "active"
+    | "waiting_on_human"
+    | "succeeded"
+    | "failed"
+    | "cancelled";
   createdAt: Date;
   updatedAt: Date;
 };
 ```
 
-The initial integration creates a Run when a T3 thread is explicitly linked. Run state describes
-the attempt, not Task/Subtask Work State. Removing a Task or Subtask clears that target reference
-but retains the Run under its Project for provenance. Removing a Project cascades its Runs, Code
-Sessions, and Evidence with the existing confirmed Project deletion.
+The initial integration creates a Run when a T3 thread first receives a Work Association. Run state
+describes the execution attempt, not Task/Subtask Work State. Work Associations identify every
+Factory target the Run's Code Session contributes to. Removing a Task or Subtask removes its
+associations but retains the Run under its Project for provenance. Removing a Project cascades its
+Runs, Code Sessions, Work Associations, and Evidence with the existing confirmed Project deletion.
 
 T3 never updates `Run.state`. A newly linked thread creates an `observed` Run, and Run state changes
 only through an explicit Factory operation introduced with a defined caller and proof obligation.
@@ -178,11 +186,28 @@ type CodeSession = {
 ```
 
 `provider + externalThreadId` is unique. Refresh updates the normalized observation in place while
-preserving its Run and explicit Factory target. Source timestamps and sequence prevent older
+preserving its Run and Work Associations. Source timestamps and sequence prevent older
 snapshots from replacing newer ones. Sequences are compared only within the same T3 stream; a
 stable digest deduplicates observations when a bounded detail response has no comparable sequence.
 Session state and latest-turn state remain separate because an idle thread may have a recently
 completed turn.
+
+### Work Association
+
+```ts
+type CodeSessionAssociation = {
+  id: string;
+  codeSessionId: string;
+  taskId: string;
+  subtaskId?: string;
+  createdAt: Date;
+};
+```
+
+A Code Session has zero, one, or many Work Associations; a Task or Subtask may likewise have many
+associated sessions. Creating the same association twice is idempotent. Removing one association
+does not remove the Code Session, its Run, evidence, or any other association. Persisted one-target
+Run records migrate to one equivalent Work Association when first hydrated.
 
 ### Evidence
 
@@ -193,11 +218,12 @@ deduplicated by source identity plus sequence.
 
 ## Matching
 
-Matching produces candidates; only an explicit link creates or changes a Run target.
+Matching produces candidates. A human explicit action or an agent's deterministic operating loop
+may create a Work Association; neither changes a Run target or Factory workflow state.
 
 Candidate priority is:
 
-1. Existing explicit `CodeSession` link.
+1. Existing Work Associations.
 2. Exact canonical pull-request URL matching a Task or Subtask.
 3. Exact T3 repository identity plus one unique Factory Task branch.
 4. Exact workspace-root association explicitly stored for a Factory Project, plus one unique Task
@@ -207,7 +233,8 @@ Title, message, file-name, and language-model similarity are not deterministic m
 shown later as low-confidence suggestions but cannot create links.
 
 Zero matches is `unmatched`; multiple matches at any level is `ambiguous`. Factory fails closed and
-shows the candidates instead of guessing.
+shows the candidates instead of guessing. Automatic agent association also requires exactly one
+current running T3 thread whose branch matches the uniquely resolved Factory Task branch.
 
 Factory currently has no Git origin remote of its own, so Project-to-T3 association must support an
 explicit T3 external project ID or workspace root rather than assuming every Project has a Git
@@ -243,8 +270,10 @@ types do not leak into the core application.
 Required operations:
 
 - list observed T3 activity for one Factory Project;
-- link one T3 thread to one Task or Subtask, creating/reusing its Run;
-- unlink a target without deleting the observed session record;
+- add an idempotent Work Association from one T3 thread to a Task or Subtask, creating/reusing its
+  Run and Code Session;
+- remove one association without deleting the observed session record, Run, evidence, or other
+  associations;
 - list reconciliation findings;
 - refresh normalized observations from a supplied shell observation.
 
@@ -256,9 +285,12 @@ Add a separate `t3` router so slow external reads never block `projects.detail`:
 - `t3.projectActivity`
 - `t3.threadDetail`
 - `t3.linkThread`
+- `t3.autoLinkThread`
 - `t3.unlinkThread`
 
-Only `status`, `projectActivity`, and `threadDetail` call T3. Link/unlink mutate Factory state only.
+Only `status`, `projectActivity`, `threadDetail`, and `autoLinkThread` call T3. Link/unlink mutate
+Factory association metadata only; automatic linking performs T3 reads followed by a local
+Factory mutation only when it has one current branch match.
 
 ### CLI
 
@@ -266,7 +298,8 @@ All commands return one `schemaVersion: 1` JSON object:
 
 - `project t3-status --project-id ... --json`
 - `session link --thread-id ... --project-id ... [--task-id ...] [--subtask-id ...] --json`
-- `session unlink --thread-id ... --json`
+- `session auto-link --project-id ... --branch-name ... [--task-id ...] [--subtask-id ...] --json`
+- `session unlink --thread-id ... [--association-id ...] --json`
 - `session detail --thread-id ... --json`
 
 CLI reads use the same adapter and normalized result as tRPC. CLI output never includes raw
@@ -280,9 +313,10 @@ shows:
 - current connection state and last successful fetch time;
 - running, needs-attention, linked, unmatched, and ambiguous counts;
 - thread title, T3 state, project, branch, last activity, pending-input/approval indicators, linked
-  PR, and linked Factory target;
+  PR, and every linked Factory target;
 - actionable reconciliation text;
-- explicit Link, Change link, and Unlink controls affecting Factory only.
+- a collapsed **Manage associations** fallback for explicit add/remove controls affecting Factory
+  only.
 
 The section must remain usable at 390 px and must not make Task rows transcript-heavy. Core Project
 planning remains visible when T3 is unavailable.
@@ -302,9 +336,10 @@ After deterministic ingestion is proven, DeepSeek V4 Flash may receive a bounded
 of normalized activities, diff summaries, and the last assistant summary. It may return a
 schema-validated progress summary, possible target, confidence, reasons, and evidence references.
 
-Model output remains advisory. It cannot create a link, change Run or Work State, submit a Status
-Report, or verify work. Raw prompts, transcripts, secrets, and unrestricted tool payloads are not
-sent by default.
+Model output remains advisory. It cannot create an association, change Run or Work State, submit a
+Status Report, or verify work. Deterministic agent operating-loop logic may create an association
+without using model output. Raw prompts, transcripts, secrets, and unrestricted tool payloads are
+not sent by default.
 
 ## Acceptance criteria
 
@@ -314,18 +349,20 @@ sent by default.
    returns the correct explicit state and core Project/Task reads remain available.
 3. No credential appears in repository files, SQLite state, plist output, browser/tRPC/CLI payloads,
    thrown errors, or captured logs.
-4. An explicit thread link persists across process restart, is unique by T3 thread ID, and targets
-   only records inside the selected Project.
-5. Exact PR and unique repository/branch matches are suggested; missing and ambiguous matches fail
-   closed and never create links.
+4. Existing one-target links migrate without loss; each unique T3 thread persists with zero, one,
+   or many idempotent Work Associations targeting only records inside its selected Project.
+5. Exact PR and unique repository/branch matches are suggested. The agent operating loop associates
+   its session only when Factory context and one current running T3 branch match are unique; missing
+   and ambiguous matches fail closed.
 6. Newer T3 observations can create deterministic reconciliation findings, but cannot change Task
    or Subtask Work State, create a Status Report, or create Verification.
 7. Project deletion cascades owned integration records; Task/Subtask deletion preserves the Run and
    clears only the deleted target reference.
 8. CLI and tRPC expose equivalent normalized status, activity, links, and findings with stable JSON
    contracts.
-9. The PWA labels T3 data as observed activity, displays freshness and failures, supports explicit
-   link/unlink, and passes desktop and 390 px interaction/layout checks.
+9. The PWA labels T3 data as observed activity, displays freshness, failures, and all current
+   associations, keeps manual controls collapsed by default, and passes desktop and 390 px
+   interaction/layout checks.
 10. Database integrity, existing report/verification behavior, GitHub status behavior, formatting,
     typecheck, build, and the full test suite continue to pass.
 
@@ -348,6 +385,12 @@ Required live proof:
 - link one Factory coding thread to the Factory integration Task and show a reconciliation finding;
 - verify the stable port-3000 PWA at desktop and 390 px without exposing transcript content or a
   credential.
+
+The one-target-to-association migration must run only after the previous Factory writer has
+stopped. The old release stores a whole-state JSON snapshot and cannot preserve the new association
+field if it writes concurrently. `bun run service:deploy` satisfies this boundary by booting out the
+old LaunchAgent before bootstrapping the new release; development and migration proof must use an
+isolated database copy while the stable service remains active.
 
 Deployment remains forward-only through `bun run service:deploy`. Stop if schema hydration loses
 existing records, a T3 read can mutate remote state, the credential reaches a client payload/log,

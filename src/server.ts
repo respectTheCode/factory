@@ -231,9 +231,26 @@ function createRouter(
           }),
         )
         .mutation(({ input }) => t3Coordinator.linkThread(input)),
+      autoLinkThread: trpc.procedure
+        .input(
+          z.object({
+            branchName: z.string().min(1),
+            projectId: z.string().min(1),
+            taskId: z.string().min(1).optional(),
+            subtaskId: z.string().min(1).optional(),
+          }),
+        )
+        .mutation(({ input }) => t3Coordinator.autoLinkThread(input)),
       unlinkThread: trpc.procedure
-        .input(z.object({ threadId: z.string().min(1) }))
-        .mutation(({ input }) => t3Coordinator.unlinkThread(input.threadId)),
+        .input(
+          z.object({
+            associationId: z.string().min(1).optional(),
+            threadId: z.string().min(1),
+          }),
+        )
+        .mutation(({ input }) =>
+          t3Coordinator.unlinkThread(input.threadId, input.associationId),
+        ),
     }),
     subtasks: trpc.router({
       create: trpc.procedure

@@ -276,17 +276,11 @@ function observedActivityView(
     targets,
     threads: result.threads.map((thread) => ({
       association: {
+        links: thread.association.links.map((link) => ({
+          linkId: link.linkId,
+          target: targetForId(link.target.id) ?? link.target,
+        })),
         state: thread.association.state,
-        ...(thread.association.linkId
-          ? { linkId: thread.association.linkId }
-          : {}),
-        ...(thread.association.target
-          ? {
-              target:
-                targetForId(thread.association.target.id) ??
-                thread.association.target,
-            }
-          : {}),
         ...(thread.association.candidateLabels
           ? { candidateLabels: thread.association.candidateLabels }
           : thread.association.candidateIds
@@ -725,13 +719,16 @@ function Dashboard() {
     }
   };
 
-  const unlinkT3Thread = async (threadId: string) => {
+  const unlinkT3Thread = async (threadId: string, associationId?: string) => {
     const client = trpc.current;
     const projectId = projectDetail?.id;
     if (!client || !projectId || !snapshot.canMutate || busy) return;
     setBusy(true);
     try {
-      await client.t3.unlinkThread.mutate({ threadId });
+      await client.t3.unlinkThread.mutate({
+        threadId,
+        ...(associationId === undefined ? {} : { associationId }),
+      });
       await refreshProject(projectId);
       await refreshT3Project(projectId);
     } finally {

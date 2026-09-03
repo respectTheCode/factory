@@ -52,21 +52,24 @@ describe("observed activity presentation", () => {
       "This does not represent current execution state.",
     );
     expect(source).toContain("Observation only. It does not change Factory");
-    expect(source).toContain("Linking changes Factory metadata only");
+    expect(source).toMatch(/Linking changes\s+Factory metadata only/);
     expect(source).toContain("onLinkThread");
     expect(source).toContain("onUnlinkThread");
   });
 
-  test("renders explicit details and association controls for thread rows", () => {
+  test("keeps association summaries visible and manual controls collapsed", () => {
     expect(source).toContain("View details");
+    expect(source).toContain('className="observed-thread-links"');
+    expect(source).toContain('className="observed-association-manager"');
+    expect(source).toContain("<summary>Manage associations</summary>");
+    expect(source).toContain("Agents normally associate their T3");
     expect(source).toContain("Choose Factory target");
     expect(source).toContain(
       "aria-label={`Factory target for ${thread.title}`}",
     );
-    expect(source).toContain('{linked ? "Change link" : "Link"}');
-    expect(source).toContain(
-      ">\n                      Unlink\n                    </button>",
-    );
+    expect(source).toContain("Add association");
+    expect(source).toContain("Remove");
+    expect(source).toContain("association.links.map");
     expect(source).toContain("threadDetailLoadingIds");
     expect(source).toContain("candidateLabels");
     expect(source).toContain("Metadata only; transcript text is intentionally");
@@ -88,11 +91,12 @@ describe("observed activity presentation", () => {
   test("keeps link and unlink actions explicit and maps Factory target kinds", () => {
     expect(mainSource).toContain("client.t3.linkThread.mutate");
     expect(mainSource).toContain("client.t3.unlinkThread.mutate");
+    expect(mainSource).toContain("associationId");
     expect(mainSource).toContain('target.kind === "task"');
     expect(mainSource).toContain("{ taskId: target.id }");
     expect(mainSource).toContain("{ subtaskId: target.id }");
-    expect(source).toContain(
-      "Linking changes Factory metadata only; it does not control T3",
+    expect(source).toMatch(
+      /Linking changes\s+Factory metadata only; it does not control T3/,
     );
   });
 
@@ -102,6 +106,8 @@ describe("observed activity presentation", () => {
     expect(stylesheet).toContain("grid-template-columns: repeat(5");
     expect(stylesheet).toContain("@media (max-width: 540px)");
     expect(stylesheet).toContain(".observed-link-control");
+    expect(stylesheet).toContain(".observed-association-manager");
+    expect(stylesheet).toContain(".observed-thread-links");
     expect(stylesheet).toContain("grid-template-columns: minmax(0, 1fr) auto");
     expect(stylesheet).toContain("overflow-wrap: anywhere");
   });

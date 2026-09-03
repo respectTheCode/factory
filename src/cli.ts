@@ -536,9 +536,28 @@ async function main(args: string[]): Promise<void> {
     return;
   }
 
+  if (resource === "session" && action === "auto-link") {
+    output({
+      link: await t3Coordinator.autoLinkThread({
+        branchName: requiredFlag(parsed.flags, "branch-name"),
+        ...(parsed.flags.get("subtask-id") === undefined
+          ? {}
+          : { subtaskId: parsed.flags.get("subtask-id") }),
+        ...(parsed.flags.get("task-id") === undefined
+          ? {}
+          : { taskId: parsed.flags.get("task-id") }),
+        projectId: requiredFlag(parsed.flags, "project-id"),
+      }),
+    });
+    return;
+  }
+
   if (resource === "session" && action === "unlink") {
     output({
-      link: t3Coordinator.unlinkThread(requiredFlag(parsed.flags, "thread-id")),
+      link: t3Coordinator.unlinkThread(
+        requiredFlag(parsed.flags, "thread-id"),
+        parsed.flags.get("association-id"),
+      ),
     });
     return;
   }
@@ -788,7 +807,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link|t3-status, session detail|link|unlink, task create|update|detail|state|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify",
+    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|state|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify",
   );
 }
 

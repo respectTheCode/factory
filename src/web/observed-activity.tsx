@@ -29,9 +29,13 @@ export type ObservedTarget = {
   label: string;
 };
 
+export type ObservedAssociationLink = {
+  linkId: string;
+  target: ObservedTarget;
+};
+
 export type ObservedAssociation = {
-  linkId?: string;
-  target?: ObservedTarget;
+  links: ObservedAssociationLink[];
   state: "linked" | "unmatched" | "ambiguous";
   candidateLabels?: string[];
 };
@@ -220,11 +224,15 @@ export function ObservedActivitySection({
   const sourceNeedsReview = unavailable || Boolean(connection.warning);
 
   const linkThread = (thread: ObservedThread) => {
-    const targetId =
-      pendingTargets[thread.threadId] ?? thread.association.target?.id;
+    const targetId = pendingTargets[thread.threadId];
     const target = targets.find((candidate) => candidate.id === targetId);
     if (!target || !onLinkThread) return;
-    void onLinkThread(thread.threadId, target);
+    void Promise.resolve(onLinkThread(thread.threadId, target)).then(() =>
+      setPendingTargets((current) => ({
+        ...current,
+        [thread.threadId]: "",
+      })),
+    );
   };
 
   return (
@@ -318,7 +326,8 @@ export function ObservedActivitySection({
         <div aria-label="T3 threads" className="observed-thread-list">
           {threads.map((thread) => {
             const association = thread.association;
-            const linked = association.state === "linked" && association.target;
+            const linked =
+              association.state === "linked" && association.links.length > 0;
             const loading =
               threadDetailLoadingIds?.has(thread.threadId) ?? false;
             const threadTime = formatObservedTime(
@@ -336,7 +345,9 @@ export function ObservedActivitySection({
                     className={`observed-thread-association observed-thread-association-${association.state}`}
                   >
                     {linked
-                      ? `Linked to ${association.target?.label}`
+                      ? association.links.length === 1
+                        ? `Linked to ${association.links[0]?.target.label}`
+                        : `Linked to ${association.links.length} targets`
                       : association.state === "ambiguous"
                         ? "Ambiguous target"
                         : "Unmatched"}
@@ -394,6 +405,17 @@ export function ObservedActivitySection({
                     </p>
                   )}
 
+                {linked && (
+                  <ul
+                    aria-label={`Factory associations for ${thread.title}`}
+                    className="observed-thread-links"
+                  >
+                    {association.links.map((link) => (
+                      <li key={link.linkId}>{link.target.label}</li>
+                    ))}
+                  </ul>
+                )}
+
                 <div className="observed-thread-actions">
                   {onOpenThreadDetail && (
                     <button
@@ -405,58 +427,76 @@ export function ObservedActivitySection({
                       {loading ? "Loading details…" : "View details"}
                     </button>
                   )}
-                  {onLinkThread && (
-                    <div className="observed-link-control">
-                      <span className="visually-hidden">Factory target</span>
-                      <select
-                        aria-label={`Factory target for ${thread.title}`}
-                        disabled={!canMutate || busy || targets.length === 0}
-                        onChange={(event) =>
-                          setPendingTargets((current) => ({
-                            ...current,
-                            [thread.threadId]: event.target.value,
-                          }))
-                        }
-                        value={
-                          pendingTargets[thread.threadId] ??
-                          association.target?.id ??
-                          ""
-                        }
-                      >
-                        <option value="">Choose Factory target</option>
-                        {targets.map((target) => (
-                          <option key={target.id} value={target.id}>
-                            {target.label}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        disabled={
-                          !canMutate ||
-                          busy ||
-                          !(
-                            pendingTargets[thread.threadId] ??
-                            association.target?.id
-                          )
-                        }
-                        onClick={() => linkThread(thread)}
-                        type="button"
-                      >
-                        {linked ? "Change link" : "Link"}
-                      </button>
-                    </div>
-                  )}
-                  {linked && onUnlinkThread && (
-                    <button
-                      className="secondary"
-                      disabled={!canMutate || busy}
-                      onClick={() =>
-                        void onUnlinkThread(thread.threadId, association.linkId)
-                      }
-                      type="button"
-                    >
-                      Unlink
-                    </button>
+                  {(onLinkThread || (linked && onUnlinkThread)) && (
+                    <details className="observed-association-manager">
+                      <summary>Manage associations</summary>
+                      <p>
+                        Manual fallback. Agents normally associate their T3
+                        session when they resolve Factory work. Linking changes
+                        Factory metadata only; it does not control T3 or change
+                        Work State.
+                      </p>
+                      {onLinkThread && (
+                        <div className="observed-link-control">
+                          <span className="visually-hidden">
+                            Factory target
+                          </span>
+                          <select
+                            aria-label={`Factory target for ${thread.title}`}
+                            disabled={
+                              !canMutate || busy || targets.length === 0
+                            }
+                            onChange={(event) =>
+                              setPendingTargets((current) => ({
+                                ...current,
+                                [thread.threadId]: event.target.value,
+                              }))
+                            }
+                            value={pendingTargets[thread.threadId] ?? ""}
+                          >
+                            <option value="">Choose Factory target</option>
+                            {targets.map((target) => (
+                              <option key={target.id} value={target.id}>
+                                {target.label}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            disabled={
+                              !canMutate ||
+                              busy ||
+                              !pendingTargets[thread.threadId]
+                            }
+                            onClick={() => linkThread(thread)}
+                            type="button"
+                          >
+                            Add association
+                          </button>
+                        </div>
+                      )}
+                      {linked && onUnlinkThread && (
+                        <ul className="observed-association-removals">
+                          {association.links.map((link) => (
+                            <li key={link.linkId}>
+                              <span>{link.target.label}</span>
+                              <button
+                                className="secondary"
+                                disabled={!canMutate || busy}
+                                onClick={() =>
+                                  void onUnlinkThread(
+                                    thread.threadId,
+                                    link.linkId,
+                                  )
+                                }
+                                type="button"
+                              >
+                                Remove
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </details>
                   )}
                 </div>
                 {detail && (
@@ -507,10 +547,6 @@ export function ObservedActivitySection({
                     )}
                   </div>
                 )}
-                <p className="observed-thread-authority">
-                  Linking changes Factory metadata only; it does not control T3
-                  or change Work State.
-                </p>
               </article>
             );
           })}

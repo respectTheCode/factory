@@ -121,7 +121,7 @@ describe("T3 session observations", () => {
     });
   });
 
-  test("explicitly links and unlinks a thread while keeping Run state separate from Work State", () => {
+  test("supports zero-to-many idempotent work associations while keeping Run state separate from Work State", () => {
     const { app } = createApplication();
     const project = app.createProject({ name: "Watchtower" });
     const task = app.createTask({
@@ -132,6 +132,10 @@ describe("T3 session observations", () => {
     const subtask = app.createSubtask({
       name: "Implement the shell",
       taskId: task.id,
+    });
+    const secondTask = app.createTask({
+      name: "Document the shell",
+      projectId: project.id,
     });
     const input = observation(project.id);
     app.refreshT3Observations({ observations: [input] });
@@ -144,24 +148,52 @@ describe("T3 session observations", () => {
     expect(linked.run).toMatchObject({
       projectId: project.id,
       state: "observed",
+    });
+    expect(linked.association).toMatchObject({
       subtaskId: subtask.id,
       taskId: task.id,
     });
     expect(linked.codeSession).not.toHaveProperty("projectId");
     expect(app.getTaskStatus(task.id)).toMatchObject({ taskState: "planned" });
     expect(app.getT3ThreadDetail("t3-thread-1")).toMatchObject({
+      associations: [{ subtaskId: subtask.id, taskId: task.id }],
       codeSession: { runId: linked.run.id },
       run: { id: linked.run.id },
     });
 
-    const unlinked = app.unlinkT3Thread({ externalThreadId: "t3-thread-1" });
+    const duplicate = app.linkT3Thread({
+      observation: input,
+      subtaskId: subtask.id,
+    });
+    expect(duplicate.association.id).toBe(linked.association.id);
+
+    const second = app.linkT3Thread({
+      observation: input,
+      taskId: secondTask.id,
+    });
+    expect(app.getT3ThreadDetail("t3-thread-1").associations).toHaveLength(2);
+    expect(() =>
+      app.unlinkT3Thread({ externalThreadId: "t3-thread-1" }),
+    ).toThrow("multiple associations");
+
+    const unlinked = app.unlinkT3Thread({
+      associationId: linked.association.id,
+      externalThreadId: "t3-thread-1",
+    });
     expect(unlinked.run).toMatchObject({
       id: linked.run.id,
       state: "observed",
     });
-    expect(unlinked.run).not.toHaveProperty("taskId");
-    expect(unlinked.run).not.toHaveProperty("subtaskId");
-    expect(app.getT3ThreadDetail("t3-thread-1")).toHaveProperty("codeSession");
+    expect(unlinked.association.id).toBe(linked.association.id);
+    expect(app.getT3ThreadDetail("t3-thread-1")).toMatchObject({
+      associations: [{ id: second.association.id, taskId: secondTask.id }],
+      codeSession: { id: linked.codeSession.id },
+    });
+
+    app.unlinkT3Thread({
+      associationId: second.association.id,
+      externalThreadId: "t3-thread-1",
+    });
     expect(
       app
         .listReconciliationFindings(project.id)

@@ -40,10 +40,14 @@ export type T3ObservedTarget = {
   label: string;
 };
 
+export type T3ObservedAssociationLink = {
+  linkId: string;
+  target: T3ObservedTarget;
+};
+
 export type T3ObservedAssociation = {
   state: "linked" | "unmatched" | "ambiguous";
-  linkId?: string;
-  target?: T3ObservedTarget;
+  links: T3ObservedAssociationLink[];
   candidateIds?: string[];
   candidateLabels?: string[];
 };
@@ -100,6 +104,16 @@ export type T3StatusResult = {
   unmatchedProjectCount?: number;
   ambiguousProjectCount?: number;
   counts: T3ObservedActivity["counts"];
+  error?: string;
+};
+
+export type T3AutoLinkResult = {
+  status: "linked" | "unmatched" | "ambiguous" | T3TransportState;
+  projectId: string;
+  branchName: string;
+  candidateThreadIds: string[];
+  threadId?: string;
+  associationId?: string;
   error?: string;
 };
 
@@ -353,13 +367,22 @@ function associationFor(
   findings: ReconciliationFinding[],
   targets: T3ObservedTarget[],
 ): T3ObservedAssociation {
-  const targetId = item.run?.subtaskId ?? item.run?.taskId;
-  const target = targetById(targets, targetId);
-  if (item.codeSession && target) {
+  const links = item.associations
+    .map((association) => {
+      const target = targetById(
+        targets,
+        association.subtaskId ?? association.taskId,
+      );
+      return target ? { linkId: association.id, target } : undefined;
+    })
+    .filter(
+      (link): link is { linkId: string; target: T3ObservedTarget } =>
+        link !== undefined,
+    );
+  if (links.length > 0) {
     return {
-      linkId: item.codeSession.id,
+      links,
       state: "linked",
-      target,
     };
   }
   const finding = findings.find(
@@ -377,10 +400,11 @@ function associationFor(
     return {
       candidateIds: [...finding.candidateIds],
       ...(candidateLabels.length === 0 ? {} : { candidateLabels }),
+      links: [],
       state: "ambiguous",
     };
   }
-  return { state: "unmatched" };
+  return { links: [], state: "unmatched" };
 }
 
 function viewThread(
@@ -806,10 +830,10 @@ export function createT3Coordinator({
               : { worktreePath: thread.worktreePath }),
             association:
               resolution.status === "ambiguous"
-                ? { state: "ambiguous" }
+                ? { links: [], state: "ambiguous" }
                 : resolution.status === "unmatched"
-                  ? { state: "unmatched" }
-                  : { state: "unmatched" },
+                  ? { links: [], state: "unmatched" }
+                  : { links: [], state: "unmatched" },
             externalProjectId: project.id,
             hasPendingApprovals: thread.hasPendingApprovals,
             hasPendingUserInput: thread.hasPendingUserInput,
@@ -826,8 +850,7 @@ export function createT3Coordinator({
           else {
             try {
               const existing = application.getT3ThreadDetail(thread.id);
-              if (existing.run?.taskId || existing.run?.subtaskId)
-                counts.linked += 1;
+              if (existing.associations.length > 0) counts.linked += 1;
               else counts.unmatched += 1;
             } catch {
               counts.unmatched += 1;
@@ -1065,8 +1088,66 @@ export function createT3Coordinator({
       });
     },
 
-    unlinkThread(threadId: string) {
-      return application.unlinkT3Thread({ externalThreadId: threadId });
+    async autoLinkThread({
+      branchName,
+      projectId,
+      taskId,
+      subtaskId,
+    }: {
+      branchName: string;
+      projectId: string;
+      taskId?: string;
+      subtaskId?: string;
+    }): Promise<T3AutoLinkResult> {
+      const normalizedBranch = branchName.trim();
+      if (!normalizedBranch) {
+        throw new Error("Automatic T3 association requires a branch name.");
+      }
+      const activity = await this.projectActivity(projectId);
+      if (activity.status !== "ok") {
+        return {
+          branchName: normalizedBranch,
+          candidateThreadIds: [],
+          ...(activity.error === undefined ? {} : { error: activity.error }),
+          projectId,
+          status: activity.status,
+        };
+      }
+      const candidates = activity.threads.filter(
+        (thread) =>
+          thread.branch === normalizedBranch && threadIsRunning(thread),
+      );
+      if (candidates.length !== 1) {
+        return {
+          branchName: normalizedBranch,
+          candidateThreadIds: candidates.map((thread) => thread.threadId),
+          projectId,
+          status: candidates.length === 0 ? "unmatched" : "ambiguous",
+        };
+      }
+      const thread = candidates[0];
+      if (!thread) throw new Error("Automatic T3 association lost its match.");
+      const linked = this.linkThread({
+        projectId,
+        threadId: thread.threadId,
+        ...(subtaskId === undefined ? {} : { subtaskId }),
+        ...(taskId === undefined ? {} : { taskId }),
+      });
+      return {
+        associationId: linked.association.id,
+        branchName: normalizedBranch,
+        candidateThreadIds: [thread.threadId],
+        projectId,
+        status: "linked",
+        threadId: thread.threadId,
+      };
+    },
+
+    unlinkThread(threadId: string, associationId?: string) {
+      return application.unlinkT3Thread({
+        ...(associationId === undefined ? {} : { associationId }),
+        externalThreadId: threadId,
+      });
     },
   };
 }

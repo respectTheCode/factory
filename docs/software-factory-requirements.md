@@ -13,13 +13,13 @@ Hermes, Slack, or Recall.
 
 ## 2. V1 ownership model
 
-| Information | System of record | Factory v1 responsibility |
-|---|---|---|
-| Playlister roadmap and development planning | Notion | Link the relevant record from a Factory Project or Task |
-| Grail roadmap and development tracking | Linear | Link the relevant record from a Factory Project or Task |
-| Normal non-code agent work | Hermes | Out of scope |
-| Coding sessions | T3 Code today; Herdr may coordinate future execution | Read session metadata as external observation; never infer completion |
-| Project operations | Factory | Projects, Tasks, Subtasks, Status Reports, Verifications, and Tracker Links |
+| Information                                 | System of record                                     | Factory v1 responsibility                                                   |
+| ------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------- |
+| Playlister roadmap and development planning | Notion                                               | Link the relevant record from a Factory Project or Task                     |
+| Grail roadmap and development tracking      | Linear                                               | Link the relevant record from a Factory Project or Task                     |
+| Normal non-code agent work                  | Hermes                                               | Out of scope                                                                |
+| Coding sessions                             | T3 Code today; Herdr may coordinate future execution | Read session metadata as external observation; never infer completion       |
+| Project operations                          | Factory                                              | Projects, Tasks, Subtasks, Status Reports, Verifications, and Tracker Links |
 
 Factory is additive. A Tracker Link does not copy, update, or replace its Notion or Linear
 record. A Status Report does not replace Kevin's Verification.
@@ -78,9 +78,10 @@ record. A Status Report does not replace Kevin's Verification.
 - **FR-017** — Factory may use T3 Code's authenticated read-only orchestration interface to
   observe project, thread, session, turn, branch, worktree, approval, input, checkpoint, and pull
   request metadata. It must not call T3 mutation, terminal, or dispatch interfaces.
-- **FR-018** — A T3 Code Session may be explicitly associated with a durable Factory Run and a
-  Task or Subtask. Deterministic repository, branch, and pull-request evidence may produce a
-  suggested association, but missing or ambiguous matches must fail closed and never create one.
+- **FR-018** — A T3 Code Session may have zero, one, or many Factory Work Associations to Tasks or
+  Subtasks. A coding agent may add an idempotent association when its Factory Project/Task context
+  and one current running T3 branch match both resolve uniquely. Missing or ambiguous matches must
+  fail closed; manual add/remove controls remain a collapsed fallback.
 - **FR-019** — T3 observations and reconciliation findings must remain visibly separate from
   Factory Work State, Status Reports, Attention, and human Verification. They may identify stale
   or contradictory planning, but must never promote, complete, report, or verify work.
@@ -222,8 +223,10 @@ record. A Status Report does not replace Kevin's Verification.
     still put the parent back into planned or move it to active directly. Blocked and
     awaiting-verification transitions cannot be saved without their actionable reason.
 12. **Observed execution:** Factory reads live T3 session metadata with a server-only read token,
-    links one thread explicitly to Factory work, and shows a stale-report or branch finding without
-    changing the Task, Subtask, Status Report, or Verification.
+    lets an agent associate its uniquely resolved thread with one or more Factory targets, and
+    shows stale-report or branch findings without changing the Task, Subtask, Status Report, or
+    Verification. Missing and ambiguous threads remain unassociated for the collapsed manual
+    fallback.
 
 ## 6. Later, not in the T3 observation slice
 

@@ -61,15 +61,22 @@ _Avoid_: agent approval
 ## Execution and evidence
 
 **Run**:
-A durable Factory record of one attempt to advance a Task. It outlives its worker processes
-and owns execution state, evidence, and attention requests.
+A durable Factory record of one execution attempt within a Project. It outlives its worker
+processes and owns execution state, evidence, and attention requests; Work Associations identify
+the Tasks or Subtasks the attempt contributes to.
 _Avoid_: chat, session
 
 **Code Session**:
 A T3-observed or Herdr-managed Claude, Codex, or OpenCode session attached to a Run. It is
 execution detail, not the Run's identity or completion evidence. Observing a running or completed
-session never changes Work State or creates a Status Report.
+session never changes Work State or creates a Status Report. A Code Session may have zero, one,
+or many Work Associations.
 _Avoid_: run, task
+
+**Work Association**:
+A Factory-owned relationship between a Code Session and a Task or Subtask. Associations are
+many-to-many metadata and do not imply progress, completion, or Verification.
+_Avoid_: assignment, ownership, completion link
 
 **External Observation**:
 A bounded, freshness-stamped fact read from another system, such as T3 session state or GitHub

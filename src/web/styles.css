@@ -2347,7 +2347,6 @@ option {
 
 .observed-authority-copy,
 .observed-freshness,
-.observed-thread-authority,
 .observed-finding-authority {
   color: var(--ink-dim);
   font-size: 0.74rem;
@@ -2535,6 +2534,24 @@ option {
   overflow-wrap: anywhere;
 }
 
+.observed-thread-links {
+  color: var(--ink-dim);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.7rem;
+  gap: 5px;
+  list-style: none;
+  margin-top: 8px;
+  padding: 0;
+}
+
+.observed-thread-links li {
+  border: 1px solid rgba(47, 190, 107, 0.35);
+  border-radius: 999px;
+  overflow-wrap: anywhere;
+  padding: 3px 7px;
+}
+
 .observed-thread-pr a {
   color: var(--sig-info);
   font-size: 0.72rem;
@@ -2574,11 +2591,45 @@ option {
   flex: 0 0 auto;
 }
 
-.observed-thread-authority {
-  border-top: 1px solid var(--rule);
-  font-size: 0.66rem;
-  margin-top: 10px;
-  padding-top: 7px;
+.observed-association-manager {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  min-width: min(100%, 360px);
+  padding: 7px 8px;
+}
+
+.observed-association-manager summary {
+  color: var(--ink-dim);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.observed-association-manager > p {
+  color: var(--ink-faint);
+  font-size: 0.68rem;
+  line-height: 1.35;
+  margin: 7px 0;
+}
+
+.observed-association-removals {
+  display: grid;
+  gap: 5px;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.observed-association-removals li {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.observed-association-removals span {
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
 }
 
 .observed-thread-detail {
@@ -2718,5 +2769,9 @@ option {
 
   .observed-link-control button {
     width: auto;
+  }
+
+  .observed-association-manager {
+    width: 100%;
   }
 }

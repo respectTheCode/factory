@@ -160,6 +160,35 @@ describe("T3 reconciliation", () => {
     );
   });
 
+  test("reconciles every target associated with one session", () => {
+    const findings = computeReconciliationFindings({
+      links: [
+        {
+          externalThreadId: "t3-thread",
+          provider: "t3",
+          taskId: "task-1",
+        },
+        {
+          externalThreadId: "t3-thread",
+          provider: "t3",
+          taskId: "task-2",
+        },
+      ],
+      now: sourceUpdatedAt,
+      sessions: [session()],
+      targets: [
+        target({ taskId: "task-1" }),
+        target({ taskId: "task-2", taskName: "Document Watchtower" }),
+      ],
+    });
+
+    expect(
+      findings
+        .filter((finding) => finding.kind === "planned_but_running")
+        .map((finding) => finding.taskId),
+    ).toEqual(["task-1", "task-2"]);
+  });
+
   test("canonicalizes equivalent pull-request and repository identifiers", () => {
     const pullRequest = matchReconciliationTarget(
       session({

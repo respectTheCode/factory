@@ -165,7 +165,10 @@ one-command restore remain deployment work rather than application behavior.
 
 Independent SQLite clients refresh persisted state before reads and writes. This keeps a live
 PWA server and a CLI/skill client from silently overwriting each other when both use the same
-Factory database.
+Factory database when they share the same schema. A schema migration that adds fields to the
+whole-state snapshot must not run alongside an older Factory process, because the older writer
+cannot preserve fields it does not know. Stop the old service before the first migrated write, or
+exercise the migration against an isolated database copy.
 
 Start the repository contract with an in-memory adapter, then run the same behavior suite
 against Bun's built-in SQLite adapter. Use a temporary SQLite file only for process-restart
@@ -180,7 +183,10 @@ noninteractive command may submit a Status Report but cannot verify or complete 
 the initial skill command and hook payload after the CLI contract is stable. The current agent
 loop reads `project attention`, `task detail`, and `subtask history`, then uses `subtask report`
 for `in_progress`, `blocked`, or `complete`, supplying `--reason` for blocked and complete
-reports; `subtask verify` remains human-only. Tracker links
+reports. After Project/Task context resolves uniquely, it uses `session auto-link` to associate the
+one current running T3 thread on the same branch; missing or multiple thread matches fail closed,
+and selecting a Subtask may add another association without replacing existing ones. `subtask
+verify` remains human-only. Tracker links
 can be attached through the CLI without writing to Notion or Linear. `task archive` and
 `subtask archive` provide quick `released`/`wont_do` dispositions, with matching restore
 commands. Include a `schemaVersion` in machine JSON before skills depend on it.

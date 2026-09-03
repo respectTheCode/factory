@@ -39,6 +39,7 @@ bun run src/cli.ts project create --name "Project name" \
 bun run src/cli.ts project update --project-id PROJECT_ID \
   --git-origin-url "git@github.com:org/repository.git" --database "$FACTORY_DB"
 bun run src/cli.ts project status --project-id PROJECT_ID --json --database "$FACTORY_DB"
+bun run src/cli.ts project t3-status --project-id PROJECT_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts project portfolio --json --database "$FACTORY_DB"
 bun run src/cli.ts project link --project-id PROJECT_ID --system notion --stable-id PRO-1412 --url "https://…" --database "$FACTORY_DB"
 bun run src/cli.ts task create --project-id PROJECT_ID --name "Task name" --database "$FACTORY_DB"
@@ -77,6 +78,12 @@ bun run src/cli.ts subtask github-status --subtask-id SUBTASK_ID --json --databa
 bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts subtask archive --subtask-id SUBTASK_ID --state wont_do --database "$FACTORY_DB"
 bun run src/cli.ts subtask restore --subtask-id SUBTASK_ID --database "$FACTORY_DB"
+bun run src/cli.ts session auto-link --project-id PROJECT_ID --task-id TASK_ID \
+  --branch-name "GRA-143-preview-environments" --json --database "$FACTORY_DB"
+bun run src/cli.ts session link --thread-id THREAD_ID --project-id PROJECT_ID \
+  --task-id TASK_ID --json --database "$FACTORY_DB"
+bun run src/cli.ts session unlink --thread-id THREAD_ID --association-id ASSOCIATION_ID \
+  --json --database "$FACTORY_DB"
 ```
 
 After taking a backup, remove a project only when its ID has been checked; removal cascades
@@ -159,11 +166,26 @@ GIT_BRANCH="$(git -C "$REPO_CHECKOUT" branch --show-current)"
 cd "$FACTORY_CHECKOUT"
 bun run src/cli.ts project context --git-origin-url "$GIT_ORIGIN" \
   --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
+bun run src/cli.ts session auto-link --project-id PROJECT_ID --task-id TASK_ID \
+  --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
 bun run src/cli.ts project attention --git-origin-url "$GIT_ORIGIN" \
   --json --database "$FACTORY_DB"
 bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$FACTORY_DB"
 ```
+
+Immediately after `project context` resolves exactly one Project and Task, run `session auto-link`
+with those IDs and the current branch. The command reads current T3 activity and adds an idempotent
+Factory Work Association only when exactly one running T3 thread has that branch. Treat `linked` as
+success. If it returns `unmatched` or `ambiguous`, create no association, continue only with the
+resolved Factory work, and name the missing or candidate thread IDs in the handoff; do not guess.
+
+A Code Session may have zero, one, or many Work Associations. Automatic Task association does not
+replace existing associations. When the agent selects a specific Subtask, run `session auto-link`
+again with `--subtask-id`; this adds the Subtask association idempotently. Use explicit `session
+link` or the PWA's collapsed **Manage associations** section only as a fallback. Remove one
+association with its `--association-id`; never remove unrelated associations. Association changes
+are Factory metadata only and never change T3, Work State, Status Reports, or Verification.
 
 If the checkout is detached and `git branch --show-current` is empty, omit `--branch-name` and
 inspect the returned Project Tasks. Do not infer a Project or Task after a resolver error; ask

@@ -201,7 +201,11 @@ describe("Factory T3 tRPC integration", () => {
           id: 2,
           method: "mutation",
           params: {
-            input: { name: "T3 integration", projectId: project.id },
+            input: {
+              branchName: "feature/t3-integration",
+              name: "T3 integration",
+              projectId: project.id,
+            },
             path: "tasks.create",
           },
         }),
@@ -284,7 +288,10 @@ describe("Factory T3 tRPC integration", () => {
           },
         }),
       );
-      expect(linked).toMatchObject({ run: { taskId: task.id } });
+      expect(linked).toMatchObject({
+        association: { taskId: task.id },
+        run: { state: "observed" },
+      });
 
       const afterLink = data(
         await request(socket, {
@@ -308,18 +315,49 @@ describe("Factory T3 tRPC integration", () => {
         ),
       ).toBe(false);
 
-      const unlinked = data(
+      const autoLinked = data(
         await request(socket, {
           id: 9,
           method: "mutation",
           params: {
-            input: { threadId: "t3-thread-1" },
+            input: {
+              branchName: "feature/t3-integration",
+              projectId: project.id,
+              taskId: task.id,
+            },
+            path: "t3.autoLinkThread",
+          },
+        }),
+      );
+      expect(autoLinked).toMatchObject({
+        associationId: (linked.association as { id: string }).id,
+        candidateThreadIds: ["t3-thread-1"],
+        status: "linked",
+        threadId: "t3-thread-1",
+      });
+
+      const unlinked = data(
+        await request(socket, {
+          id: 10,
+          method: "mutation",
+          params: {
+            input: {
+              associationId: (linked.association as { id: string }).id,
+              threadId: "t3-thread-1",
+            },
             path: "t3.unlinkThread",
           },
         }),
       );
       expect(unlinked).toMatchObject({ run: { state: "observed" } });
-      expect(t3.calls).toEqual(["shell", "shell", "shell", "thread", "shell"]);
+      expect(t3.calls).toEqual([
+        "shell",
+        "shell",
+        "shell",
+        "thread",
+        "shell",
+        "shell",
+      ]);
     } finally {
       socket.close();
       server.stop();
