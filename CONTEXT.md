@@ -66,9 +66,16 @@ and owns execution state, evidence, and attention requests.
 _Avoid_: chat, session
 
 **Code Session**:
-A Herdr-managed Claude, Codex, or OpenCode session attached to a Run. It is execution detail,
-not the Run's identity or completion evidence.
+A T3-observed or Herdr-managed Claude, Codex, or OpenCode session attached to a Run. It is
+execution detail, not the Run's identity or completion evidence. Observing a running or completed
+session never changes Work State or creates a Status Report.
 _Avoid_: run, task
+
+**External Observation**:
+A bounded, freshness-stamped fact read from another system, such as T3 session state or GitHub
+pull-request status. It may support Evidence or a reconciliation finding but is not Factory-owned
+workflow state.
+_Avoid_: sync, truth, completion
 
 **Gate**:
 A deterministic repository check whose observed command, revision, output, and exit result are

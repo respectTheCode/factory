@@ -18,7 +18,7 @@ Hermes, Slack, or Recall.
 | Playlister roadmap and development planning | Notion | Link the relevant record from a Factory Project or Task |
 | Grail roadmap and development tracking | Linear | Link the relevant record from a Factory Project or Task |
 | Normal non-code agent work | Hermes | Out of scope |
-| Coding sessions | Herdr | Out of scope until v2 |
+| Coding sessions | T3 Code today; Herdr may coordinate future execution | Read session metadata as external observation; never infer completion |
 | Project operations | Factory | Projects, Tasks, Subtasks, Status Reports, Verifications, and Tracker Links |
 
 Factory is additive. A Tracker Link does not copy, update, or replace its Notion or Linear
@@ -72,6 +72,18 @@ record. A Status Report does not replace Kevin's Verification.
 - **FR-016** — GitHub credentials must remain server-side and outside the Factory SQLite state,
   CLI JSON, browser state, and logs. The first integration may use a server process environment
   token; the operator must explicitly provision that token for the trusted private deployment.
+
+### 3.2.2 T3 Code execution observations
+
+- **FR-017** — Factory may use T3 Code's authenticated read-only orchestration interface to
+  observe project, thread, session, turn, branch, worktree, approval, input, checkpoint, and pull
+  request metadata. It must not call T3 mutation, terminal, or dispatch interfaces.
+- **FR-018** — A T3 Code Session may be explicitly associated with a durable Factory Run and a
+  Task or Subtask. Deterministic repository, branch, and pull-request evidence may produce a
+  suggested association, but missing or ambiguous matches must fail closed and never create one.
+- **FR-019** — T3 observations and reconciliation findings must remain visibly separate from
+  Factory Work State, Status Reports, Attention, and human Verification. They may identify stale
+  or contradictory planning, but must never promote, complete, report, or verify work.
 
 ### 3.3 Agent reports and human verification
 
@@ -209,12 +221,16 @@ record. A Status Report does not replace Kevin's Verification.
 11. **Work-state control:** A Subtask becoming active promotes a planned parent Task; Kevin can
     still put the parent back into planned or move it to active directly. Blocked and
     awaiting-verification transitions cannot be saved without their actionable reason.
+12. **Observed execution:** Factory reads live T3 session metadata with a server-only read token,
+    links one thread explicitly to Factory work, and shows a stale-report or branch finding without
+    changing the Task, Subtask, Status Report, or Verification.
 
-## 6. V2, not v1
+## 6. Later, not in the T3 observation slice
 
-- Connect Herdr and attach its Claude, Codex, and OpenCode Code Sessions to Factory work.
-- Provide remote visibility and control of Codex through the Herdr integration.
-- Add durable Runs, Gates, Evidence, Attention Requests, and repository verify contracts.
+- Let Herdr coordinate Claude, Codex, and OpenCode sessions using the same Run and Code Session
+  records established by the T3 read-only integration.
+- Provide remote control of coding sessions; this requires separate authorization and safety gates.
+- Add deterministic repository Gates, richer Evidence, Attention Requests, and verify contracts.
 - Consider read-only tracker imports only after linked-task workflows prove the data is useful.
 
 ## 7. Open decisions

@@ -8,6 +8,9 @@ import {
   type WorkState,
 } from "./application";
 import { createGitHubStatusReader, parseGitHubPullRequestUrl } from "./github";
+import { createT3Coordinator } from "./t3-coordinator";
+import { createT3ActivityReader, MAX_T3_THREAD_TURN_LIMIT } from "./t3";
+import { resolveT3AccessToken } from "./t3-credential";
 
 const SCHEMA_VERSION = 1 as const;
 
@@ -208,12 +211,41 @@ function projectSummary(project: {
   gitOriginUrl?: string;
   id: string;
   name: string;
+  t3ProjectId?: string;
+  workspaceRoot?: string;
 }) {
   return {
     id: project.id,
     name: project.name,
     ...(project.gitOriginUrl ? { gitOriginUrl: project.gitOriginUrl } : {}),
+    ...(project.t3ProjectId ? { t3ProjectId: project.t3ProjectId } : {}),
+    ...(project.workspaceRoot ? { workspaceRoot: project.workspaceRoot } : {}),
   };
+}
+
+function optionalNullableFlag(
+  flags: Map<string, string>,
+  name: string,
+): string | null | undefined {
+  if (!flags.has(name)) return undefined;
+  const value = flags.get(name)?.trim();
+  return value || null;
+}
+
+function turnLimitFlag(flags: Map<string, string>): number {
+  const configured = flags.get("turn-limit") ?? "1";
+  const value = Number(configured);
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > MAX_T3_THREAD_TURN_LIMIT ||
+    String(value) !== configured
+  ) {
+    throw new Error(
+      `--turn-limit must be an integer from 1 through ${MAX_T3_THREAD_TURN_LIMIT}.`,
+    );
+  }
+  return value;
 }
 
 function gitOriginFlag(flags: Map<string, string>): string | undefined {
@@ -286,6 +318,21 @@ async function main(args: string[]): Promise<void> {
 
   const databasePath = parsed.flags.get("database") ?? "factory.sqlite";
   const application = createFactoryApplication({ databasePath });
+  const configuredT3Timeout = Bun.env.T3_TIMEOUT_MS?.trim();
+  const t3Coordinator = createT3Coordinator({
+    application,
+    reader: createT3ActivityReader({
+      baseUrl: Bun.env.T3_BASE_URL,
+      timeoutMs:
+        configuredT3Timeout === undefined
+          ? undefined
+          : Number(configuredT3Timeout),
+      token: resolveT3AccessToken({
+        T3_ACCESS_TOKEN: Bun.env.T3_ACCESS_TOKEN,
+        T3_ACCESS_TOKEN_FILE: Bun.env.T3_ACCESS_TOKEN_FILE,
+      }),
+    }),
+  });
 
   if (resource === "project" && action === "remove") {
     if (parsed.flags.get("confirm") !== "true") {
@@ -304,6 +351,8 @@ async function main(args: string[]): Promise<void> {
       gitOriginUrl:
         parsed.flags.get("git-origin-url") ?? parsed.flags.get("git-url"),
       name: requiredFlag(parsed.flags, "name"),
+      t3ProjectId: parsed.flags.get("t3-project-id"),
+      workspaceRoot: parsed.flags.get("workspace-root"),
     });
     output({ project: projectSummary(project) });
     return;
@@ -312,12 +361,24 @@ async function main(args: string[]): Promise<void> {
   if (resource === "project" && action === "update") {
     const gitOriginUrl =
       parsed.flags.get("git-origin-url") ?? parsed.flags.get("git-url");
-    if (gitOriginUrl === undefined) {
-      throw new Error("Missing required --git-origin-url.");
+    const projectId = requiredFlag(parsed.flags, "project-id");
+    const t3ProjectId = optionalNullableFlag(parsed.flags, "t3-project-id");
+    const workspaceRoot = optionalNullableFlag(parsed.flags, "workspace-root");
+    if (
+      gitOriginUrl === undefined &&
+      t3ProjectId === undefined &&
+      workspaceRoot === undefined
+    ) {
+      throw new Error(
+        "Provide at least one of --git-origin-url, --t3-project-id, or --workspace-root.",
+      );
     }
+    const existing = application.getProjectDetail(projectId);
     const project = application.updateProject({
-      gitOriginUrl,
-      projectId: requiredFlag(parsed.flags, "project-id"),
+      gitOriginUrl: gitOriginUrl ?? existing.gitOriginUrl ?? null,
+      projectId,
+      ...(t3ProjectId === undefined ? {} : { t3ProjectId }),
+      ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
     });
     output({ project: projectSummary(project) });
     return;
@@ -437,6 +498,48 @@ async function main(args: string[]): Promise<void> {
       url: urlFlag(parsed.flags),
     });
     output({ link });
+    return;
+  }
+
+  if (resource === "project" && action === "t3-status") {
+    output({
+      status: await t3Coordinator.status(
+        requiredFlag(parsed.flags, "project-id"),
+      ),
+    });
+    return;
+  }
+
+  if (resource === "session" && action === "detail") {
+    output({
+      session: await t3Coordinator.threadDetail(
+        requiredFlag(parsed.flags, "thread-id"),
+        turnLimitFlag(parsed.flags),
+      ),
+    });
+    return;
+  }
+
+  if (resource === "session" && action === "link") {
+    output({
+      link: t3Coordinator.linkThread({
+        ...(parsed.flags.get("subtask-id") === undefined
+          ? {}
+          : { subtaskId: parsed.flags.get("subtask-id") }),
+        ...(parsed.flags.get("task-id") === undefined
+          ? {}
+          : { taskId: parsed.flags.get("task-id") }),
+        projectId: requiredFlag(parsed.flags, "project-id"),
+        threadId: requiredFlag(parsed.flags, "thread-id"),
+      }),
+    });
+    return;
+  }
+
+  if (resource === "session" && action === "unlink") {
+    output({
+      link: t3Coordinator.unlinkThread(requiredFlag(parsed.flags, "thread-id")),
+    });
     return;
   }
 
@@ -685,7 +788,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link, task create|update|detail|state|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify",
+    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link|t3-status, session detail|link|unlink, task create|update|detail|state|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify",
   );
 }
 

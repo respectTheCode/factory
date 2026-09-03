@@ -20,6 +20,8 @@
     <string>0.0.0.0</string>
     <key>FACTORY_PORT</key>
     <string>3000</string>
+    <key>T3_ACCESS_TOKEN_FILE</key>
+    <string>__SERVICE_ROOT__/secrets/t3-read-token</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>

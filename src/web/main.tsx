@@ -4,6 +4,11 @@ import { createRoot } from "react-dom/client";
 
 import type { FactoryRouter } from "../server";
 import type { GitHubStatusSnapshot } from "../github";
+import type {
+  T3ObservedActivity,
+  T3StatusResult,
+  T3ThreadDetailResult,
+} from "../t3-coordinator";
 import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
 import {
   githubActionsSummaryLabel,
@@ -40,6 +45,12 @@ import {
   type ReportedStatus,
   type WorkStatus,
 } from "./status-presentation";
+import {
+  ObservedActivitySection,
+  type ObservedActivityViewModel,
+  type ObservedTarget,
+  type ObservedThreadDetail,
+} from "./observed-activity";
 import "./styles.css";
 
 type ProjectSummary = { id: string; name: string };
@@ -206,6 +217,171 @@ function isLiveWorkState(state: WorkStatus): state is LiveWorkState {
 
 type TRPCClient = ReturnType<typeof createTRPCProxyClient<FactoryRouter>>;
 
+function observedDate(value: unknown): string | undefined {
+  const date =
+    value instanceof Date
+      ? value
+      : typeof value === "string"
+        ? new Date(value)
+        : undefined;
+  if (!date || Number.isNaN(date.getTime())) return undefined;
+  return date.toISOString();
+}
+
+function observedActivityView(
+  result: T3ObservedActivity,
+): ObservedActivityViewModel {
+  const targets = result.targets.map((target) => ({ ...target }));
+  const targetsById = new Map(targets.map((target) => [target.id, target]));
+  const targetForId = (id: string | undefined): ObservedTarget | undefined =>
+    id ? targetsById.get(id) : undefined;
+  return {
+    connection: {
+      ...result.connection,
+      ...(observedDate(result.connection.observedAt)
+        ? { observedAt: observedDate(result.connection.observedAt) }
+        : {}),
+      ...(observedDate(result.connection.lastSuccessfulFetchAt)
+        ? {
+            lastSuccessfulFetchAt: observedDate(
+              result.connection.lastSuccessfulFetchAt,
+            ),
+          }
+        : {}),
+      ...(result.status === "ok"
+        ? {}
+        : {
+            warning:
+              result.error ??
+              "T3 project matching is " +
+                result.status +
+                "; review the explicit project identity.",
+          }),
+    },
+    counts: result.counts,
+    findings: result.findings.map((finding) => ({
+      candidateLabels: finding.candidateIds
+        .map((candidateId) => targetForId(candidateId)?.label)
+        .filter((label): label is string => label !== undefined),
+      explanation: finding.explanation,
+      id: finding.id,
+      kind: finding.kind,
+      observedAt: observedDate(finding.observedAt),
+      severity: finding.severity,
+      suggestedAction: finding.suggestedAction,
+      targetLabel: targetForId(finding.subtaskId ?? finding.taskId)?.label,
+      threadId: finding.externalThreadId,
+    })),
+    projectName: result.projectName,
+    targets,
+    threads: result.threads.map((thread) => ({
+      association: {
+        state: thread.association.state,
+        ...(thread.association.linkId
+          ? { linkId: thread.association.linkId }
+          : {}),
+        ...(thread.association.target
+          ? {
+              target:
+                targetForId(thread.association.target.id) ??
+                thread.association.target,
+            }
+          : {}),
+        ...(thread.association.candidateLabels
+          ? { candidateLabels: thread.association.candidateLabels }
+          : thread.association.candidateIds
+            ? {
+                candidateLabels: thread.association.candidateIds
+                  .map((candidateId) => targetForId(candidateId)?.label)
+                  .filter((label): label is string => label !== undefined),
+              }
+            : {}),
+      },
+      branch: thread.branch,
+      changedFileCount: thread.changedFileCount,
+      externalProjectId: thread.externalProjectId,
+      hasPendingApprovals: thread.hasPendingApprovals,
+      hasPendingUserInput: thread.hasPendingUserInput,
+      latestSessionState: thread.latestSessionState,
+      latestTurnState: thread.latestTurnState,
+      linkedPullRequestUrl: thread.linkedPullRequestUrl,
+      observedAt: observedDate(thread.observedAt),
+      provider: thread.provider,
+      sourceUpdatedAt: observedDate(thread.sourceUpdatedAt),
+      threadId: thread.threadId,
+      title: thread.title,
+      worktreePath: thread.worktreePath,
+    })),
+  };
+}
+
+function observedThreadDetailView(
+  result: T3ThreadDetailResult,
+): ObservedThreadDetail {
+  const detail = result.thread;
+  const checkpointFiles = detail
+    ? [
+        ...new Set(
+          detail.checkpoints.flatMap((checkpoint) =>
+            checkpoint.files.map((file) => file.path),
+          ),
+        ),
+      ]
+    : undefined;
+  const turnIds = detail
+    ? new Set([
+        ...(result.evidence?.turnIds ?? []),
+        ...detail.messages.flatMap((message) =>
+          message.turnId ? [message.turnId] : [],
+        ),
+        ...detail.activities.flatMap((activity) =>
+          activity.turnId ? [activity.turnId] : [],
+        ),
+        ...detail.checkpoints.map((checkpoint) => checkpoint.turnId),
+      ])
+    : undefined;
+  return {
+    activityCount: detail?.activities.length,
+    checkpointCount: detail?.checkpoints.length,
+    ...(checkpointFiles && checkpointFiles.length > 0
+      ? { checkpointFiles }
+      : {}),
+    error: result.error,
+    observedAt: observedDate(result.connection.observedAt),
+    sourceSequence: result.observation?.sourceSequence,
+    sourceUpdatedAt: observedDate(result.observation?.sourceUpdatedAt),
+    turnCount: turnIds?.size,
+  };
+}
+
+function unavailableObservedActivity(
+  result: T3StatusResult | undefined,
+  error: unknown,
+): ObservedActivityViewModel {
+  const message =
+    error instanceof Error
+      ? error.message
+      : "T3 observations could not be refreshed.";
+  return {
+    connection: {
+      ...(result?.connection ?? {}),
+      error: message,
+      state: result?.connection.state ?? "unavailable",
+      ...(result?.status && result.status !== "ok" ? { warning: message } : {}),
+    },
+    counts: result?.counts ?? {
+      ambiguous: 0,
+      linked: 0,
+      needsAttention: 0,
+      running: 0,
+      unmatched: 0,
+    },
+    findings: [],
+    targets: [],
+    threads: [],
+  };
+}
+
 function Dashboard() {
   const [connection] = useState(() => new ConnectionState());
   const [snapshot, setSnapshot] = useState<ConnectionSnapshot>(
@@ -275,6 +451,15 @@ function Dashboard() {
   const [githubStatuses, setGithubStatuses] = useState<
     Record<string, GitHubStatusSnapshot>
   >({});
+  const [t3Activity, setT3Activity] =
+    useState<ObservedActivityViewModel | null>(null);
+  const [t3Busy, setT3Busy] = useState(false);
+  const [t3ThreadDetails, setT3ThreadDetails] = useState<
+    Record<string, ObservedThreadDetail>
+  >({});
+  const [t3ThreadDetailLoadingIds, setT3ThreadDetailLoadingIds] = useState<
+    Set<string>
+  >(() => new Set());
   const [collapsedTaskGroups, setCollapsedTaskGroups] = useState<
     Partial<Record<WorkStatus, boolean>>
   >({});
@@ -283,6 +468,7 @@ function Dashboard() {
   const [busy, setBusy] = useState(false);
   const trpc = useRef<TRPCClient | null>(null);
   const subscriptionCleanup = useRef<(() => void) | null>(null);
+  const t3RefreshGeneration = useRef(0);
 
   useEffect(() => {
     const dismissOpenMenus = (event: PointerEvent) => {
@@ -306,6 +492,7 @@ function Dashboard() {
   useEffect(() => {
     const client = createWSClient({
       onClose: () => {
+        t3RefreshGeneration.current += 1;
         subscriptionCleanup.current?.();
         subscriptionCleanup.current = null;
         connection.markDisconnected();
@@ -319,6 +506,10 @@ function Dashboard() {
         setTaskStatuses({});
         setSubtaskHistories({});
         setGithubStatuses({});
+        setT3Activity(null);
+        setT3Busy(false);
+        setT3ThreadDetails({});
+        setT3ThreadDetailLoadingIds(new Set());
         setSnapshot(connection.snapshot());
       },
       onOpen: () => {
@@ -426,11 +617,134 @@ function Dashboard() {
     void refreshGitHubStatuses(detail);
   };
 
+  const refreshT3Project = async (projectId: string) => {
+    const client = trpc.current;
+    if (!client) return;
+    const generation = ++t3RefreshGeneration.current;
+    setT3Busy(true);
+    let nextStatus: T3StatusResult | undefined;
+    try {
+      const [statusResult, activityResult] = await Promise.allSettled([
+        client.t3.status.query({ projectId }),
+        client.t3.projectActivity.query({ projectId }),
+      ]);
+      if (trpc.current !== client || t3RefreshGeneration.current !== generation)
+        return;
+      nextStatus =
+        statusResult.status === "fulfilled" ? statusResult.value : undefined;
+      if (activityResult.status === "rejected") {
+        throw activityResult.reason;
+      }
+      // The websocket transformer returns persisted Date fields as ISO
+      // strings; the adapter normalizes them before presentation.
+      setT3Activity(
+        observedActivityView(
+          activityResult.value as unknown as T3ObservedActivity,
+        ),
+      );
+    } catch (error) {
+      if (trpc.current !== client || t3RefreshGeneration.current !== generation)
+        return;
+      setT3Activity((current) => {
+        const unavailable = unavailableObservedActivity(nextStatus, error);
+        return current
+          ? {
+              ...unavailable,
+              findings: current.findings,
+              projectName: current.projectName,
+              targets: current.targets,
+              threads: current.threads,
+            }
+          : unavailable;
+      });
+    } finally {
+      if (trpc.current === client && t3RefreshGeneration.current === generation)
+        setT3Busy(false);
+    }
+  };
+
+  const openT3ThreadDetail = async (threadId: string) => {
+    const client = trpc.current;
+    if (!client) return;
+    setT3ThreadDetailLoadingIds((current) => {
+      const next = new Set(current);
+      next.add(threadId);
+      return next;
+    });
+    try {
+      const detail = await client.t3.threadDetail.query({
+        threadId,
+        turnLimit: 1,
+      });
+      if (trpc.current !== client) return;
+      setT3ThreadDetails((current) => ({
+        ...current,
+        [threadId]: observedThreadDetailView(
+          detail as unknown as T3ThreadDetailResult,
+        ),
+      }));
+    } catch (error) {
+      if (trpc.current !== client) return;
+      setT3ThreadDetails((current) => ({
+        ...current,
+        [threadId]: {
+          error:
+            error instanceof Error
+              ? error.message
+              : "T3 thread detail could not be loaded.",
+        },
+      }));
+    } finally {
+      if (trpc.current === client) {
+        setT3ThreadDetailLoadingIds((current) => {
+          const next = new Set(current);
+          next.delete(threadId);
+          return next;
+        });
+      }
+    }
+  };
+
+  const linkT3Thread = async (threadId: string, target: ObservedTarget) => {
+    const client = trpc.current;
+    const projectId = projectDetail?.id;
+    if (!client || !projectId || !snapshot.canMutate || busy) return;
+    setBusy(true);
+    try {
+      await client.t3.linkThread.mutate({
+        projectId,
+        threadId,
+        ...(target.kind === "task"
+          ? { taskId: target.id }
+          : { subtaskId: target.id }),
+      });
+      await refreshProject(projectId);
+      await refreshT3Project(projectId);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const unlinkT3Thread = async (threadId: string) => {
+    const client = trpc.current;
+    const projectId = projectDetail?.id;
+    if (!client || !projectId || !snapshot.canMutate || busy) return;
+    setBusy(true);
+    try {
+      await client.t3.unlinkThread.mutate({ threadId });
+      await refreshProject(projectId);
+      await refreshT3Project(projectId);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!projectDetail) return;
     const projectId = projectDetail.id;
     const refreshInterval = setInterval(() => {
       void refreshProject(projectId);
+      void refreshT3Project(projectId);
     }, 60_000);
     return () => clearInterval(refreshInterval);
   }, [projectDetail?.id]);
@@ -707,12 +1021,17 @@ function Dashboard() {
 
   const loadProject = async (projectId: string) => {
     stopProjectSubscription();
+    t3RefreshGeneration.current += 1;
+    setT3Activity(null);
+    setT3ThreadDetails({});
     await refreshProject(projectId);
+    void refreshT3Project(projectId);
     const subscription = trpc.current?.projects.updates.subscribe(
       { projectId },
       {
         onData: () => {
           void refreshProject(projectId);
+          void refreshT3Project(projectId);
         },
       },
     );
@@ -1460,6 +1779,18 @@ function Dashboard() {
                   </div>
                 );
               })()}
+
+            <ObservedActivitySection
+              activity={t3Activity}
+              busy={t3Busy || busy}
+              canMutate={snapshot.canMutate && !busy}
+              onLinkThread={linkT3Thread}
+              onOpenThreadDetail={openT3ThreadDetail}
+              onRefresh={() => refreshT3Project(projectDetail.id)}
+              onUnlinkThread={unlinkT3Thread}
+              threadDetails={t3ThreadDetails}
+              threadDetailLoadingIds={t3ThreadDetailLoadingIds}
+            />
 
             {projectDetail.tasks.length === 0 ? (
               <div className="empty">

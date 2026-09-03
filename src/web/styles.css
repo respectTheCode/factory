@@ -2317,3 +2317,406 @@ option {
     grid-row: 2;
   }
 }
+
+/* T3 execution observations. These styles keep source evidence visibly
+   separate from Factory's planning and verification controls. */
+.observed-activity {
+  align-items: stretch;
+  display: block;
+  margin-top: 14px;
+}
+
+.observed-activity-header,
+.observed-findings-heading,
+.observed-thread-heading,
+.observed-finding-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.observed-activity-header-actions,
+.observed-thread-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+.observed-authority-copy,
+.observed-freshness,
+.observed-thread-authority,
+.observed-finding-authority {
+  color: var(--ink-dim);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  margin-top: 5px;
+}
+
+.observed-connection {
+  align-items: center;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 0.74rem;
+  gap: 6px;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.observed-connection-dot {
+  background: var(--sig-down);
+  border-radius: 50%;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+.observed-connection-ok .observed-connection-dot {
+  background: var(--sig-ok);
+}
+
+.observed-connection-warn .observed-connection-dot {
+  background: var(--sig-warn);
+}
+
+.observed-source-message {
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  color: var(--ink-dim);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  margin-top: 12px;
+  padding: 9px 10px;
+}
+
+.observed-source-message strong {
+  color: var(--ink);
+}
+
+.observed-source-down {
+  background: var(--tint-down);
+  border-color: rgba(229, 72, 77, 0.35);
+}
+
+.observed-source-warn {
+  background: var(--tint-warn);
+  border-color: rgba(240, 180, 41, 0.35);
+}
+
+.observed-source-error {
+  display: block;
+  margin-top: 3px;
+}
+
+.observed-freshness {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  margin-top: 10px;
+}
+
+.observed-counts {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.observed-count {
+  background: var(--raised);
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding: 8px 9px;
+}
+
+.observed-count strong {
+  font-size: 1rem;
+}
+
+.observed-count span {
+  color: var(--ink-dim);
+  font-size: 0.66rem;
+  line-height: 1.25;
+}
+
+.observed-thread-list,
+.observed-finding-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.observed-thread,
+.observed-finding {
+  background: var(--raised);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.observed-thread-title {
+  min-width: 0;
+}
+
+.observed-thread-title strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.observed-thread-title code {
+  color: var(--ink-faint);
+  display: block;
+  font: 0.64rem var(--mono);
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+
+.observed-thread-association {
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink-dim);
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  line-height: 1.25;
+  padding: 4px 7px;
+  text-align: right;
+}
+
+.observed-thread-association-linked {
+  background: var(--tint-ok);
+  border-color: rgba(47, 190, 107, 0.35);
+  color: var(--sig-ok);
+}
+
+.observed-thread-association-ambiguous {
+  background: var(--tint-warn);
+  border-color: rgba(240, 180, 41, 0.35);
+  color: var(--sig-warn);
+}
+
+.observed-thread-meta {
+  color: var(--ink-dim);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.7rem;
+  gap: 3px 10px;
+  line-height: 1.35;
+  margin-top: 8px;
+}
+
+.observed-thread-meta span + span::before {
+  color: var(--ink-faint);
+  content: "·";
+  margin-right: 10px;
+}
+
+.observed-thread-attention,
+.observed-thread-candidates,
+.observed-thread-pr,
+.observed-finding-action {
+  color: var(--ink-dim);
+  font-size: 0.74rem;
+  line-height: 1.4;
+  margin-top: 8px;
+}
+
+.observed-thread-attention {
+  color: var(--sig-warn);
+}
+
+.observed-thread-candidates {
+  overflow-wrap: anywhere;
+}
+
+.observed-thread-pr a {
+  color: var(--sig-info);
+  font-size: 0.72rem;
+}
+
+.observed-thread-actions {
+  align-items: stretch;
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+
+.observed-thread-actions button,
+.observed-thread-actions select {
+  min-height: 34px;
+}
+
+.observed-link-control {
+  align-items: stretch;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: min(100%, 300px);
+}
+
+.observed-link-control select {
+  background: var(--canvas);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  color: var(--ink);
+  flex: 1 1 180px;
+  font: inherit;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.observed-link-control button {
+  flex: 0 0 auto;
+}
+
+.observed-thread-authority {
+  border-top: 1px solid var(--rule);
+  font-size: 0.66rem;
+  margin-top: 10px;
+  padding-top: 7px;
+}
+
+.observed-thread-detail {
+  background: var(--canvas);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  color: var(--ink-dim);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  margin-top: 9px;
+  padding: 8px;
+}
+
+.observed-thread-detail strong {
+  color: var(--ink);
+  font-size: 0.72rem;
+}
+
+.observed-thread-detail p {
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+
+.observed-thread-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  margin-top: 5px;
+}
+
+.observed-thread-detail-meta span + span::before {
+  color: var(--ink-faint);
+  content: "·";
+  margin-right: 10px;
+}
+
+.observed-findings {
+  border-top: 1px solid var(--rule);
+  margin-top: 16px;
+  padding-top: 14px;
+}
+
+.observed-findings-heading h3 {
+  font-size: 0.95rem;
+  margin-top: 1px;
+}
+
+.observed-findings-heading > span {
+  background: var(--tint-warn);
+  border-radius: 999px;
+  color: var(--sig-warn);
+  font: 0.72rem var(--mono);
+  padding: 4px 7px;
+}
+
+.observed-finding {
+  border-left: 3px solid var(--sig-info);
+}
+
+.observed-finding-attention {
+  border-left-color: var(--sig-warn);
+}
+
+.observed-finding-heading strong {
+  color: var(--ink);
+  font-size: 0.78rem;
+}
+
+.observed-finding-heading span {
+  color: var(--ink-dim);
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.observed-finding > p {
+  color: var(--ink-dim);
+  font-size: 0.74rem;
+  line-height: 1.4;
+  margin-top: 6px;
+}
+
+.observed-finding small {
+  color: var(--ink-faint);
+  display: block;
+  font: 0.64rem var(--mono);
+  margin-top: 7px;
+}
+
+.observed-finding-authority {
+  border-top: 1px solid var(--rule);
+  font-size: 0.66rem !important;
+  margin-top: 9px !important;
+  padding-top: 7px;
+}
+
+@media (max-width: 540px) {
+  .observed-activity-header,
+  .observed-thread-heading,
+  .observed-finding-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .observed-activity-header-actions,
+  .observed-thread-actions {
+    align-items: stretch;
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .observed-activity-header-actions > *,
+  .observed-thread-actions > button {
+    flex: 1 1 0;
+  }
+
+  .observed-counts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .observed-thread-association,
+  .observed-finding-heading span {
+    align-self: flex-start;
+    text-align: left;
+  }
+
+  .observed-link-control {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-width: 100%;
+    width: 100%;
+  }
+
+  .observed-link-control select {
+    width: 100%;
+  }
+
+  .observed-link-control button {
+    width: auto;
+  }
+}

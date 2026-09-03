@@ -4,6 +4,18 @@ import { dirname, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 
 import { parseGitHubPullRequestUrl } from "./github";
+import {
+  computeReconciliationFindings,
+  type ReconciliationFindingDraft,
+  type ReconciliationFindingKind,
+  type ReconciliationFindingSeverity,
+  type ReconciliationLink,
+  type ReconciliationSession,
+  type ReconciliationSessionState,
+  type ReconciliationTarget,
+  type ReconciliationTurnState,
+  type ReconciliationWorkState,
+} from "./reconciliation";
 
 export type FactoryClock = () => Date;
 export type FactoryIdGenerator = () => string;
@@ -16,10 +28,12 @@ export type FactoryApplicationOptions = {
   persist?: (state: FactoryState) => void;
 };
 
-type Project = {
+export type Project = {
   id: string;
   name: string;
   gitOriginUrl?: string;
+  t3ProjectId?: string;
+  workspaceRoot?: string;
   createdAt: Date;
 };
 
@@ -33,7 +47,7 @@ export type WorkState =
 
 type TaskWorkStateSource = "manual" | "rollup";
 
-type Task = {
+export type Task = {
   id: string;
   name: string;
   projectId: string;
@@ -53,7 +67,7 @@ type Task = {
   createdAt: Date;
 };
 
-type Subtask = {
+export type Subtask = {
   id: string;
   name: string;
   taskId: string;
@@ -93,6 +107,101 @@ export type Verification = {
   verifier: string;
   reason?: string;
   createdAt: Date;
+};
+
+export type RunState =
+  | "observed"
+  | "active"
+  | "waiting_on_human"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export type Run = {
+  id: string;
+  projectId: string;
+  taskId?: string;
+  subtaskId?: string;
+  state: RunState;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type CodeSession = {
+  id: string;
+  runId: string;
+  provider: "t3";
+  externalThreadId: string;
+  externalProjectId: string;
+  title: string;
+  workspaceRoot: string;
+  repositoryIdentity?: string;
+  branch?: string;
+  worktreePath?: string;
+  linkedPullRequestUrl?: string;
+  latestSessionState?: ReconciliationSessionState;
+  latestTurnState?: ReconciliationTurnState;
+  latestTurnCompletedAt?: Date;
+  hasPendingApprovals: boolean;
+  hasPendingUserInput: boolean;
+  observedAt: Date;
+  sourceUpdatedAt: Date;
+  sourceSequence?: number;
+  sourceStream?: string;
+  sourceDigest: string;
+  sourceCurrent?: boolean;
+};
+
+/**
+ * A normalized current T3 observation.  It is intentionally separate from a
+ * CodeSession: unlinked T3 activity must be observable before a Factory Run
+ * exists, while a linked CodeSession is always attached to a Run.
+ */
+export type CodeSessionObservationInput = Omit<
+  CodeSession,
+  "id" | "runId" | "sourceCurrent"
+> & {
+  projectId: string;
+};
+
+export type CodeSessionObservation = CodeSessionObservationInput & {
+  id: string;
+  projectId: string;
+  sourceCurrent?: boolean;
+};
+
+export type SessionEvidence = {
+  id: string;
+  provider: "t3";
+  externalThreadId: string;
+  sourceSequence?: number;
+  sourceStream?: string;
+  observedAt: Date;
+  turnIds: string[];
+  checkpointFiles: string[];
+  changedFileCount?: number;
+  linkedPullRequestUrl?: string;
+  digest: string;
+};
+
+export type ReconciliationFindingStatus = "open" | "resolved" | "dismissed";
+
+export type ReconciliationFinding = {
+  id: string;
+  dedupeKey: string;
+  kind: ReconciliationFindingKind;
+  severity: ReconciliationFindingSeverity;
+  status: ReconciliationFindingStatus;
+  projectId: string;
+  externalThreadId?: string;
+  taskId?: string;
+  subtaskId?: string;
+  candidateIds: string[];
+  observedAt: Date;
+  explanation: string;
+  suggestedAction: string;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 export type ProjectWorkState = WorkState | ArchiveState;
@@ -146,13 +255,40 @@ export type TrackerLink = {
 
 type TrackerLinkFields = Omit<TrackerLink, "id" | "projectId" | "taskId">;
 
-type FactoryState = {
+export type FactoryState = {
   projects: Project[];
   tasks: Task[];
   subtasks: Subtask[];
   statusReports: StatusReport[];
   verifications: Verification[];
   trackerLinks?: TrackerLink[];
+  runs?: Run[];
+  codeSessions?: CodeSession[];
+  codeSessionObservations?: CodeSessionObservation[];
+  sessionEvidence?: SessionEvidence[];
+  reconciliationFindings?: ReconciliationFinding[];
+};
+
+export type ProjectT3Activity = {
+  observation: CodeSessionObservation;
+  codeSession?: CodeSession;
+  run?: Run;
+};
+
+export type LinkT3ThreadInput = {
+  observation: CodeSessionObservationInput;
+  taskId?: string;
+  subtaskId?: string;
+};
+
+export type SessionEvidenceInput = Omit<SessionEvidence, "id">;
+
+export type T3ObservationRefreshBoundary = {
+  projectId: string;
+  sourceSequence: number;
+  sourceStream: string;
+  sourceUpdatedAt: Date;
+  observedAt: Date;
 };
 
 function emptyProjectWorkCounts(): ProjectWorkCounts {
@@ -211,10 +347,40 @@ function compareWorkStates(left: WorkState, right: WorkState): number {
   return WORK_STATE_RANK[left] - WORK_STATE_RANK[right];
 }
 
+function normalizeRepositoryIdentity(
+  value: string | undefined,
+): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+
+  if (!trimmed.includes("://")) {
+    const scpStyle = /^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/.exec(trimmed);
+    if (scpStyle?.[1] && scpStyle[2]) {
+      return `${scpStyle[1].toLowerCase().replace(/^www\./, "")}/${scpStyle[2]
+        .replace(/^\/+|\/+$/g, "")
+        .replace(/\.git$/i, "")}`;
+    }
+  }
+
+  try {
+    const url = new URL(trimmed);
+    return `${url.hostname.toLowerCase().replace(/^www\./, "")}${
+      url.port ? `:${url.port}` : ""
+    }/${url.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "")}`;
+  } catch {
+    return trimmed
+      .replace(/^\/+|\/+$/g, "")
+      .replace(/\.git$/i, "")
+      .toLowerCase();
+  }
+}
+
 export type ProjectHierarchy = {
   id: string;
   name: string;
   gitOriginUrl?: string;
+  t3ProjectId?: string;
+  workspaceRoot?: string;
   tasks: Array<{
     id: string;
     name: string;
@@ -251,6 +417,11 @@ export class FactoryApplication {
   private readonly statusReports: StatusReport[];
   private readonly verifications: Verification[];
   private readonly trackerLinks: TrackerLink[];
+  private readonly runs: Run[];
+  private readonly codeSessions: CodeSession[];
+  private readonly codeSessionObservations: CodeSessionObservation[];
+  private readonly sessionEvidence: SessionEvidence[];
+  private readonly reconciliationFindings: ReconciliationFinding[];
 
   constructor({
     clock,
@@ -269,20 +440,31 @@ export class FactoryApplication {
     this.statusReports = state?.statusReports ?? [];
     this.verifications = state?.verifications ?? [];
     this.trackerLinks = state?.trackerLinks ?? [];
+    this.runs = state?.runs ?? [];
+    this.codeSessions = state?.codeSessions ?? [];
+    this.codeSessionObservations = state?.codeSessionObservations ?? [];
+    this.sessionEvidence = state?.sessionEvidence ?? [];
+    this.reconciliationFindings = state?.reconciliationFindings ?? [];
   }
 
   createProject({
     gitOriginUrl,
     name,
+    t3ProjectId,
+    workspaceRoot,
   }: {
     gitOriginUrl?: string;
     name: string;
+    t3ProjectId?: string;
+    workspaceRoot?: string;
   }): Project {
     this.refreshFromPersistence();
     const project = {
       id: this.idGenerator(),
       name,
       ...(gitOriginUrl?.trim() ? { gitOriginUrl: gitOriginUrl.trim() } : {}),
+      ...(t3ProjectId?.trim() ? { t3ProjectId: t3ProjectId.trim() } : {}),
+      ...(workspaceRoot?.trim() ? { workspaceRoot: workspaceRoot.trim() } : {}),
       createdAt: this.clock(),
     };
 
@@ -294,9 +476,13 @@ export class FactoryApplication {
   updateProject({
     gitOriginUrl,
     projectId,
+    t3ProjectId,
+    workspaceRoot,
   }: {
     gitOriginUrl: string | null;
     projectId: string;
+    t3ProjectId?: string | null;
+    workspaceRoot?: string | null;
   }): Project {
     this.refreshFromPersistence();
     const project = this.projects.find(
@@ -308,6 +494,14 @@ export class FactoryApplication {
       project.gitOriginUrl = gitOriginUrl.trim();
     } else {
       delete project.gitOriginUrl;
+    }
+    if (t3ProjectId !== undefined) {
+      if (t3ProjectId?.trim()) project.t3ProjectId = t3ProjectId.trim();
+      else delete project.t3ProjectId;
+    }
+    if (workspaceRoot !== undefined) {
+      if (workspaceRoot?.trim()) project.workspaceRoot = workspaceRoot.trim();
+      else delete project.workspaceRoot;
     }
     this.save();
     return project;
@@ -337,6 +531,24 @@ export class FactoryApplication {
         .filter((report) => subtaskIds.has(report.subtaskId))
         .map((report) => report.id),
     );
+    const runIds = new Set(
+      this.runs
+        .filter((run) => run.projectId === projectId)
+        .map((run) => run.id),
+    );
+    const sessionIds = new Set(
+      this.codeSessions
+        .filter((session) => runIds.has(session.runId))
+        .map((session) => session.id),
+    );
+    const threadIds = new Set([
+      ...this.codeSessions
+        .filter((session) => runIds.has(session.runId))
+        .map((session) => session.externalThreadId),
+      ...this.codeSessionObservations
+        .filter((observation) => observation.projectId === projectId)
+        .map((observation) => observation.externalThreadId),
+    ]);
 
     this.projects.splice(projectIndex, 1);
     removeMatching(this.tasks, (task) => taskIds.has(task.id));
@@ -350,6 +562,21 @@ export class FactoryApplication {
       (link) =>
         link.projectId === projectId ||
         (link.taskId !== undefined && taskIds.has(link.taskId)),
+    );
+    removeMatching(this.runs, (run) => runIds.has(run.id));
+    removeMatching(this.codeSessions, (session) => sessionIds.has(session.id));
+    removeMatching(
+      this.codeSessionObservations,
+      (observation) => observation.projectId === projectId,
+    );
+    removeMatching(
+      this.sessionEvidence,
+      (evidence) =>
+        evidence.provider === "t3" && threadIds.has(evidence.externalThreadId),
+    );
+    removeMatching(
+      this.reconciliationFindings,
+      (finding) => finding.projectId === projectId,
     );
     this.save();
   }
@@ -378,6 +605,24 @@ export class FactoryApplication {
       reportIds.has(verification.reportId),
     );
     removeMatching(this.trackerLinks, (link) => link.taskId === taskId);
+    for (const run of this.runs) {
+      if (run.taskId === taskId) delete run.taskId;
+      if (run.subtaskId !== undefined && subtaskIds.has(run.subtaskId)) {
+        delete run.subtaskId;
+      }
+    }
+    for (const finding of this.reconciliationFindings) {
+      if (finding.taskId === taskId) delete finding.taskId;
+      if (
+        finding.subtaskId !== undefined &&
+        subtaskIds.has(finding.subtaskId)
+      ) {
+        delete finding.subtaskId;
+      }
+      finding.candidateIds = finding.candidateIds.filter(
+        (candidateId) => candidateId !== taskId && !subtaskIds.has(candidateId),
+      );
+    }
     this.save();
   }
 
@@ -398,6 +643,15 @@ export class FactoryApplication {
     removeMatching(this.verifications, (verification) =>
       reportIds.has(verification.reportId),
     );
+    for (const run of this.runs) {
+      if (run.subtaskId === subtaskId) delete run.subtaskId;
+    }
+    for (const finding of this.reconciliationFindings) {
+      if (finding.subtaskId === subtaskId) delete finding.subtaskId;
+      finding.candidateIds = finding.candidateIds.filter(
+        (candidateId) => candidateId !== subtaskId,
+      );
+    }
     this.save();
   }
 
@@ -1048,6 +1302,10 @@ export class FactoryApplication {
       id: project.id,
       name: project.name,
       ...(project.gitOriginUrl ? { gitOriginUrl: project.gitOriginUrl } : {}),
+      ...(project.t3ProjectId ? { t3ProjectId: project.t3ProjectId } : {}),
+      ...(project.workspaceRoot
+        ? { workspaceRoot: project.workspaceRoot }
+        : {}),
       tasks: this.tasks
         .filter((task) => task.projectId === project.id)
         .sort((left, right) => this.compareTasks(left, right))
@@ -1101,13 +1359,550 @@ export class FactoryApplication {
     };
   }
 
-  listProjects(): Array<{ id: string; name: string; gitOriginUrl?: string }> {
+  listProjects(): Array<{
+    id: string;
+    name: string;
+    gitOriginUrl?: string;
+    t3ProjectId?: string;
+    workspaceRoot?: string;
+  }> {
     this.refreshFromPersistence();
     return this.projects.map((project) => ({
       id: project.id,
       name: project.name,
       ...(project.gitOriginUrl ? { gitOriginUrl: project.gitOriginUrl } : {}),
+      ...(project.t3ProjectId ? { t3ProjectId: project.t3ProjectId } : {}),
+      ...(project.workspaceRoot
+        ? { workspaceRoot: project.workspaceRoot }
+        : {}),
     }));
+  }
+
+  /**
+   * Persist the latest bounded observation for each external T3 thread. The
+   * observation is intentionally independent from CodeSession: a thread can
+   * be visible before a Factory Run is explicitly linked to it.
+   */
+  refreshT3Observations({
+    evidence = [],
+    observations,
+    refreshedProjects = [],
+    sourceUnavailable = [],
+  }: {
+    evidence?: SessionEvidenceInput[];
+    observations: CodeSessionObservationInput[];
+    refreshedProjects?: T3ObservationRefreshBoundary[];
+    sourceUnavailable?: Array<{
+      projectId: string;
+      observedAt: Date;
+      explanation: string;
+    }>;
+  }): {
+    observations: CodeSessionObservation[];
+    findings: ReconciliationFinding[];
+  } {
+    this.refreshFromPersistence();
+    const projectIds = new Set<string>();
+
+    for (const boundary of refreshedProjects) {
+      this.requireProject(boundary.projectId);
+      if (!boundary.sourceStream.trim()) {
+        throw new Error("T3 refresh boundary source stream must not be empty.");
+      }
+      if (
+        !Number.isSafeInteger(boundary.sourceSequence) ||
+        boundary.sourceSequence < 0
+      ) {
+        throw new Error(
+          "T3 refresh boundary source sequence must be a non-negative integer.",
+        );
+      }
+      if (
+        Number.isNaN(boundary.observedAt.getTime()) ||
+        Number.isNaN(boundary.sourceUpdatedAt.getTime())
+      ) {
+        throw new Error("T3 refresh boundary timestamps must be valid dates.");
+      }
+      projectIds.add(boundary.projectId);
+    }
+
+    for (const observation of observations) {
+      this.requireProject(observation.projectId);
+      projectIds.add(observation.projectId);
+
+      const existing = this.codeSessionObservations.find(
+        (candidate) =>
+          candidate.provider === observation.provider &&
+          candidate.externalThreadId === observation.externalThreadId,
+      );
+      if (existing && existing.projectId !== observation.projectId) {
+        throw new Error(
+          `T3 thread ${observation.externalThreadId} is already associated with another Factory Project.`,
+        );
+      }
+      const project = this.requireProject(observation.projectId);
+      if (
+        project.t3ProjectId !== undefined &&
+        project.t3ProjectId !== observation.externalProjectId
+      ) {
+        throw new Error(
+          `T3 Project ${observation.externalProjectId} does not match Factory Project ${project.id}.`,
+        );
+      }
+      if (
+        project.workspaceRoot !== undefined &&
+        project.workspaceRoot !== observation.workspaceRoot
+      ) {
+        throw new Error(
+          `T3 workspace does not match Factory Project ${project.id}.`,
+        );
+      }
+      if (existing && !this.isNewerObservation(observation, existing)) {
+        existing.sourceCurrent = true;
+        const linkedSession = this.codeSessions.find(
+          (candidate) =>
+            candidate.provider === observation.provider &&
+            candidate.externalThreadId === observation.externalThreadId,
+        );
+        if (linkedSession) linkedSession.sourceCurrent = true;
+        continue;
+      }
+
+      if (existing) {
+        Object.assign(existing, observation);
+        existing.sourceCurrent = true;
+      } else {
+        this.codeSessionObservations.push({
+          ...observation,
+          id: this.idGenerator(),
+          sourceCurrent: true,
+        });
+      }
+
+      const linkedSession = this.codeSessions.find(
+        (candidate) =>
+          candidate.provider === observation.provider &&
+          candidate.externalThreadId === observation.externalThreadId,
+      );
+      if (linkedSession)
+        this.applyObservationToCodeSession(linkedSession, {
+          ...observation,
+          sourceCurrent: true,
+        });
+    }
+
+    for (const source of sourceUnavailable) projectIds.add(source.projectId);
+
+    for (const evidenceInput of evidence) {
+      const evidence = this.appendSessionEvidence(evidenceInput);
+      const observation = this.requireT3Observation(
+        evidence.provider,
+        evidence.externalThreadId,
+      );
+      projectIds.add(observation.projectId);
+    }
+
+    for (const boundary of refreshedProjects) {
+      const incomingThreadIds = new Set(
+        observations
+          .filter((observation) => observation.projectId === boundary.projectId)
+          .map(
+            (observation) =>
+              `${observation.provider}:${observation.externalThreadId}`,
+          ),
+      );
+      for (const observation of this.codeSessionObservations) {
+        if (observation.projectId !== boundary.projectId) continue;
+        if (
+          incomingThreadIds.has(
+            `${observation.provider}:${observation.externalThreadId}`,
+          )
+        ) {
+          observation.sourceCurrent = true;
+          continue;
+        }
+        if (this.boundaryCoversObservation(boundary, observation)) {
+          observation.sourceCurrent = false;
+          const linkedSession = this.codeSessions.find(
+            (candidate) =>
+              candidate.provider === observation.provider &&
+              candidate.externalThreadId === observation.externalThreadId,
+          );
+          if (linkedSession) linkedSession.sourceCurrent = false;
+        }
+      }
+    }
+
+    if (
+      observations.length > 0 ||
+      evidence.length > 0 ||
+      refreshedProjects.length > 0 ||
+      sourceUnavailable.length > 0
+    )
+      this.save();
+
+    const findings: ReconciliationFinding[] = [];
+    for (const projectId of projectIds) {
+      findings.push(
+        ...this.reconcileT3Project({
+          projectId,
+          sourceUnavailable: sourceUnavailable.filter(
+            (source) => source.projectId === projectId,
+          ),
+        }),
+      );
+    }
+
+    return {
+      findings,
+      observations:
+        observations.length > 0
+          ? observations
+              .map((observation) =>
+                this.codeSessionObservations.find(
+                  (candidate) =>
+                    candidate.provider === observation.provider &&
+                    candidate.externalThreadId === observation.externalThreadId,
+                ),
+              )
+              .filter(
+                (observation): observation is CodeSessionObservation =>
+                  observation !== undefined,
+              )
+          : [],
+    };
+  }
+
+  /**
+   * Explicitly associate a T3 thread with Factory work. This is the only
+   * operation in this integration that creates a Run or CodeSession link.
+   */
+  linkT3Thread(input: LinkT3ThreadInput): {
+    run: Run;
+    codeSession: CodeSession;
+  } {
+    this.refreshFromPersistence();
+    this.refreshT3Observations({ observations: [input.observation] });
+    const observation = this.requireT3Observation(
+      input.observation.provider,
+      input.observation.externalThreadId,
+    );
+    if (
+      observation.projectId !== input.observation.projectId ||
+      observation.externalProjectId !== input.observation.externalProjectId
+    ) {
+      throw new Error(
+        "T3 thread observation does not match its stored Project.",
+      );
+    }
+
+    const target = this.resolveT3LinkTarget({
+      projectId: observation.projectId,
+      subtaskId: input.subtaskId,
+      taskId: input.taskId,
+    });
+    const existingSession = this.codeSessions.find(
+      (candidate) =>
+        candidate.provider === observation.provider &&
+        candidate.externalThreadId === observation.externalThreadId,
+    );
+    let run: Run;
+    if (existingSession) {
+      run = this.requireRun(existingSession.runId);
+      if (run.projectId !== observation.projectId) {
+        throw new Error("T3 thread Run belongs to another Factory Project.");
+      }
+      this.setRunTarget(run, target);
+      this.applyObservationToCodeSession(existingSession, observation);
+      this.save();
+      this.reconcileT3Project({ projectId: observation.projectId });
+      return { codeSession: existingSession, run };
+    }
+
+    const now = this.clock();
+    run = {
+      id: this.idGenerator(),
+      projectId: observation.projectId,
+      state: "observed",
+      createdAt: now,
+      updatedAt: now,
+      ...target,
+    };
+    const { projectId: _projectId, ...sessionObservation } = observation;
+    const codeSession: CodeSession = {
+      ...sessionObservation,
+      id: this.idGenerator(),
+      runId: run.id,
+    };
+    this.runs.push(run);
+    this.codeSessions.push(codeSession);
+    this.save();
+    this.reconcileT3Project({ projectId: observation.projectId });
+    return { codeSession, run };
+  }
+
+  /**
+   * Clear only the Factory target of a linked session. The Run, CodeSession,
+   * current observation, and evidence remain available for provenance.
+   */
+  unlinkT3Thread({
+    externalThreadId,
+    provider = "t3",
+  }: {
+    externalThreadId: string;
+    provider?: "t3";
+  }): { codeSession: CodeSession; run: Run } {
+    this.refreshFromPersistence();
+    const codeSession = this.codeSessions.find(
+      (candidate) =>
+        candidate.provider === provider &&
+        candidate.externalThreadId === externalThreadId,
+    );
+    if (!codeSession) {
+      throw new Error(`T3 thread ${externalThreadId} is not linked.`);
+    }
+    const run = this.requireRun(codeSession.runId);
+    delete run.taskId;
+    delete run.subtaskId;
+    run.updatedAt = this.clock();
+    this.save();
+    this.reconcileT3Project({ projectId: run.projectId });
+    return { codeSession, run };
+  }
+
+  listProjectT3Activity(projectId: string): ProjectT3Activity[] {
+    this.refreshFromPersistence();
+    this.requireProject(projectId);
+    return this.codeSessionObservations
+      .filter(
+        (observation) =>
+          observation.projectId === projectId &&
+          observation.sourceCurrent !== false,
+      )
+      .map((observation) => {
+        const codeSession = this.codeSessions.find(
+          (candidate) =>
+            candidate.provider === observation.provider &&
+            candidate.externalThreadId === observation.externalThreadId,
+        );
+        const run = codeSession
+          ? this.runs.find((candidate) => candidate.id === codeSession.runId)
+          : undefined;
+        return {
+          observation,
+          ...(codeSession ? { codeSession } : {}),
+          ...(run ? { run } : {}),
+        };
+      });
+  }
+
+  getT3ThreadDetail(externalThreadId: string): ProjectT3Activity {
+    this.refreshFromPersistence();
+    const observation = this.codeSessionObservations.find(
+      (candidate) =>
+        candidate.provider === "t3" &&
+        candidate.externalThreadId === externalThreadId,
+    );
+    if (!observation) {
+      throw new Error(`T3 thread ${externalThreadId} does not exist.`);
+    }
+    const codeSession = this.codeSessions.find(
+      (candidate) =>
+        candidate.provider === observation.provider &&
+        candidate.externalThreadId === observation.externalThreadId,
+    );
+    const run = codeSession
+      ? this.runs.find((candidate) => candidate.id === codeSession.runId)
+      : undefined;
+    return {
+      observation,
+      ...(codeSession ? { codeSession } : {}),
+      ...(run ? { run } : {}),
+    };
+  }
+
+  recordSessionEvidence(input: SessionEvidenceInput): SessionEvidence {
+    this.refreshFromPersistence();
+    const evidence = this.appendSessionEvidence(input);
+    this.save();
+    return evidence;
+  }
+
+  private appendSessionEvidence(input: SessionEvidenceInput): SessionEvidence {
+    this.requireT3Observation(input.provider, input.externalThreadId);
+    if (!input.digest.trim()) {
+      throw new Error("T3 evidence digest must not be empty.");
+    }
+    if (input.sourceStream !== undefined && !input.sourceStream.trim()) {
+      throw new Error("T3 evidence source stream must not be empty.");
+    }
+    if (
+      input.sourceSequence !== undefined &&
+      (!Number.isSafeInteger(input.sourceSequence) || input.sourceSequence < 0)
+    ) {
+      throw new Error("T3 evidence source sequence must be non-negative.");
+    }
+    if (Number.isNaN(input.observedAt.getTime())) {
+      throw new Error("T3 evidence timestamp must be a valid date.");
+    }
+    if (
+      !Array.isArray(input.turnIds) ||
+      !input.turnIds.every(
+        (turnId) => typeof turnId === "string" && turnId.trim(),
+      )
+    ) {
+      throw new Error("T3 evidence turn IDs must be non-empty strings.");
+    }
+    if (
+      !Array.isArray(input.checkpointFiles) ||
+      !input.checkpointFiles.every(
+        (path) =>
+          typeof path === "string" &&
+          path.trim() &&
+          !path.replaceAll("\\", "/").startsWith("/") &&
+          !path.replaceAll("\\", "/").split("/").includes(".."),
+      )
+    ) {
+      throw new Error(
+        "T3 evidence checkpoint paths must be safe relative paths.",
+      );
+    }
+    if (
+      input.changedFileCount !== undefined &&
+      (!Number.isSafeInteger(input.changedFileCount) ||
+        input.changedFileCount < 0)
+    ) {
+      throw new Error("T3 evidence changed file count must be non-negative.");
+    }
+    const existing = this.sessionEvidence.find((candidate) => {
+      if (
+        candidate.provider !== input.provider ||
+        candidate.externalThreadId !== input.externalThreadId
+      ) {
+        return false;
+      }
+      const sameStream =
+        (candidate.sourceStream ?? "") === (input.sourceStream ?? "");
+      return input.sourceSequence !== undefined
+        ? sameStream && candidate.sourceSequence === input.sourceSequence
+        : sameStream && candidate.digest === input.digest;
+    });
+    if (existing) return existing;
+
+    const evidence: SessionEvidence = {
+      ...input,
+      id: this.idGenerator(),
+      turnIds: [...input.turnIds],
+      checkpointFiles: [...input.checkpointFiles],
+    };
+    this.sessionEvidence.push(evidence);
+    return evidence;
+  }
+
+  listSessionEvidence(externalThreadId: string): SessionEvidence[] {
+    this.refreshFromPersistence();
+    return this.sessionEvidence.filter(
+      (evidence) =>
+        evidence.provider === "t3" &&
+        evidence.externalThreadId === externalThreadId,
+    );
+  }
+
+  listReconciliationFindings(projectId?: string): ReconciliationFinding[] {
+    this.refreshFromPersistence();
+    return this.reconciliationFindings.filter(
+      (finding) => projectId === undefined || finding.projectId === projectId,
+    );
+  }
+
+  reconcileT3Project({
+    projectId,
+    sourceUnavailable = [],
+  }: {
+    projectId: string;
+    sourceUnavailable?: Array<{
+      projectId: string;
+      observedAt: Date;
+      explanation: string;
+    }>;
+  }): ReconciliationFinding[] {
+    this.refreshFromPersistence();
+    const project = this.requireProject(projectId);
+    const sessions = this.codeSessionObservations.filter(
+      (observation) =>
+        observation.projectId === projectId &&
+        observation.sourceCurrent !== false,
+    );
+    const targets = this.reconciliationTargets(project);
+    const links: ReconciliationLink[] = this.codeSessions
+      .map((session) => {
+        const run = this.runs.find(
+          (candidate) => candidate.id === session.runId,
+        );
+        if (
+          !run ||
+          run.projectId !== projectId ||
+          (!run.taskId && !run.subtaskId)
+        )
+          return undefined;
+        return {
+          externalThreadId: session.externalThreadId,
+          provider: session.provider,
+          ...(run.taskId ? { taskId: run.taskId } : {}),
+          ...(run.subtaskId ? { subtaskId: run.subtaskId } : {}),
+        };
+      })
+      .filter((link): link is ReconciliationLink => link !== undefined);
+
+    const drafts = computeReconciliationFindings({
+      links,
+      now: this.clock(),
+      sessions,
+      sourceUnavailable,
+      targets,
+    });
+    const byKey = new Map(drafts.map((draft) => [draft.dedupeKey, draft]));
+    const existingByKey = new Map(
+      this.reconciliationFindings
+        .filter((finding) => finding.projectId === projectId)
+        .map((finding) => [finding.dedupeKey, finding]),
+    );
+
+    for (const draft of drafts) {
+      const existing = existingByKey.get(draft.dedupeKey);
+      if (existing) {
+        this.applyFindingDraft(existing, draft);
+      } else {
+        this.reconciliationFindings.push({
+          ...draft,
+          createdAt: this.clock(),
+          id: this.idGenerator(),
+          status: "open",
+          updatedAt: this.clock(),
+        });
+      }
+    }
+
+    // Successful refreshes resolve findings that no longer describe the
+    // current normalized source. An unavailable source intentionally leaves
+    // existing findings open so stale data is never presented as resolved.
+    if (sourceUnavailable.length === 0) {
+      for (const finding of this.reconciliationFindings) {
+        if (
+          finding.projectId === projectId &&
+          finding.status === "open" &&
+          !byKey.has(finding.dedupeKey)
+        ) {
+          finding.status = "resolved";
+          finding.updatedAt = this.clock();
+        }
+      }
+    }
+
+    this.save();
+    return this.reconciliationFindings.filter(
+      (finding) => finding.projectId === projectId,
+    );
   }
 
   addTaskTrackerLink({
@@ -1144,6 +1939,8 @@ export class FactoryApplication {
     id: string;
     name: string;
     gitOriginUrl?: string;
+    t3ProjectId?: string;
+    workspaceRoot?: string;
     trackerLinks: TrackerLink[];
   } {
     this.refreshFromPersistence();
@@ -1156,6 +1953,10 @@ export class FactoryApplication {
       id: project.id,
       name: project.name,
       ...(project.gitOriginUrl ? { gitOriginUrl: project.gitOriginUrl } : {}),
+      ...(project.t3ProjectId ? { t3ProjectId: project.t3ProjectId } : {}),
+      ...(project.workspaceRoot
+        ? { workspaceRoot: project.workspaceRoot }
+        : {}),
       trackerLinks: this.trackerLinks.filter(
         (link) => link.projectId === projectId,
       ),
@@ -1318,6 +2119,206 @@ export class FactoryApplication {
     });
     this.save();
     return group.sort((left, right) => this.compareSubtasks(left, right));
+  }
+
+  private requireProject(projectId: string): Project {
+    const project = this.projects.find(
+      (candidate) => candidate.id === projectId,
+    );
+    if (!project) throw new Error(`Project ${projectId} does not exist.`);
+    return project;
+  }
+
+  private requireRun(runId: string): Run {
+    const run = this.runs.find((candidate) => candidate.id === runId);
+    if (!run) throw new Error(`Run ${runId} does not exist.`);
+    return run;
+  }
+
+  private requireT3Observation(
+    provider: "t3",
+    externalThreadId: string,
+  ): CodeSessionObservation {
+    const observation = this.codeSessionObservations.find(
+      (candidate) =>
+        candidate.provider === provider &&
+        candidate.externalThreadId === externalThreadId,
+    );
+    if (!observation) {
+      throw new Error(`T3 thread ${externalThreadId} does not exist.`);
+    }
+    return observation;
+  }
+
+  private resolveT3LinkTarget({
+    projectId,
+    subtaskId,
+    taskId,
+  }: {
+    projectId: string;
+    subtaskId?: string;
+    taskId?: string;
+  }): { taskId?: string; subtaskId?: string } {
+    if (subtaskId !== undefined) {
+      const subtask = this.subtasks.find(
+        (candidate) => candidate.id === subtaskId,
+      );
+      if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
+      const parent = this.tasks.find(
+        (candidate) => candidate.id === subtask.taskId,
+      );
+      if (!parent || parent.projectId !== projectId) {
+        throw new Error(
+          "T3 thread target must belong to the selected Project.",
+        );
+      }
+      if (taskId !== undefined && taskId !== parent.id) {
+        throw new Error("The Subtask does not belong to the selected Task.");
+      }
+      return { subtaskId, taskId: parent.id };
+    }
+
+    if (taskId !== undefined) {
+      const task = this.tasks.find((candidate) => candidate.id === taskId);
+      if (!task) throw new Error(`Task ${taskId} does not exist.`);
+      if (task.projectId !== projectId) {
+        throw new Error(
+          "T3 thread target must belong to the selected Project.",
+        );
+      }
+      return { taskId };
+    }
+
+    return {};
+  }
+
+  private setRunTarget(
+    run: Run,
+    target: { taskId?: string; subtaskId?: string },
+  ): void {
+    if (target.taskId) run.taskId = target.taskId;
+    else delete run.taskId;
+    if (target.subtaskId) run.subtaskId = target.subtaskId;
+    else delete run.subtaskId;
+    run.updatedAt = this.clock();
+  }
+
+  private applyObservationToCodeSession(
+    session: CodeSession,
+    observation: CodeSessionObservationInput & { sourceCurrent?: boolean },
+  ): void {
+    const { projectId: _projectId, ...sessionObservation } = observation;
+    Object.assign(session, sessionObservation);
+  }
+
+  private isNewerObservation(
+    incoming: CodeSessionObservationInput,
+    existing: CodeSessionObservation,
+  ): boolean {
+    if (
+      incoming.sourceSequence !== undefined &&
+      existing.sourceSequence !== undefined &&
+      incoming.sourceStream !== undefined &&
+      existing.sourceStream !== undefined &&
+      incoming.sourceStream === existing.sourceStream &&
+      incoming.sourceSequence !== existing.sourceSequence
+    ) {
+      return incoming.sourceSequence > existing.sourceSequence;
+    }
+    if (
+      incoming.sourceDigest === existing.sourceDigest &&
+      incoming.sourceSequence === existing.sourceSequence &&
+      incoming.sourceStream === existing.sourceStream
+    ) {
+      return false;
+    }
+    return (
+      incoming.sourceUpdatedAt.getTime() > existing.sourceUpdatedAt.getTime()
+    );
+  }
+
+  private boundaryCoversObservation(
+    boundary: T3ObservationRefreshBoundary,
+    observation: CodeSessionObservation,
+  ): boolean {
+    if (
+      boundary.sourceStream === observation.sourceStream &&
+      observation.sourceSequence !== undefined
+    ) {
+      return boundary.sourceSequence >= observation.sourceSequence;
+    }
+    return (
+      boundary.sourceUpdatedAt.getTime() >=
+      observation.sourceUpdatedAt.getTime()
+    );
+  }
+
+  private reconciliationTargets(project: Project): ReconciliationTarget[] {
+    const repositoryIdentity = normalizeRepositoryIdentity(
+      project.gitOriginUrl,
+    );
+    const targets: ReconciliationTarget[] = [];
+    for (const task of this.tasks) {
+      if (task.projectId !== project.id || task.archiveState !== undefined) {
+        continue;
+      }
+      const taskState = this.getEffectiveTaskWorkState(task);
+      targets.push({
+        projectId: project.id,
+        taskId: task.id,
+        taskName: task.name,
+        ...(task.branchName ? { branchName: task.branchName } : {}),
+        ...(task.pullRequestUrl ? { pullRequestUrl: task.pullRequestUrl } : {}),
+        ...(repositoryIdentity ? { repositoryIdentity } : {}),
+        ...(project.workspaceRoot
+          ? { workspaceRoot: project.workspaceRoot }
+          : {}),
+        workState: taskState,
+      });
+
+      for (const subtask of this.subtasks) {
+        if (subtask.taskId !== task.id || subtask.archiveState !== undefined) {
+          continue;
+        }
+        const report = this.getCurrentStatusReport(subtask.id);
+        targets.push({
+          projectId: project.id,
+          taskId: task.id,
+          taskName: task.name,
+          subtaskId: subtask.id,
+          subtaskName: subtask.name,
+          ...(task.branchName ? { branchName: task.branchName } : {}),
+          ...(subtask.pullRequestUrl
+            ? { pullRequestUrl: subtask.pullRequestUrl }
+            : {}),
+          ...(repositoryIdentity ? { repositoryIdentity } : {}),
+          ...(project.workspaceRoot
+            ? { workspaceRoot: project.workspaceRoot }
+            : {}),
+          workState: this.getSubtaskEffectiveWorkState(subtask),
+          ...(report ? { latestReportAt: report.createdAt } : {}),
+        });
+      }
+    }
+    return targets;
+  }
+
+  private applyFindingDraft(
+    finding: ReconciliationFinding,
+    draft: ReconciliationFindingDraft,
+  ): void {
+    finding.kind = draft.kind;
+    finding.severity = draft.severity;
+    finding.projectId = draft.projectId;
+    finding.externalThreadId = draft.externalThreadId;
+    finding.taskId = draft.taskId;
+    finding.subtaskId = draft.subtaskId;
+    finding.candidateIds = [...draft.candidateIds];
+    finding.observedAt = draft.observedAt;
+    finding.explanation = draft.explanation;
+    finding.suggestedAction = draft.suggestedAction;
+    if (finding.status === "resolved") finding.status = "open";
+    finding.updatedAt = this.clock();
   }
 
   private validateCompleteOrdering(
@@ -1693,6 +2694,27 @@ export class FactoryApplication {
       this.trackerLinks.length,
       ...(state.trackerLinks ?? []),
     );
+    this.runs.splice(0, this.runs.length, ...(state.runs ?? []));
+    this.codeSessions.splice(
+      0,
+      this.codeSessions.length,
+      ...(state.codeSessions ?? []),
+    );
+    this.codeSessionObservations.splice(
+      0,
+      this.codeSessionObservations.length,
+      ...(state.codeSessionObservations ?? []),
+    );
+    this.sessionEvidence.splice(
+      0,
+      this.sessionEvidence.length,
+      ...(state.sessionEvidence ?? []),
+    );
+    this.reconciliationFindings.splice(
+      0,
+      this.reconciliationFindings.length,
+      ...(state.reconciliationFindings ?? []),
+    );
   }
 
   private save(): void {
@@ -1703,6 +2725,11 @@ export class FactoryApplication {
       tasks: this.tasks,
       verifications: this.verifications,
       trackerLinks: this.trackerLinks,
+      runs: this.runs,
+      codeSessions: this.codeSessions,
+      codeSessionObservations: this.codeSessionObservations,
+      sessionEvidence: this.sessionEvidence,
+      reconciliationFindings: this.reconciliationFindings,
     });
   }
 }
@@ -1903,5 +2930,47 @@ function hydrateState(state: FactoryState): FactoryState {
       createdAt: new Date(verification.createdAt),
     })),
     trackerLinks: state.trackerLinks ?? [],
+    runs: (state.runs ?? []).map((run) => ({
+      ...run,
+      createdAt: new Date(run.createdAt),
+      updatedAt: new Date(run.updatedAt),
+    })),
+    codeSessions: (state.codeSessions ?? []).map((session) => ({
+      ...session,
+      ...(session.latestTurnCompletedAt
+        ? { latestTurnCompletedAt: new Date(session.latestTurnCompletedAt) }
+        : {}),
+      observedAt: new Date(session.observedAt),
+      sourceUpdatedAt: new Date(session.sourceUpdatedAt),
+    })),
+    codeSessionObservations: (state.codeSessionObservations ?? []).map(
+      (observation) => ({
+        ...observation,
+        ...(observation.latestTurnCompletedAt
+          ? {
+              latestTurnCompletedAt: new Date(
+                observation.latestTurnCompletedAt,
+              ),
+            }
+          : {}),
+        observedAt: new Date(observation.observedAt),
+        sourceUpdatedAt: new Date(observation.sourceUpdatedAt),
+      }),
+    ),
+    sessionEvidence: (state.sessionEvidence ?? []).map((evidence) => ({
+      ...evidence,
+      observedAt: new Date(evidence.observedAt),
+      turnIds: evidence.turnIds ?? [],
+      checkpointFiles: evidence.checkpointFiles ?? [],
+    })),
+    reconciliationFindings: (state.reconciliationFindings ?? []).map(
+      (finding) => ({
+        ...finding,
+        candidateIds: finding.candidateIds ?? [],
+        createdAt: new Date(finding.createdAt),
+        observedAt: new Date(finding.observedAt),
+        updatedAt: new Date(finding.updatedAt),
+      }),
+    ),
   };
 }

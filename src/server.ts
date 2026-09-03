@@ -12,6 +12,13 @@ import {
   type GitHubStatusReader,
   type GitHubStatusSnapshot,
 } from "./github";
+import { createT3Coordinator } from "./t3-coordinator";
+import {
+  createT3ActivityReader,
+  normalizeT3BaseUrl,
+  type T3ActivityReader,
+} from "./t3";
+import { resolveT3AccessToken } from "./t3-credential";
 
 type ConnectionEvent = "close" | "error" | "message";
 type ConnectionListener = (...args: unknown[]) => void;
@@ -80,6 +87,7 @@ class ProjectUpdateBus {
 function createRouter(
   application: ReturnType<typeof createFactoryApplication>,
   githubStatusReader: GitHubStatusReader,
+  t3Coordinator: ReturnType<typeof createT3Coordinator>,
 ) {
   const projectUpdates = new ProjectUpdateBus(application);
 
@@ -120,6 +128,8 @@ function createRouter(
           z.object({
             gitOriginUrl: z.string().trim().min(1).optional(),
             name: z.string().min(1),
+            t3ProjectId: z.string().trim().min(1).optional(),
+            workspaceRoot: z.string().trim().min(1).optional(),
           }),
         )
         .mutation(({ input }) => application.createProject(input)),
@@ -128,6 +138,8 @@ function createRouter(
           z.object({
             gitOriginUrl: z.string().trim().min(1).nullable(),
             projectId: z.string().min(1),
+            t3ProjectId: z.string().trim().min(1).nullable().optional(),
+            workspaceRoot: z.string().trim().min(1).nullable().optional(),
           }),
         )
         .mutation(({ input }) => {
@@ -186,6 +198,42 @@ function createRouter(
             ),
           ),
         ),
+    }),
+    t3: trpc.router({
+      status: trpc.procedure
+        .input(
+          z
+            .object({ projectId: z.string().min(1).optional() })
+            .nullable()
+            .optional(),
+        )
+        .query(({ input }) => t3Coordinator.status(input?.projectId)),
+      projectActivity: trpc.procedure
+        .input(z.object({ projectId: z.string().min(1) }))
+        .query(({ input }) => t3Coordinator.projectActivity(input.projectId)),
+      threadDetail: trpc.procedure
+        .input(
+          z.object({
+            threadId: z.string().min(1),
+            turnLimit: z.number().int().min(1).max(10).default(1),
+          }),
+        )
+        .query(({ input }) =>
+          t3Coordinator.threadDetail(input.threadId, input.turnLimit),
+        ),
+      linkThread: trpc.procedure
+        .input(
+          z.object({
+            projectId: z.string().min(1),
+            subtaskId: z.string().min(1).optional(),
+            taskId: z.string().min(1).optional(),
+            threadId: z.string().min(1),
+          }),
+        )
+        .mutation(({ input }) => t3Coordinator.linkThread(input)),
+      unlinkThread: trpc.procedure
+        .input(z.object({ threadId: z.string().min(1) }))
+        .mutation(({ input }) => t3Coordinator.unlinkThread(input.threadId)),
     }),
     subtasks: trpc.router({
       create: trpc.procedure
@@ -452,6 +500,9 @@ export type FactoryServerOptions = {
   githubToken?: string;
   hostname: string;
   port: number;
+  t3AccessToken?: string;
+  t3BaseUrl?: string;
+  t3TimeoutMs?: number;
 };
 
 export function getFactoryServerOptions(
@@ -471,6 +522,28 @@ export function getFactoryServerOptions(
     );
   }
 
+  const configuredT3BaseUrl = environment.T3_BASE_URL?.trim();
+  const configuredT3Timeout = environment.T3_TIMEOUT_MS?.trim();
+  let t3TimeoutMs: number | undefined;
+  if (configuredT3Timeout) {
+    t3TimeoutMs = Number(configuredT3Timeout);
+    if (
+      !Number.isSafeInteger(t3TimeoutMs) ||
+      t3TimeoutMs < 250 ||
+      t3TimeoutMs > 60_000 ||
+      String(t3TimeoutMs) !== configuredT3Timeout
+    ) {
+      throw new Error(
+        `T3_TIMEOUT_MS must be an integer from 250 through 60000; received ${JSON.stringify(configuredT3Timeout)}.`,
+      );
+    }
+  }
+
+  const t3BaseUrl = configuredT3BaseUrl
+    ? normalizeT3BaseUrl(configuredT3BaseUrl)
+    : undefined;
+  const t3AccessToken = resolveT3AccessToken(environment);
+
   return {
     databasePath: environment.FACTORY_DB ?? "factory.sqlite",
     ...(environment.GITHUB_TOKEN || environment.GH_TOKEN
@@ -478,6 +551,9 @@ export function getFactoryServerOptions(
       : {}),
     hostname: environment.FACTORY_HOST ?? "127.0.0.1",
     port,
+    ...(t3AccessToken ? { t3AccessToken } : {}),
+    ...(t3BaseUrl ? { t3BaseUrl } : {}),
+    ...(t3TimeoutMs === undefined ? {} : { t3TimeoutMs }),
   };
 }
 
@@ -487,17 +563,36 @@ export function createFactoryServer({
   githubToken,
   hostname = "127.0.0.1",
   port,
+  t3AccessToken: _t3AccessToken,
+  t3BaseUrl: _t3BaseUrl,
+  t3TimeoutMs: _t3TimeoutMs,
+  t3ActivityReader,
 }: {
   databasePath?: string;
   githubStatusReader?: GitHubStatusReader;
   githubToken?: string;
   hostname?: string;
   port: number;
+  t3AccessToken?: string;
+  t3BaseUrl?: string;
+  t3TimeoutMs?: number;
+  t3ActivityReader?: T3ActivityReader;
 }): FactoryServer {
   const application = createFactoryApplication({ databasePath });
+  const t3Coordinator = createT3Coordinator({
+    application,
+    reader:
+      t3ActivityReader ??
+      createT3ActivityReader({
+        baseUrl: _t3BaseUrl,
+        timeoutMs: _t3TimeoutMs,
+        token: _t3AccessToken,
+      }),
+  });
   const router = createRouter(
     application,
     githubStatusReader ?? createGitHubStatusReader({ token: githubToken }),
+    t3Coordinator,
   );
   const onConnection = getWSConnectionHandler({
     createContext: () => ({}),

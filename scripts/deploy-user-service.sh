@@ -24,6 +24,7 @@ if [[ ! -f "${FACTORY_DATABASE_PATH}" ]]; then
 fi
 
 mkdir -p "${FACTORY_RELEASES_DIR}" "${FACTORY_LOG_ROOT}"
+install -d -m 0700 "${FACTORY_SERVICE_ROOT}/secrets"
 FACTORY_STAGE_DIR="$(mktemp -d "${FACTORY_SERVICE_ROOT}/.deploy.XXXXXX")"
 FACTORY_PLIST_STAGE="$(mktemp "${FACTORY_SERVICE_ROOT}/.launch-agent.XXXXXX")"
 trap 'rm -rf "${FACTORY_STAGE_DIR}"; rm -f "${FACTORY_PLIST_STAGE}"' EXIT
