@@ -10,6 +10,8 @@ const skill = readFileSync(
 describe("Software Factory skill", () => {
   test("directs agents to auto-associate the current T3 session", () => {
     expect(skill).toContain("session auto-link");
+    expect(skill).toContain('--workspace-root "$REPO_CHECKOUT"');
+    expect(skill).toContain("remote get-url origin 2>/dev/null || true");
     expect(skill).toContain(
       "Immediately after `project context` resolves exactly one Project and Task",
     );

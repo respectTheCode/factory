@@ -31,6 +31,7 @@ bun run src/cli.ts project list --git-origin-url "git@github.com:org/repository.
   --json --database "$FACTORY_DB"
 bun run src/cli.ts project attention --json --database "$FACTORY_DB"
 bun run src/cli.ts project context \
+  --workspace-root "/absolute/path/to/repository" \
   --git-origin-url "git@github.com:org/repository.git" \
   --branch-name "GRA-143-preview-environments" --json --database "$FACTORY_DB"
 bun run src/cli.ts project create --name "Project name" --database "$FACTORY_DB"
@@ -155,20 +156,25 @@ human-only PWA concern.
 ## Agent operating loop
 
 For coding work, resolve the current checkout before reading or reporting Factory work. The CLI
-normalizes common HTTPS, SSH URL, and SCP-style Git origins. `project context` fails closed when
-the origin matches zero or multiple Projects, or when a supplied branch matches zero or multiple
-Tasks:
+normalizes common HTTPS, SSH URL, and SCP-style Git origins plus absolute workspace roots.
+`project context` fails closed when every supplied Project identity does not resolve to exactly
+one Project, or when a supplied branch matches zero or multiple Tasks:
 
 ```bash
 REPO_CHECKOUT="$(git rev-parse --show-toplevel)"
-GIT_ORIGIN="$(git -C "$REPO_CHECKOUT" remote get-url origin)"
+GIT_ORIGIN="$(git -C "$REPO_CHECKOUT" remote get-url origin 2>/dev/null || true)"
 GIT_BRANCH="$(git -C "$REPO_CHECKOUT" branch --show-current)"
 cd "$FACTORY_CHECKOUT"
-bun run src/cli.ts project context --git-origin-url "$GIT_ORIGIN" \
+if [[ -n "$GIT_ORIGIN" ]]; then
+  CONTEXT_SELECTOR=(--git-origin-url "$GIT_ORIGIN")
+else
+  CONTEXT_SELECTOR=(--workspace-root "$REPO_CHECKOUT")
+fi
+bun run src/cli.ts project context "${CONTEXT_SELECTOR[@]}" \
   --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
 bun run src/cli.ts session auto-link --project-id PROJECT_ID --task-id TASK_ID \
   --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
-bun run src/cli.ts project attention --git-origin-url "$GIT_ORIGIN" \
+bun run src/cli.ts project attention "${CONTEXT_SELECTOR[@]}" \
   --json --database "$FACTORY_DB"
 bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
 bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$FACTORY_DB"
@@ -187,9 +193,10 @@ link` or the PWA's collapsed **Manage associations** section only as a fallback.
 association with its `--association-id`; never remove unrelated associations. Association changes
 are Factory metadata only and never change T3, Work State, Status Reports, or Verification.
 
-If the checkout is detached and `git branch --show-current` is empty, omit `--branch-name` and
-inspect the returned Project Tasks. Do not infer a Project or Task after a resolver error; ask
-Kevin to correct missing or duplicate Factory context.
+If the checkout has no Git remote, the exact absolute workspace root remains sufficient. If the
+checkout is detached and `git branch --show-current` is empty, omit `--branch-name` and inspect
+the returned Project Tasks. Do not infer a Project or Task after a resolver error; ask Kevin to
+correct missing or duplicate Factory context.
 
 When work starts, submit `in_progress`. Submit `blocked` with the blocker in `--evidence`, or
 submit `complete` only when the evidence is ready for Kevin to review. Reports are observations,

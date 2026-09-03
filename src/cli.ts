@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import {
   backupFactoryDatabase,
   checkFactoryDatabase,
@@ -292,6 +294,53 @@ function projectsMatchingGitOrigin(
     );
 }
 
+function workspaceRootFlag(flags: Map<string, string>): string | undefined {
+  const value = flags.get("workspace-root");
+  if (value === undefined) return undefined;
+  if (!value.trim()) throw new Error("--workspace-root must not be empty.");
+  return resolve(value.trim());
+}
+
+function projectsMatchingContext(
+  application: ReturnType<typeof createFactoryApplication>,
+  {
+    gitOriginUrl,
+    workspaceRoot,
+  }: { gitOriginUrl?: string; workspaceRoot?: string },
+) {
+  return application.listProjects().filter((project) => {
+    if (
+      gitOriginUrl !== undefined &&
+      (project.gitOriginUrl === undefined ||
+        normalizeGitOriginUrl(project.gitOriginUrl) !==
+          normalizeGitOriginUrl(gitOriginUrl))
+    ) {
+      return false;
+    }
+    if (
+      workspaceRoot !== undefined &&
+      (project.workspaceRoot === undefined ||
+        resolve(project.workspaceRoot) !== workspaceRoot)
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function contextSelectorDescription({
+  gitOriginUrl,
+  workspaceRoot,
+}: {
+  gitOriginUrl?: string;
+  workspaceRoot?: string;
+}): string {
+  return [
+    ...(gitOriginUrl ? [`Git origin ${gitOriginUrl}`] : []),
+    ...(workspaceRoot ? [`workspace root ${workspaceRoot}`] : []),
+  ].join(" and ");
+}
+
 async function main(args: string[]): Promise<void> {
   const parsed = parseArgs(args);
   const [resource, action] = parsed.command;
@@ -395,15 +444,27 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "project" && action === "context") {
     const gitOriginUrl = gitOriginFlag(parsed.flags);
-    if (!gitOriginUrl) throw new Error("Missing required --git-origin-url.");
+    const workspaceRoot = workspaceRootFlag(parsed.flags);
+    if (!gitOriginUrl && !workspaceRoot) {
+      throw new Error(
+        "Provide at least one of --git-origin-url or --workspace-root.",
+      );
+    }
 
-    const projects = projectsMatchingGitOrigin(application, gitOriginUrl);
+    const projects = projectsMatchingContext(application, {
+      gitOriginUrl,
+      workspaceRoot,
+    });
+    const selector = contextSelectorDescription({
+      gitOriginUrl,
+      workspaceRoot,
+    });
     if (projects.length === 0) {
-      throw new Error(`No Factory Project matches Git origin ${gitOriginUrl}.`);
+      throw new Error(`No Factory Project matches ${selector}.`);
     }
     if (projects.length > 1) {
       throw new Error(
-        `Git origin ${gitOriginUrl} matches multiple Factory Projects: ${projects
+        `${selector} matches multiple Factory Projects: ${projects
           .map((project) => project.id)
           .join(", ")}.`,
       );
@@ -447,6 +508,9 @@ async function main(args: string[]): Promise<void> {
         ...(hierarchy.gitOriginUrl
           ? { gitOriginUrl: hierarchy.gitOriginUrl }
           : {}),
+        ...(hierarchy.workspaceRoot
+          ? { workspaceRoot: hierarchy.workspaceRoot }
+          : {}),
         trackerLinks: projectDetail.trackerLinks,
         tasks,
       },
@@ -470,13 +534,16 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "project" && action === "attention") {
     const gitOriginUrl = gitOriginFlag(parsed.flags);
-    const matchingProjectIds = gitOriginUrl
-      ? new Set(
-          projectsMatchingGitOrigin(application, gitOriginUrl).map(
-            (project) => project.id,
-          ),
-        )
-      : undefined;
+    const workspaceRoot = workspaceRootFlag(parsed.flags);
+    const matchingProjectIds =
+      gitOriginUrl || workspaceRoot
+        ? new Set(
+            projectsMatchingContext(application, {
+              gitOriginUrl,
+              workspaceRoot,
+            }).map((project) => project.id),
+          )
+        : undefined;
     output({
       attention: application
         .getAttentionProjection()

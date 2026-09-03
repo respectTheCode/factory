@@ -9,7 +9,8 @@ type ProjectCreateOutput = {
   project: {
     id: string;
     name: string;
-    gitOriginUrl: string;
+    gitOriginUrl?: string;
+    workspaceRoot?: string;
   };
 };
 
@@ -42,6 +43,81 @@ async function runCli(
 }
 
 describe("git context CLI metadata", () => {
+  test("resolves project and task context by workspace root without a Git remote", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-cli-workspace-context-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+    const workspaceRoot = join(temporaryDirectory, "factory");
+
+    try {
+      const projectResult = await runCli([
+        "project",
+        "create",
+        "--name",
+        "Factory",
+        "--workspace-root",
+        workspaceRoot,
+        "--database",
+        databasePath,
+      ]);
+      expect(projectResult.exitCode).toBe(0);
+      const project = (JSON.parse(projectResult.stdout) as ProjectCreateOutput)
+        .project;
+
+      const taskResult = await runCli([
+        "task",
+        "create",
+        "--name",
+        "Automatic associations",
+        "--project-id",
+        project.id,
+        "--branch-name",
+        "factory-agent-session-auto-linking",
+        "--database",
+        databasePath,
+      ]);
+      const task = (JSON.parse(taskResult.stdout) as TaskCreateOutput).task;
+
+      const contextResult = await runCli([
+        "project",
+        "context",
+        "--workspace-root",
+        join(workspaceRoot, "."),
+        "--branch-name",
+        "factory-agent-session-auto-linking",
+        "--json",
+        "--database",
+        databasePath,
+      ]);
+      expect(contextResult.exitCode).toBe(0);
+      expect(JSON.parse(contextResult.stdout)).toMatchObject({
+        schemaVersion: 1,
+        context: {
+          id: project.id,
+          workspaceRoot,
+          tasks: [{ id: task.id }],
+        },
+      });
+
+      const attentionResult = await runCli([
+        "project",
+        "attention",
+        "--workspace-root",
+        workspaceRoot,
+        "--json",
+        "--database",
+        databasePath,
+      ]);
+      expect(attentionResult.exitCode).toBe(0);
+      expect(JSON.parse(attentionResult.stdout)).toMatchObject({
+        attention: [{ projectId: project.id, taskId: task.id }],
+      });
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
   test("accepts and returns git origin and branch metadata", async () => {
     const temporaryDirectory = mkdtempSync(
       join(tmpdir(), "software-factory-cli-git-context-"),
@@ -345,6 +421,55 @@ describe("git context CLI metadata", () => {
         "context",
         "--git-origin-url",
         "ssh://git@github.com/app-press/grail.git",
+        "--database",
+        databasePath,
+      ]);
+      expect(ambiguousResult.exitCode).toBe(1);
+      expect(ambiguousResult.stderr).toContain(
+        "matches multiple Factory Projects",
+      );
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test("fails closed when a workspace root does not resolve uniquely", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-cli-workspace-ambiguity-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+    const workspaceRoot = join(temporaryDirectory, "factory");
+
+    try {
+      const missingResult = await runCli([
+        "project",
+        "context",
+        "--workspace-root",
+        join(temporaryDirectory, "missing"),
+        "--database",
+        databasePath,
+      ]);
+      expect(missingResult.exitCode).toBe(1);
+      expect(missingResult.stderr).toContain("No Factory Project matches");
+
+      for (const name of ["Factory one", "Factory two"]) {
+        await runCli([
+          "project",
+          "create",
+          "--name",
+          name,
+          "--workspace-root",
+          workspaceRoot,
+          "--database",
+          databasePath,
+        ]);
+      }
+
+      const ambiguousResult = await runCli([
+        "project",
+        "context",
+        "--workspace-root",
+        workspaceRoot,
         "--database",
         databasePath,
       ]);

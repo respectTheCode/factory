@@ -229,6 +229,11 @@ Candidate priority is:
 4. Exact workspace-root association explicitly stored for a Factory Project, plus one unique Task
    branch.
 
+The agent-facing `project context` and `project attention` CLI reads accept
+`--workspace-root` as an exact Project selector. Agents always supply the absolute checkout root
+when a normalized Git origin is unavailable. This keeps local-only repositories eligible for
+deterministic automatic association without falling back to a Project name.
+
 Title, message, file-name, and language-model similarity are not deterministic matches. They may be
 shown later as low-confidence suggestions but cannot create links.
 
