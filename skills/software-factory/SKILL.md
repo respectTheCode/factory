@@ -15,7 +15,12 @@ Set the database explicitly when working outside the default local database:
 ```bash
 FACTORY_CHECKOUT="${FACTORY_CHECKOUT:-/Users/agent/Projects/factory}"
 FACTORY_DB="${FACTORY_DB:-$FACTORY_CHECKOUT/factory.sqlite}"
+export T3_BASE_URL="${T3_BASE_URL:-http://127.0.0.1:3773}"
+export T3_ACCESS_TOKEN_FILE="${T3_ACCESS_TOKEN_FILE:-$HOME/Library/Application Support/Factory/secrets/t3-read-token}"
 ```
+
+The read-only token file is operator-provisioned with mode `0600`, and T3 reads are read-only.
+Never print, echo, or paste the token into a handoff.
 
 Check database integrity and persisted record counts before or after maintenance:
 
@@ -164,6 +169,8 @@ one Project, or when a supplied branch matches zero or multiple Tasks:
 REPO_CHECKOUT="$(git rev-parse --show-toplevel)"
 GIT_ORIGIN="$(git -C "$REPO_CHECKOUT" remote get-url origin 2>/dev/null || true)"
 GIT_BRANCH="$(git -C "$REPO_CHECKOUT" branch --show-current)"
+export T3_BASE_URL="${T3_BASE_URL:-http://127.0.0.1:3773}"
+export T3_ACCESS_TOKEN_FILE="${T3_ACCESS_TOKEN_FILE:-$HOME/Library/Application Support/Factory/secrets/t3-read-token}"
 cd "$FACTORY_CHECKOUT"
 if [[ -n "$GIT_ORIGIN" ]]; then
   CONTEXT_SELECTOR=(--git-origin-url "$GIT_ORIGIN")
@@ -172,6 +179,8 @@ else
 fi
 bun run src/cli.ts project context "${CONTEXT_SELECTOR[@]}" \
   --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
+bun run src/cli.ts project t3-status --project-id PROJECT_ID \
+  --json --database "$FACTORY_DB"
 bun run src/cli.ts session auto-link --project-id PROJECT_ID --task-id TASK_ID \
   --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
 bun run src/cli.ts project attention "${CONTEXT_SELECTOR[@]}" \
@@ -182,9 +191,16 @@ bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$F
 
 Immediately after `project context` resolves exactly one Project and Task, run `session auto-link`
 with those IDs and the current branch. The command reads current T3 activity and adds an idempotent
-Factory Work Association only when exactly one running T3 thread has that branch. Treat `linked` as
-success. If it returns `unmatched` or `ambiguous`, create no association, continue only with the
-resolved Factory work, and name the missing or candidate thread IDs in the handoff; do not guess.
+Factory Work Association only when exactly one running T3 thread has that branch. Use
+`project t3-status --project-id ... --json` as the quick way to confirm the connection state is
+`connected`.
+Treat `linked` as success. If it returns `unmatched` or `ambiguous`, create no association, continue
+only with the resolved Factory work, and name the missing or candidate thread IDs in the handoff; do
+not guess. Any transport state (`not_configured`, `unreachable`, `authentication_failed`,
+`permission_denied`, `incompatible`, `invalid_response`, or `unavailable`) also creates no
+association. Continue with the resolved Factory work only, report the exact status string in the
+handoff so Kevin can fix the service or credential, and never retry by guessing a thread ID or by
+using `session link` to work around it.
 
 A Code Session may have zero, one, or many Work Associations. Automatic Task association does not
 replace existing associations. When the agent selects a specific Subtask, run `session auto-link`

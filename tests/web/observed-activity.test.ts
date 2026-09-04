@@ -6,6 +6,7 @@ import {
   formatObservedTime,
   observedConnectionLabel,
   observedFindingLabel,
+  suggestedAssociationTarget,
 } from "../../src/web/observed-activity";
 
 const source = readFileSync(
@@ -35,6 +36,9 @@ describe("observed activity presentation", () => {
     );
     expect(observedFindingLabel("source_unavailable")).toBe(
       "Source unavailable",
+    );
+    expect(observedFindingLabel("project_unresolved")).toBe(
+      "Project unresolved",
     );
   });
 
@@ -72,7 +76,56 @@ describe("observed activity presentation", () => {
     expect(source).toContain("association.links.map");
     expect(source).toContain("threadDetailLoadingIds");
     expect(source).toContain("candidateLabels");
+    expect(source).toContain("candidateIds");
+    expect(source).toContain("Link suggested target");
     expect(source).toContain("Metadata only; transcript text is intentionally");
+  });
+
+  test("keeps suggested badges compact and target labels singular", () => {
+    expect(source).toContain('? "Suggested"');
+    expect(source).toContain(
+      "? `Suggested target: ${association.candidateLabels[0]}`",
+    );
+    expect(source.match(/Suggested target:/g)).toHaveLength(1);
+    expect(source).toMatch(
+      /association\.state === "suggested"\s+\? " observed-thread-association-linked"\s+: ""/,
+    );
+  });
+
+  test("resolves exactly one suggested target and fails closed otherwise", () => {
+    const targets = [
+      { id: "task-1", kind: "task" as const, label: "First Task" },
+      { id: "task-2", kind: "task" as const, label: "Second Task" },
+    ];
+
+    expect(
+      suggestedAssociationTarget(
+        { candidateIds: ["task-1"], links: [], state: "suggested" },
+        targets,
+      ),
+    ).toBe(targets[0]);
+    expect(
+      suggestedAssociationTarget(
+        {
+          candidateIds: ["task-1", "task-2"],
+          links: [],
+          state: "suggested",
+        },
+        targets,
+      ),
+    ).toBeUndefined();
+    expect(
+      suggestedAssociationTarget(
+        { candidateIds: ["task-1"], links: [], state: "ambiguous" },
+        targets,
+      ),
+    ).toBeUndefined();
+    expect(
+      suggestedAssociationTarget(
+        { candidateIds: ["missing"], links: [], state: "suggested" },
+        targets,
+      ),
+    ).toBeUndefined();
   });
 
   test("collapses the full session section by default while keeping status visible", () => {
@@ -123,7 +176,7 @@ describe("observed activity presentation", () => {
     expect(stylesheet).toContain(".observed-activity-summary");
     expect(stylesheet).toContain(".observed-activity-summary-state");
     expect(stylesheet).toContain(".observed-counts");
-    expect(stylesheet).toContain("grid-template-columns: repeat(5");
+    expect(stylesheet).toContain("grid-template-columns: repeat(6");
     expect(stylesheet).toContain("@media (max-width: 540px)");
     expect(stylesheet).toContain(".observed-link-control");
     expect(stylesheet).toContain(".observed-association-manager");

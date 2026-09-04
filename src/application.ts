@@ -6,10 +6,12 @@ import { Database } from "bun:sqlite";
 import { parseGitHubPullRequestUrl } from "./github";
 import {
   computeReconciliationFindings,
+  matchReconciliationTarget,
   type ReconciliationFindingDraft,
   type ReconciliationFindingKind,
   type ReconciliationFindingSeverity,
   type ReconciliationLink,
+  type ReconciliationMatch,
   type ReconciliationSession,
   type ReconciliationSessionState,
   type ReconciliationTarget,
@@ -1437,11 +1439,17 @@ export class FactoryApplication {
   refreshT3Observations({
     evidence = [],
     observations,
+    projectUnresolved = [],
     refreshedProjects = [],
     sourceUnavailable = [],
   }: {
     evidence?: SessionEvidenceInput[];
     observations: CodeSessionObservationInput[];
+    projectUnresolved?: Array<{
+      projectId: string;
+      observedAt: Date;
+      explanation: string;
+    }>;
     refreshedProjects?: T3ObservationRefreshBoundary[];
     sourceUnavailable?: Array<{
       projectId: string;
@@ -1543,6 +1551,7 @@ export class FactoryApplication {
     }
 
     for (const source of sourceUnavailable) projectIds.add(source.projectId);
+    for (const project of projectUnresolved) projectIds.add(project.projectId);
 
     for (const evidenceInput of evidence) {
       const evidence = this.appendSessionEvidence(evidenceInput);
@@ -1588,7 +1597,8 @@ export class FactoryApplication {
       observations.length > 0 ||
       evidence.length > 0 ||
       refreshedProjects.length > 0 ||
-      sourceUnavailable.length > 0
+      sourceUnavailable.length > 0 ||
+      projectUnresolved.length > 0
     )
       this.save();
 
@@ -1597,6 +1607,9 @@ export class FactoryApplication {
       findings.push(
         ...this.reconcileT3Project({
           projectId,
+          projectUnresolved: projectUnresolved.filter(
+            (project) => project.projectId === projectId,
+          ),
           sourceUnavailable: sourceUnavailable.filter(
             (source) => source.projectId === projectId,
           ),
@@ -1795,6 +1808,35 @@ export class FactoryApplication {
       });
   }
 
+  matchT3Observation(
+    observation: CodeSessionObservationInput | CodeSessionObservation,
+  ): ReconciliationMatch {
+    this.refreshFromPersistence();
+    const project = this.requireProject(observation.projectId);
+    const session: ReconciliationSession = {
+      branch: observation.branch,
+      externalProjectId: observation.externalProjectId,
+      externalThreadId: observation.externalThreadId,
+      hasPendingApprovals: observation.hasPendingApprovals,
+      hasPendingUserInput: observation.hasPendingUserInput,
+      latestSessionState: observation.latestSessionState,
+      latestTurnCompletedAt: observation.latestTurnCompletedAt,
+      latestTurnState: observation.latestTurnState,
+      observedAt: observation.observedAt,
+      projectId: observation.projectId,
+      provider: observation.provider,
+      repositoryIdentity: observation.repositoryIdentity,
+      sourceStream: observation.sourceStream,
+      sourceUpdatedAt: observation.sourceUpdatedAt,
+      linkedPullRequestUrl: observation.linkedPullRequestUrl,
+      workspaceRoot: observation.workspaceRoot,
+    };
+    return matchReconciliationTarget(
+      session,
+      this.reconciliationTargets(project),
+    );
+  }
+
   getT3ThreadDetail(externalThreadId: string): ProjectT3Activity {
     this.refreshFromPersistence();
     const observation = this.codeSessionObservations.find(
@@ -1920,10 +1962,16 @@ export class FactoryApplication {
   }
 
   reconcileT3Project({
+    projectUnresolved = [],
     projectId,
     sourceUnavailable = [],
   }: {
     projectId: string;
+    projectUnresolved?: Array<{
+      projectId: string;
+      observedAt: Date;
+      explanation: string;
+    }>;
     sourceUnavailable?: Array<{
       projectId: string;
       observedAt: Date;
@@ -1964,6 +2012,7 @@ export class FactoryApplication {
     const drafts = computeReconciliationFindings({
       links,
       now: this.clock(),
+      projectUnresolved,
       sessions,
       sourceUnavailable,
       targets,

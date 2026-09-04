@@ -4,10 +4,18 @@ import {
   FactoryApplication,
   type CodeSessionObservationInput,
 } from "../../src/application";
+import type { T3ShellObservation } from "../../src/t3";
+import { createT3Coordinator } from "../../src/t3-coordinator";
+
+const fixtureStart = Date.now();
+
+function fixtureDate(offset = 0): Date {
+  return new Date(fixtureStart + offset);
+}
 
 function createApplication() {
   let nextId = 0;
-  let now = new Date("2026-09-02T12:00:00.000Z");
+  let now = fixtureDate();
   const app = new FactoryApplication({
     clock: () => new Date(now),
     idGenerator: () => `id-${++nextId}`,
@@ -32,14 +40,14 @@ function observation(
     hasPendingUserInput: false,
     latestSessionState: "running",
     latestTurnState: "running",
-    observedAt: new Date("2026-09-02T12:00:00.000Z"),
+    observedAt: fixtureDate(),
     projectId,
     provider: "t3",
     repositoryIdentity: "github.com/app-press/watchtower",
     sourceDigest: "digest-1",
     sourceSequence: 1,
     sourceStream: "shell",
-    sourceUpdatedAt: new Date("2026-09-02T12:00:00.000Z"),
+    sourceUpdatedAt: fixtureDate(),
     title: "Build Watchtower",
     workspaceRoot: "/work/watchtower",
     worktreePath: "/work/watchtower",
@@ -99,7 +107,7 @@ describe("T3 session observations", () => {
           latestTurnState: "completed",
           sourceDigest: "digest-2",
           sourceSequence: 2,
-          sourceUpdatedAt: new Date("2026-09-02T12:01:00.000Z"),
+          sourceUpdatedAt: fixtureDate(60_000),
         }),
       ],
     });
@@ -109,7 +117,7 @@ describe("T3 session observations", () => {
           latestTurnState: "error",
           sourceDigest: "old-digest",
           sourceSequence: 1,
-          sourceUpdatedAt: new Date("2026-09-02T12:00:30.000Z"),
+          sourceUpdatedAt: fixtureDate(30_000),
         }),
       ],
     });
@@ -219,10 +227,10 @@ describe("T3 session observations", () => {
     const newer = observation(project.id, {
       latestSessionState: "ready",
       latestTurnState: "completed",
-      latestTurnCompletedAt: new Date("2026-09-02T12:01:00.000Z"),
+      latestTurnCompletedAt: fixtureDate(60_000),
       sourceDigest: "digest-2",
       sourceSequence: 2,
-      sourceUpdatedAt: new Date("2026-09-02T12:01:00.000Z"),
+      sourceUpdatedAt: fixtureDate(60_000),
     });
     const linked = app.linkT3Thread({
       observation: newer,
@@ -293,6 +301,214 @@ describe("T3 session observations", () => {
     );
   });
 
+  test("suppresses and resolves branch mismatch when one linked target matches", () => {
+    const { app } = createApplication();
+    const project = app.createProject({ name: "Watchtower" });
+    const matchingTask = app.createTask({
+      branchName: "feature/watchtower",
+      name: "Build the Watchtower shell",
+      projectId: project.id,
+    });
+    const otherTask = app.createTask({
+      branchName: "feature/other",
+      name: "Document the Watchtower shell",
+      projectId: project.id,
+    });
+    const mismatched = observation(project.id, {
+      branch: "feature/old",
+    });
+    app.refreshT3Observations({ observations: [mismatched] });
+    app.linkT3Thread({ observation: mismatched, taskId: matchingTask.id });
+    app.linkT3Thread({ observation: mismatched, taskId: otherTask.id });
+    expect(
+      app
+        .listReconciliationFindings(project.id)
+        .filter(
+          (finding) =>
+            finding.kind === "branch_mismatch" && finding.status === "open",
+        ),
+    ).toHaveLength(2);
+
+    const corrected = observation(project.id, {
+      branch: "feature/watchtower",
+      sourceDigest: "digest-2",
+      sourceSequence: 2,
+      sourceUpdatedAt: fixtureDate(60_000),
+    });
+    app.refreshT3Observations({ observations: [corrected] });
+
+    expect(
+      app
+        .listReconciliationFindings(project.id)
+        .filter(
+          (finding) =>
+            finding.kind === "branch_mismatch" && finding.status === "open",
+        ),
+    ).toEqual([]);
+    expect(
+      app
+        .listReconciliationFindings(project.id)
+        .filter((finding) => finding.kind === "branch_mismatch")
+        .every((finding) => finding.status === "resolved"),
+    ).toBe(true);
+  });
+
+  test("matches a stale exact observation without relying on recent findings", () => {
+    const { app } = createApplication();
+    const project = app.createProject({
+      gitOriginUrl: "git@github.com:app-press/watchtower.git",
+      name: "Watchtower",
+    });
+    const task = app.createTask({
+      branchName: "feature/watchtower",
+      name: "Build the Watchtower shell",
+      projectId: project.id,
+    });
+    const stale = observation(project.id, {
+      latestSessionState: "ready",
+      latestTurnState: "completed",
+      observedAt: fixtureDate(-48 * 60 * 60 * 1000),
+      sourceUpdatedAt: fixtureDate(-48 * 60 * 60 * 1000),
+    });
+    app.refreshT3Observations({ observations: [stale] });
+
+    expect(app.matchT3Observation(stale)).toMatchObject({
+      basis: "repository_branch",
+      candidate: { taskId: task.id },
+      status: "matched",
+    });
+  });
+
+  test("shows a stale exact match as suggested in the activity view", async () => {
+    const { app } = createApplication();
+    const project = app.createProject({
+      gitOriginUrl: "git@github.com:app-press/watchtower.git",
+      name: "Watchtower",
+    });
+    const task = app.createTask({
+      branchName: "feature/watchtower",
+      name: "Build the Watchtower shell",
+      projectId: project.id,
+    });
+    const staleTime = fixtureDate(-48 * 60 * 60 * 1000);
+    const stale = observation(project.id, {
+      latestSessionState: "ready",
+      latestTurnState: "completed",
+      observedAt: staleTime,
+      sourceUpdatedAt: staleTime,
+    });
+    app.refreshT3Observations({ observations: [stale] });
+
+    const coordinator = createT3Coordinator({
+      application: app,
+      reader: {
+        async readShell() {
+          return {
+            fetchedAt: staleTime.toISOString(),
+            ok: true,
+            projects: [
+              {
+                createdAt: staleTime.toISOString(),
+                id: stale.externalProjectId,
+                repositoryIdentity: {
+                  canonicalKey: stale.repositoryIdentity,
+                },
+                title: "Watchtower",
+                updatedAt: staleTime.toISOString(),
+                workspaceRoot: stale.workspaceRoot,
+              },
+            ],
+            sourceDigest: stale.sourceDigest,
+            sourceSequence: stale.sourceSequence,
+            sourceStream: stale.sourceStream,
+            sourceUpdatedAt: stale.sourceUpdatedAt.toISOString(),
+            status: "ok",
+            threads: [
+              {
+                branch: stale.branch,
+                createdAt: staleTime.toISOString(),
+                hasActionableProposedPlan: false,
+                hasPendingApprovals: false,
+                hasPendingUserInput: false,
+                id: stale.externalThreadId,
+                latestTurn: {
+                  completedAt: staleTime.toISOString(),
+                  requestedAt: staleTime.toISOString(),
+                  startedAt: staleTime.toISOString(),
+                  state: "completed",
+                  turnId: "turn-stale",
+                },
+                projectId: stale.externalProjectId,
+                session: {
+                  providerName: "codex",
+                  status: "ready",
+                  updatedAt: staleTime.toISOString(),
+                },
+                title: stale.title,
+                updatedAt: staleTime.toISOString(),
+                worktreePath: stale.worktreePath,
+              },
+            ],
+          } as unknown as Extract<T3ShellObservation, { ok: true }>;
+        },
+        async readThread() {
+          throw new Error("Thread detail should not be requested.");
+        },
+      },
+    });
+
+    const activity = await coordinator.projectActivity(project.id);
+    expect(activity).toMatchObject({
+      counts: { suggested: 1, unmatched: 0 },
+      threads: [
+        {
+          association: {
+            candidateIds: [task.id],
+            candidateLabels: [task.name],
+            state: "suggested",
+          },
+        },
+      ],
+    });
+  });
+
+  test("resolves a transport finding when Project resolution emits its own kind", () => {
+    const { app } = createApplication();
+    const project = app.createProject({ name: "Beacon" });
+    const observedAt = fixtureDate();
+
+    app.refreshT3Observations({
+      observations: [],
+      sourceUnavailable: [
+        {
+          explanation: "T3 could not be reached.",
+          observedAt,
+          projectId: project.id,
+        },
+      ],
+    });
+    app.refreshT3Observations({
+      observations: [],
+      projectUnresolved: [
+        {
+          explanation: "The Project has no matching T3 Project.",
+          observedAt,
+          projectId: project.id,
+        },
+      ],
+    });
+
+    expect(app.listReconciliationFindings(project.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "project_unresolved", status: "open" }),
+        expect.objectContaining({
+          kind: "source_unavailable",
+          status: "resolved",
+        }),
+      ]),
+    );
+  });
+
   test("honors explicit T3 project and workspace mappings", () => {
     const { app } = createApplication();
     const project = app.createProject({
@@ -325,7 +541,7 @@ describe("T3 session observations", () => {
           latestTurnState: "interrupted",
           sourceDigest: "digest-idle",
           sourceSequence: 2,
-          sourceUpdatedAt: new Date("2026-09-02T12:01:00.000Z"),
+          sourceUpdatedAt: fixtureDate(60_000),
         }),
       ],
     });
@@ -354,7 +570,7 @@ describe("T3 session observations", () => {
           sourceDigest: "detail-digest",
           sourceSequence: 1,
           sourceStream: "thread:t3-thread-1",
-          sourceUpdatedAt: new Date("2026-09-02T12:01:00.000Z"),
+          sourceUpdatedAt: fixtureDate(60_000),
         }),
       ],
     });
@@ -375,11 +591,11 @@ describe("T3 session observations", () => {
       observations: [],
       refreshedProjects: [
         {
-          observedAt: new Date("2026-09-02T12:01:00.000Z"),
+          observedAt: fixtureDate(60_000),
           projectId: project.id,
           sourceSequence: 2,
           sourceStream: "shell",
-          sourceUpdatedAt: new Date("2026-09-02T12:01:00.000Z"),
+          sourceUpdatedAt: fixtureDate(60_000),
         },
       ],
     });
@@ -407,7 +623,7 @@ describe("T3 session observations", () => {
           checkpointFiles: ["src/t3.ts"],
           digest: "detail-evidence",
           externalThreadId: "t3-thread-1",
-          observedAt: new Date("2026-09-02T12:00:01.000Z"),
+          observedAt: fixtureDate(1_000),
           provider: "t3",
           sourceSequence: 1,
           sourceStream: "thread:t3-thread-1",
@@ -434,7 +650,7 @@ describe("T3 session observations", () => {
       digest: "evidence-1",
       externalThreadId: "t3-thread-1",
       linkedPullRequestUrl: "https://github.com/app-press/watchtower/pull/1",
-      observedAt: new Date("2026-09-02T12:00:00.000Z"),
+      observedAt: fixtureDate(),
       provider: "t3" as const,
       sourceSequence: 1,
       turnIds: ["turn-1"],

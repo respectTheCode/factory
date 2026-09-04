@@ -276,6 +276,9 @@ function observedActivityView(
     targets,
     threads: result.threads.map((thread) => ({
       association: {
+        ...(thread.association.candidateIds
+          ? { candidateIds: [...thread.association.candidateIds] }
+          : {}),
         links: thread.association.links.map((link) => ({
           linkId: link.linkId,
           target: targetForId(link.target.id) ?? link.target,
@@ -368,6 +371,7 @@ function unavailableObservedActivity(
       linked: 0,
       needsAttention: 0,
       running: 0,
+      suggested: 0,
       unmatched: 0,
     },
     findings: [],

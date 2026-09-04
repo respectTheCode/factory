@@ -31,7 +31,7 @@ describe("Factory PWA cache policy", () => {
         expect(response.headers.get("cache-control")).toBe("no-cache");
       }
     } finally {
-      server.stop();
+      await server.stop();
     }
   });
 
@@ -78,7 +78,7 @@ describe("Factory PWA cache policy", () => {
         },
       ]);
     } finally {
-      server.stop();
+      await server.stop();
     }
   });
 
@@ -98,7 +98,7 @@ describe("Factory PWA cache policy", () => {
       expect(documentVersion).toBeDefined();
       expect(documentVersion).toBe(workerVersion);
     } finally {
-      server.stop();
+      await server.stop();
     }
   });
 });

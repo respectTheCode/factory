@@ -92,7 +92,7 @@ describe("T3 session persistence", () => {
       expect(reopened.listReconciliationFindings(project.id)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            kind: "ambiguous_target",
+            kind: "unlinked_activity",
             projectId: project.id,
             status: "resolved",
           }),

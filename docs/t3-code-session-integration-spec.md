@@ -2,7 +2,7 @@
 
 Status: implementation-ready specification
 Owner: Kevin
-Last updated: 2026-09-02
+Last updated: 2026-09-04
 
 ## Outcome
 
@@ -225,9 +225,14 @@ Candidate priority is:
 
 1. Existing Work Associations.
 2. Exact canonical pull-request URL matching a Task or Subtask.
-3. Exact T3 repository identity plus one unique Factory Task branch.
-4. Exact workspace-root association explicitly stored for a Factory Project, plus one unique Task
-   branch.
+3. Exact T3 repository identity plus a Factory Task branch.
+4. Exact workspace-root association explicitly stored for a Factory Project, plus a Task branch.
+
+Pull-request matching retains Task/Subtask precision because a Subtask may carry its own pull
+request URL. Repository-branch and workspace-branch matches collapse all candidates to their parent
+Task: Subtasks inherit the Task branch, so several candidates under one Task are one candidate. A
+branch match is unique only when the collapsed candidates contain one Task; candidates from multiple
+Tasks remain ambiguous. A non-empty result at one tier is terminal, including an ambiguous result.
 
 The agent-facing `project context` and `project attention` CLI reads accept
 `--workspace-root` as an exact Project selector. Agents always supply the absolute checkout root
@@ -238,8 +243,10 @@ Title, message, file-name, and language-model similarity are not deterministic m
 shown later as low-confidence suggestions but cannot create links.
 
 Zero matches is `unmatched`; multiple matches at any level is `ambiguous`. Factory fails closed and
-shows the candidates instead of guessing. Automatic agent association also requires exactly one
-current running T3 thread whose branch matches the uniquely resolved Factory Task branch.
+shows the candidates instead of guessing. In the Observed activity view, an unlinked unique match is
+`suggested` and carries its candidate ID and label; it remains metadata-only until an explicit link
+action. Automatic agent association also requires exactly one current running T3 thread whose branch
+matches the uniquely resolved Factory Task branch.
 
 Factory currently has no Git origin remote of its own, so Project-to-T3 association must support an
 explicit T3 external project ID or workspace root rather than assuming every Project has a Git
@@ -260,8 +267,17 @@ Initial kinds:
   newer completed-turn activity.
 - `reported_state_stale`: a linked session observation is newer than the latest Status Report.
 - `session_needs_attention`: T3 reports an error, pending approval, or pending user input.
-- `branch_mismatch`: an explicitly linked session's branch differs from the linked Task branch.
-- `source_unavailable`: current T3 evidence could not be refreshed.
+- `branch_mismatch`: an explicitly linked session's branch matches none of the branches on its linked
+  targets. If any linked Task/Subtask branch matches the session branch, no mismatch is emitted for
+  that session.
+- `source_unavailable`: current T3 evidence could not be refreshed because the T3 transport failed;
+  successful transport with unresolved Project identity uses a separate finding.
+- `project_unresolved`: the selected Factory Project could not be matched to a T3 Project. The
+  suggested action is to set its Git origin URL, workspace root, or T3 Project ID.
+
+Reconciliation findings remain advisory and may be gated to recent activity. The Observed activity
+association state is computed directly from the current normalized observation and deterministic
+matching targets, so an older exact match is still `suggested` rather than `unmatched`.
 
 No finding may say that acceptance criteria passed, work completed, or human review succeeded.
 
@@ -317,7 +333,7 @@ whole section is collapsed by default. Its summary keeps the T3 connection state
 running, and needs-attention counts visible; expanding it shows:
 
 - current connection state and last successful fetch time;
-- running, needs-attention, linked, unmatched, and ambiguous counts;
+- running, needs-attention, linked, suggested, unmatched, and ambiguous counts;
 - thread title, T3 state, project, branch, last activity, pending-input/approval indicators, linked
   PR, and every linked Factory target;
 - actionable reconciliation text;
@@ -389,6 +405,8 @@ Required live proof:
   file-backed credential;
 - compare project/thread counts with T3's visible state;
 - link one Factory coding thread to the Factory integration Task and show a reconciliation finding;
+- install the repository Software Factory skill globally and verify the two copies are byte-for-byte
+  identical;
 - verify the stable port-3000 PWA at desktop and 390 px without exposing transcript content or a
   credential.
 
@@ -398,7 +416,9 @@ field if it writes concurrently. `bun run service:deploy` satisfies this boundar
 old LaunchAgent before bootstrapping the new release; development and migration proof must use an
 isolated database copy while the stable service remains active.
 
-Deployment remains forward-only through `bun run service:deploy`. Stop if schema hydration loses
-existing records, a T3 read can mutate remote state, the credential reaches a client payload/log,
-or T3 failure makes core Factory data unavailable. Recovery is the prior immutable Factory release
-plus the pre-deployment database backup.
+Deployment remains forward-only through `bun run service:deploy`. That command packages the server
+and PWA but does not install `skills/software-factory/SKILL.md`; synchronize the global skill as a
+separate release step, then compare the installed and repository copies. Stop if schema hydration
+loses existing records, a T3 read can mutate remote state, the credential reaches a client
+payload/log, or T3 failure makes core Factory data unavailable. Recovery is the prior immutable
+Factory release plus the pre-deployment database backup.

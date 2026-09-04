@@ -155,6 +155,28 @@ function finishMatch(
   return { basis, candidates, status: "ambiguous" };
 }
 
+function collapseBranchCandidates(
+  candidates: ReconciliationTarget[],
+): ReconciliationTarget[] {
+  const taskCandidates = new Map<string, ReconciliationTarget>();
+  for (const candidate of candidates) {
+    if (candidate.subtaskId === undefined) {
+      taskCandidates.set(candidate.taskId, candidate);
+      continue;
+    }
+    if (taskCandidates.has(candidate.taskId)) continue;
+
+    const {
+      pullRequestUrl: _pullRequestUrl,
+      subtaskId: _subtaskId,
+      subtaskName: _subtaskName,
+      ...taskCandidate
+    } = candidate;
+    taskCandidates.set(candidate.taskId, taskCandidate);
+  }
+  return [...taskCandidates.values()];
+}
+
 /**
  * Match only on deterministic identifiers.  A non-empty result at one
  * priority level is terminal: an ambiguous PR or branch is never silently
@@ -180,7 +202,10 @@ export function matchReconciliationTarget(
       same(session.branch, target.branchName),
   );
   if (repositoryMatches.length > 0) {
-    return finishMatch("repository_branch", repositoryMatches);
+    return finishMatch(
+      "repository_branch",
+      collapseBranchCandidates(repositoryMatches),
+    );
   }
 
   const workspaceMatches = targets.filter(
@@ -189,7 +214,10 @@ export function matchReconciliationTarget(
       same(session.branch, target.branchName),
   );
   if (workspaceMatches.length > 0) {
-    return finishMatch("workspace_branch", workspaceMatches);
+    return finishMatch(
+      "workspace_branch",
+      collapseBranchCandidates(workspaceMatches),
+    );
   }
 
   return { candidates: [], status: "unmatched" };
@@ -209,7 +237,8 @@ export type ReconciliationFindingKind =
   | "reported_state_stale"
   | "session_needs_attention"
   | "branch_mismatch"
-  | "source_unavailable";
+  | "source_unavailable"
+  | "project_unresolved";
 
 export type ReconciliationFindingSeverity = "info" | "attention";
 
@@ -233,6 +262,11 @@ export type ReconciliationInput = {
   links: ReconciliationLink[];
   now: Date;
   sourceUnavailable?: Array<{
+    projectId: string;
+    observedAt: Date;
+    explanation: string;
+  }>;
+  projectUnresolved?: Array<{
     projectId: string;
     observedAt: Date;
     explanation: string;
@@ -306,6 +340,7 @@ export function computeReconciliationFindings({
   now,
   recentActivityWindowMs = 24 * 60 * 60 * 1000,
   sessions,
+  projectUnresolved = [],
   sourceUnavailable = [],
   targets,
 }: ReconciliationInput): ReconciliationFindingDraft[] {
@@ -324,11 +359,31 @@ export function computeReconciliationFindings({
     });
   }
 
+  for (const project of projectUnresolved) {
+    addFinding(findings, {
+      candidateIds: [],
+      dedupeKey: `project_unresolved:${project.projectId}`,
+      explanation: project.explanation,
+      kind: "project_unresolved",
+      observedAt: project.observedAt,
+      projectId: project.projectId,
+      severity: "attention",
+      suggestedAction:
+        "Set the Project's Git origin URL, workspace root, or T3 Project ID, then refresh observed activity.",
+    });
+  }
+
   for (const session of sessions) {
     const sessionLinks = linksFor(session, links);
     const projectTargets = targets.filter(
       (target) => target.projectId === session.projectId,
     );
+    const linkedTargets = sessionLinks
+      .map((link) => targetForLink(link, projectTargets))
+      .filter((target): target is ReconciliationTarget => target !== undefined);
+    const hasMatchingLinkedBranch =
+      session.branch !== undefined &&
+      linkedTargets.some((target) => target.branchName === session.branch);
 
     if (sessionLinks.length === 0) {
       if (!isRecentlyActive(session, now, recentActivityWindowMs)) continue;
@@ -391,6 +446,7 @@ export function computeReconciliationFindings({
       }
 
       if (
+        !hasMatchingLinkedBranch &&
         target.branchName !== undefined &&
         session.branch !== undefined &&
         target.branchName !== session.branch

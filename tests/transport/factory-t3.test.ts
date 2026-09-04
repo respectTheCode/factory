@@ -16,6 +16,12 @@ type RawResponse = {
   result?: { data?: unknown; type?: string };
 };
 
+const fixtureStart = Date.now();
+
+function timestamp(offset = 0): string {
+  return new Date(fixtureStart + offset).toISOString();
+}
+
 function request(
   socket: WebSocket,
   body: Record<string, unknown> & { id: number },
@@ -44,9 +50,12 @@ function data(response: RawResponse): Record<string, unknown> {
   return response.result?.data as Record<string, unknown>;
 }
 
-function shell(): Extract<T3ShellObservation, { ok: true }> {
+function shell(
+  baseTime = fixtureStart,
+): Extract<T3ShellObservation, { ok: true }> {
+  const at = (offset = 0) => new Date(baseTime + offset).toISOString();
   const project = {
-    createdAt: "2026-09-02T12:00:00.000Z",
+    createdAt: at(-60_000),
     id: "t3-project-factory",
     repositoryIdentity: {
       canonicalKey: "github.com/app-press/factory",
@@ -57,23 +66,23 @@ function shell(): Extract<T3ShellObservation, { ok: true }> {
       },
     },
     title: "Factory",
-    updatedAt: "2026-09-02T12:01:00.000Z",
+    updatedAt: at(0),
     workspaceRoot: "/work/factory",
   };
   const thread = {
     branch: "feature/t3-integration",
-    createdAt: "2026-09-02T12:00:00.000Z",
+    createdAt: at(-60_000),
     hasActionableProposedPlan: true,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     id: "t3-thread-1",
     latestTurn: {
-      requestedAt: "2026-09-02T12:00:00.000Z",
-      startedAt: "2026-09-02T12:00:01.000Z",
+      requestedAt: at(-60_000),
+      startedAt: at(-59_000),
       state: "running" as const,
       turnId: "turn-1",
     },
-    latestUserMessageAt: "2026-09-02T12:00:00.000Z",
+    latestUserMessageAt: at(-60_000),
     linkedPullRequest: null,
     planProgress: { completedSteps: 1, step: "Wire", totalSteps: 2 },
     projectId: "t3-project-factory",
@@ -81,40 +90,43 @@ function shell(): Extract<T3ShellObservation, { ok: true }> {
       activeTurnId: "turn-1",
       providerName: "codex",
       status: "running" as const,
-      updatedAt: "2026-09-02T12:00:01.000Z",
+      updatedAt: at(-59_000),
     },
     title: "Wire T3 integration",
-    updatedAt: "2026-09-02T12:00:01.000Z",
+    updatedAt: at(-59_000),
     worktreePath: "/work/factory",
   };
   return {
-    fetchedAt: "2026-09-02T12:01:00.000Z",
+    fetchedAt: at(0),
     ok: true,
     projects: [project],
     sourceDigest: "shell-digest",
     sourceSequence: 7,
     sourceStream: "shell",
-    sourceUpdatedAt: "2026-09-02T12:01:00.000Z",
+    sourceUpdatedAt: at(0),
     status: "ok",
     threads: [thread],
   } as unknown as Extract<T3ShellObservation, { ok: true }>;
 }
 
-function detail(): Extract<T3ThreadObservation, { ok: true }> {
+function detail(
+  baseTime = fixtureStart,
+): Extract<T3ThreadObservation, { ok: true }> {
+  const at = (offset = 0) => new Date(baseTime + offset).toISOString();
   return {
-    fetchedAt: "2026-09-02T12:02:00.000Z",
+    fetchedAt: at(60_000),
     ok: true,
     sourceDigest: "detail-digest",
     sourceSequence: 8,
     sourceStream: "thread",
-    sourceUpdatedAt: "2026-09-02T12:02:00.000Z",
+    sourceUpdatedAt: at(60_000),
     status: "ok",
     thread: {
       ...shell().threads[0]!,
       hasActionableProposedPlan: false,
       activities: [
         {
-          createdAt: "2026-09-02T12:02:00.000Z",
+          createdAt: at(60_000),
           id: "activity-1",
           kind: "tool-started",
           sequence: 8,
@@ -124,7 +136,7 @@ function detail(): Extract<T3ThreadObservation, { ok: true }> {
       ],
       checkpoints: [
         {
-          completedAt: "2026-09-02T12:02:01.000Z",
+          completedAt: at(61_000),
           files: [
             { additions: 4, deletions: 1, kind: "modified", path: "src/t3.ts" },
           ],
@@ -134,30 +146,32 @@ function detail(): Extract<T3ThreadObservation, { ok: true }> {
       ],
       messages: [
         {
-          createdAt: "2026-09-02T12:02:00.000Z",
+          createdAt: at(60_000),
           id: "message-1",
           role: "user",
           streaming: false,
           text: "private transcript text",
           turnId: "turn-1",
-          updatedAt: "2026-09-02T12:02:00.000Z",
+          updatedAt: at(60_000),
         },
       ],
     },
   } as unknown as Extract<T3ThreadObservation, { ok: true }>;
 }
 
-function reader(): T3ActivityReader & { calls: string[] } {
+function reader(
+  baseTime = fixtureStart,
+): T3ActivityReader & { calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
     async readShell() {
       calls.push("shell");
-      return shell();
+      return shell(baseTime);
     },
     async readThread() {
       calls.push("thread");
-      return detail();
+      return detail(baseTime);
     },
   };
 }
@@ -165,7 +179,7 @@ function reader(): T3ActivityReader & { calls: string[] } {
 describe("Factory T3 tRPC integration", () => {
   test("keeps project detail local, refreshes observations, and links only Factory state", async () => {
     const directory = mkdtempSync(join(tmpdir(), "software-factory-t3-rpc-"));
-    const t3 = reader();
+    const t3 = reader(fixtureStart - 48 * 60 * 60 * 1000);
     const server = createFactoryServer({
       databasePath: join(directory, "factory.sqlite"),
       port: 0,
@@ -230,9 +244,19 @@ describe("Factory T3 tRPC integration", () => {
       );
       expect(activity).toMatchObject({
         connection: { state: "connected" },
-        counts: { running: 1, unmatched: 1 },
+        counts: { running: 1, suggested: 1, unmatched: 0 },
         status: "ok",
-        threads: [{ threadId: "t3-thread-1", title: "Wire T3 integration" }],
+        threads: [
+          {
+            association: {
+              candidateIds: [task.id],
+              candidateLabels: ["T3 integration"],
+              state: "suggested",
+            },
+            threadId: "t3-thread-1",
+            title: "Wire T3 integration",
+          },
+        ],
       });
 
       const status = data(
@@ -243,7 +267,7 @@ describe("Factory T3 tRPC integration", () => {
         }),
       );
       expect(status).toMatchObject({
-        counts: { linked: 0, running: 1 },
+        counts: { linked: 0, running: 1, suggested: 1, unmatched: 0 },
         status: "ok",
       });
 
@@ -380,7 +404,7 @@ describe("Factory T3 tRPC integration", () => {
             ? shell()
             : {
                 error: "T3 Code could not be reached.",
-                fetchedAt: "2026-09-02T12:03:00.000Z",
+                fetchedAt: timestamp(120_000),
                 ok: false as const,
                 status: "unreachable" as const,
               };
@@ -435,8 +459,8 @@ describe("Factory T3 tRPC integration", () => {
 
       expect(failed).toMatchObject({
         connection: {
-          lastSuccessfulFetchAt: "2026-09-02T12:01:00.000Z",
-          observedAt: "2026-09-02T12:03:00.000Z",
+          lastSuccessfulFetchAt: timestamp(0),
+          observedAt: timestamp(120_000),
           state: "unreachable",
         },
         status: "unreachable",
@@ -507,7 +531,7 @@ describe("Factory T3 tRPC integration", () => {
       expect(result.findings).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            kind: "source_unavailable",
+            kind: "project_unresolved",
             status: "open",
           }),
         ]),

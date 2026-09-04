@@ -46,7 +46,7 @@ export type T3ObservedAssociationLink = {
 };
 
 export type T3ObservedAssociation = {
-  state: "linked" | "unmatched" | "ambiguous";
+  state: "linked" | "suggested" | "unmatched" | "ambiguous";
   links: T3ObservedAssociationLink[];
   candidateIds?: string[];
   candidateLabels?: string[];
@@ -89,6 +89,7 @@ export type T3ObservedActivity = {
     running: number;
     needsAttention: number;
     linked: number;
+    suggested: number;
     unmatched: number;
     ambiguous: number;
   };
@@ -364,7 +365,7 @@ function targetById(
 
 function associationFor(
   item: ProjectT3Activity,
-  findings: ReconciliationFinding[],
+  application: FactoryApplication,
   targets: T3ObservedTarget[],
 ): T3ObservedAssociation {
   const links = item.associations
@@ -385,23 +386,32 @@ function associationFor(
       state: "linked",
     };
   }
-  const finding = findings.find(
-    (candidate) =>
-      candidate.externalThreadId === item.observation.externalThreadId &&
-      candidate.kind === "ambiguous_target",
-  );
-  if (finding) {
-    const candidateLabels = finding.candidateIds
+  const match = application.matchT3Observation(item.observation);
+  if (match.status === "ambiguous") {
+    const candidateIds = match.candidates.map(
+      (candidate) => candidate.subtaskId ?? candidate.taskId,
+    );
+    const candidateLabels = candidateIds
       .map((candidateId) => targetById(targets, candidateId))
       .filter(
         (candidate): candidate is T3ObservedTarget => candidate !== undefined,
       )
       .map((candidate) => candidate.label);
     return {
-      candidateIds: [...finding.candidateIds],
+      candidateIds,
       ...(candidateLabels.length === 0 ? {} : { candidateLabels }),
       links: [],
       state: "ambiguous",
+    };
+  }
+  if (match.status === "matched") {
+    const candidateId = match.candidate.subtaskId ?? match.candidate.taskId;
+    const candidate = targetById(targets, candidateId);
+    return {
+      candidateIds: [candidateId],
+      ...(candidate ? { candidateLabels: [candidate.label] } : {}),
+      links: [],
+      state: "suggested",
     };
   }
   return { links: [], state: "unmatched" };
@@ -409,7 +419,7 @@ function associationFor(
 
 function viewThread(
   item: ProjectT3Activity,
-  findings: ReconciliationFinding[],
+  application: FactoryApplication,
   targets: T3ObservedTarget[],
   evidence: SessionEvidence | undefined,
 ): T3ObservedThread {
@@ -431,7 +441,7 @@ function viewThread(
     ...(observation.worktreePath === undefined
       ? {}
       : { worktreePath: observation.worktreePath }),
-    association: associationFor(item, findings, targets),
+    association: associationFor(item, application, targets),
     externalProjectId: observation.externalProjectId,
     hasPendingApprovals: observation.hasPendingApprovals,
     hasPendingUserInput: observation.hasPendingUserInput,
@@ -450,6 +460,7 @@ function emptyCounts(): T3ObservedActivity["counts"] {
     linked: 0,
     needsAttention: 0,
     running: 0,
+    suggested: 0,
     unmatched: 0,
   };
 }
@@ -476,7 +487,7 @@ function activityView(
     const evidence = application
       .listSessionEvidence(item.observation.externalThreadId)
       .at(-1);
-    return viewThread(item, findings, targets, evidence);
+    return viewThread(item, application, targets, evidence);
   });
   const counts = emptyCounts();
   for (const thread of threads) {
@@ -484,6 +495,7 @@ function activityView(
     if (threadNeedsAttention(thread)) counts.needsAttention += 1;
     if (thread.association.state === "linked") counts.linked += 1;
     if (thread.association.state === "ambiguous") counts.ambiguous += 1;
+    if (thread.association.state === "suggested") counts.suggested += 1;
     if (thread.association.state === "unmatched") counts.unmatched += 1;
   }
   return {
@@ -566,7 +578,7 @@ function unresolvedStatus(
 ): T3ObservedActivity {
   application.refreshT3Observations({
     observations: [],
-    sourceUnavailable: [
+    projectUnresolved: [
       {
         explanation: resolution.explanation,
         observedAt: date(fetchedAt),
@@ -845,16 +857,38 @@ export function createT3Coordinator({
           };
           if (threadIsRunning(mapped)) counts.running += 1;
           if (threadNeedsAttention(mapped)) counts.needsAttention += 1;
-          if (resolution.status === "ambiguous") counts.ambiguous += 1;
-          else if (resolution.status === "unmatched") counts.unmatched += 1;
-          else {
-            try {
-              const existing = application.getT3ThreadDetail(thread.id);
-              if (existing.associations.length > 0) counts.linked += 1;
+          if (resolution.status !== "matched") {
+            if (resolution.status === "ambiguous") counts.ambiguous += 1;
+            else counts.unmatched += 1;
+            continue;
+          }
+          const currentObservation = mapT3ThreadObservation({
+            observedAt: shell.fetchedAt,
+            project,
+            projectId: resolution.project.id,
+            sourceDigest: shell.sourceDigest,
+            sourceSequence: shell.sourceSequence,
+            sourceStream: shell.sourceStream,
+            sourceUpdatedAt: thread.updatedAt,
+            thread,
+          });
+          try {
+            const existing = application.getT3ThreadDetail(
+              thread.id,
+            ).associations;
+            if (existing.length > 0) {
+              counts.linked += 1;
+            } else {
+              const match = application.matchT3Observation(currentObservation);
+              if (match.status === "ambiguous") counts.ambiguous += 1;
+              else if (match.status === "matched") counts.suggested += 1;
               else counts.unmatched += 1;
-            } catch {
-              counts.unmatched += 1;
             }
+          } catch {
+            const match = application.matchT3Observation(currentObservation);
+            if (match.status === "ambiguous") counts.ambiguous += 1;
+            else if (match.status === "matched") counts.suggested += 1;
+            else counts.unmatched += 1;
           }
         }
       }

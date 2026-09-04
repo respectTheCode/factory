@@ -4,6 +4,12 @@ import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
+const fixtureStart = Date.now();
+
+function timestamp(offset = 0): string {
+  return new Date(fixtureStart + offset).toISOString();
+}
+
 async function runCli(
   args: string[],
   environment: Record<string, string>,
@@ -26,7 +32,7 @@ function shellPayload() {
   return {
     projects: [
       {
-        createdAt: "2026-09-02T12:00:00.000Z",
+        createdAt: timestamp(-60_000),
         id: "t3-project-factory",
         repositoryIdentity: {
           canonicalKey: "github.com/app-press/factory",
@@ -37,7 +43,7 @@ function shellPayload() {
           },
         },
         title: "Factory",
-        updatedAt: "2026-09-02T12:01:00.000Z",
+        updatedAt: timestamp(0),
         workspaceRoot: "/work/factory",
       },
     ],
@@ -45,33 +51,33 @@ function shellPayload() {
     threads: [
       {
         branch: "feature/t3-cli",
-        createdAt: "2026-09-02T12:00:00.000Z",
+        createdAt: timestamp(-60_000),
         hasActionableProposedPlan: false,
         hasPendingApprovals: false,
         hasPendingUserInput: false,
         id: "t3-thread-cli",
         latestTurn: {
           completedAt: null,
-          requestedAt: "2026-09-02T12:00:00.000Z",
-          startedAt: "2026-09-02T12:00:01.000Z",
+          requestedAt: timestamp(-60_000),
+          startedAt: timestamp(-59_000),
           state: "running",
           turnId: "turn-cli",
         },
-        latestUserMessageAt: "2026-09-02T12:00:00.000Z",
+        latestUserMessageAt: timestamp(-60_000),
         linkedPullRequest: null,
         projectId: "t3-project-factory",
         session: {
           activeTurnId: "turn-cli",
           providerName: "codex",
           status: "running",
-          updatedAt: "2026-09-02T12:00:01.000Z",
+          updatedAt: timestamp(-59_000),
         },
         title: "CLI T3 thread",
-        updatedAt: "2026-09-02T12:00:01.000Z",
+        updatedAt: timestamp(-59_000),
         worktreePath: "/work/factory",
       },
     ],
-    updatedAt: "2026-09-02T12:01:00.000Z",
+    updatedAt: timestamp(0),
   };
 }
 
@@ -85,13 +91,13 @@ function detailPayload() {
       checkpoints: [],
       messages: [
         {
-          createdAt: "2026-09-02T12:02:00.000Z",
+          createdAt: timestamp(60_000),
           id: "message-cli",
           role: "user",
           streaming: false,
           text: "must not be returned",
           turnId: "turn-cli",
-          updatedAt: "2026-09-02T12:02:00.000Z",
+          updatedAt: timestamp(60_000),
         },
       ],
     },
@@ -179,7 +185,10 @@ describe("T3 CLI integration", () => {
       expect(status.stdout).not.toContain("fixture-cli-token");
       expect(JSON.parse(status.stdout)).toMatchObject({
         schemaVersion: 1,
-        status: { status: "ok", counts: { running: 1 } },
+        status: {
+          status: "ok",
+          counts: { running: 1, suggested: 0 },
+        },
       });
 
       const detail = await runCli(

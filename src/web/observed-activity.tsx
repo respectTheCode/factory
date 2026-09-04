@@ -35,8 +35,9 @@ export type ObservedAssociationLink = {
 };
 
 export type ObservedAssociation = {
+  candidateIds?: string[];
   links: ObservedAssociationLink[];
-  state: "linked" | "unmatched" | "ambiguous";
+  state: "linked" | "suggested" | "unmatched" | "ambiguous";
   candidateLabels?: string[];
 };
 
@@ -76,7 +77,8 @@ export type ReconciliationFinding = {
     | "reported_state_stale"
     | "session_needs_attention"
     | "branch_mismatch"
-    | "source_unavailable";
+    | "source_unavailable"
+    | "project_unresolved";
   observedAt?: string;
   severity: "info" | "attention";
   suggestedAction: string;
@@ -90,6 +92,7 @@ export type ObservedActivityCounts = {
   linked: number;
   needsAttention: number;
   running: number;
+  suggested: number;
   unmatched: number;
 };
 
@@ -145,6 +148,7 @@ const FINDING_LABELS: Record<ReconciliationFinding["kind"], string> = {
   ambiguous_target: "Ambiguous target",
   branch_mismatch: "Branch mismatch",
   planned_but_running: "Planned but running",
+  project_unresolved: "Project unresolved",
   reported_state_stale: "Report may be stale",
   session_needs_attention: "Session needs attention",
   source_unavailable: "Source unavailable",
@@ -161,6 +165,19 @@ export function observedFindingLabel(
   kind: ReconciliationFinding["kind"],
 ): string {
   return FINDING_LABELS[kind];
+}
+
+export function suggestedAssociationTarget(
+  association: ObservedAssociation,
+  targets: readonly ObservedTarget[],
+): ObservedTarget | undefined {
+  if (
+    association.state !== "suggested" ||
+    association.candidateIds?.length !== 1
+  ) {
+    return undefined;
+  }
+  return targets.find((target) => target.id === association.candidateIds?.[0]);
 }
 
 export function formatObservedTime(value: string | undefined): string | null {
@@ -212,6 +229,7 @@ export function ObservedActivitySection({
     linked: 0,
     needsAttention: 0,
     running: 0,
+    suggested: 0,
     unmatched: 0,
   };
   const threads = activity?.threads ?? [];
@@ -223,16 +241,21 @@ export function ObservedActivitySection({
   const unavailable = connection.state !== "connected";
   const sourceNeedsReview = unavailable || Boolean(connection.warning);
 
-  const linkThread = (thread: ObservedThread) => {
-    const targetId = pendingTargets[thread.threadId];
-    const target = targets.find((candidate) => candidate.id === targetId);
-    if (!target || !onLinkThread) return;
+  const linkTarget = (thread: ObservedThread, target: ObservedTarget) => {
+    if (!onLinkThread) return;
     void Promise.resolve(onLinkThread(thread.threadId, target)).then(() =>
       setPendingTargets((current) => ({
         ...current,
         [thread.threadId]: "",
       })),
     );
+  };
+
+  const linkThread = (thread: ObservedThread) => {
+    const targetId = pendingTargets[thread.threadId];
+    const target = targets.find((candidate) => candidate.id === targetId);
+    if (!target) return;
+    linkTarget(thread, target);
   };
 
   return (
@@ -325,6 +348,10 @@ export function ObservedActivitySection({
           <span>Linked</span>
         </div>
         <div className="observed-count">
+          <strong>{counts.suggested}</strong>
+          <span>Suggested</span>
+        </div>
+        <div className="observed-count">
           <strong>{counts.unmatched}</strong>
           <span>Unmatched</span>
         </div>
@@ -340,6 +367,10 @@ export function ObservedActivitySection({
             const association = thread.association;
             const linked =
               association.state === "linked" && association.links.length > 0;
+            const suggestedTarget = suggestedAssociationTarget(
+              association,
+              targets,
+            );
             const loading =
               threadDetailLoadingIds?.has(thread.threadId) ?? false;
             const threadTime = formatObservedTime(
@@ -354,7 +385,11 @@ export function ObservedActivitySection({
                     <code>{thread.threadId}</code>
                   </div>
                   <span
-                    className={`observed-thread-association observed-thread-association-${association.state}`}
+                    className={`observed-thread-association observed-thread-association-${association.state}${
+                      association.state === "suggested"
+                        ? " observed-thread-association-linked"
+                        : ""
+                    }`}
                   >
                     {linked
                       ? association.links.length === 1
@@ -362,7 +397,9 @@ export function ObservedActivitySection({
                         : `Linked to ${association.links.length} targets`
                       : association.state === "ambiguous"
                         ? "Ambiguous target"
-                        : "Unmatched"}
+                        : association.state === "suggested"
+                          ? "Suggested"
+                          : "Unmatched"}
                   </span>
                 </div>
 
@@ -409,11 +446,14 @@ export function ObservedActivitySection({
                   </p>
                 )}
 
-                {association.state === "ambiguous" &&
+                {(association.state === "ambiguous" ||
+                  association.state === "suggested") &&
                   association.candidateLabels &&
                   association.candidateLabels.length > 0 && (
                     <p className="observed-thread-candidates">
-                      Candidates: {association.candidateLabels.join(", ")}
+                      {association.state === "suggested"
+                        ? `Suggested target: ${association.candidateLabels[0]}`
+                        : `Candidates: ${association.candidateLabels.join(", ")}`}
                     </p>
                   )}
 
@@ -448,6 +488,16 @@ export function ObservedActivitySection({
                         Factory metadata only; it does not control T3 or change
                         Work State.
                       </p>
+                      {suggestedTarget && (
+                        <button
+                          className="secondary"
+                          disabled={!canMutate || busy}
+                          onClick={() => linkTarget(thread, suggestedTarget)}
+                          type="button"
+                        >
+                          Link suggested target
+                        </button>
+                      )}
                       {onLinkThread && (
                         <div className="observed-link-control">
                           <span className="visually-hidden">
