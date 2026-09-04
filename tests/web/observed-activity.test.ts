@@ -52,7 +52,7 @@ describe("observed activity presentation", () => {
       "This does not represent current execution state.",
     );
     expect(source).toContain("Observation only. It does not change Factory");
-    expect(source).toMatch(/Linking changes\s+Factory metadata only/);
+    expect(source).toMatch(/Linking\s+changes\s+Factory metadata only/);
     expect(source).toContain("onLinkThread");
     expect(source).toContain("onUnlinkThread");
   });
@@ -73,6 +73,24 @@ describe("observed activity presentation", () => {
     expect(source).toContain("threadDetailLoadingIds");
     expect(source).toContain("candidateLabels");
     expect(source).toContain("Metadata only; transcript text is intentionally");
+  });
+
+  test("collapses the full session section by default while keeping status visible", () => {
+    expect(source).toMatch(
+      /<details\s+className="panel observed-activity"\s+data-observed-activity="true"/,
+    );
+    expect(source).not.toMatch(
+      /<details\s+open\s+className="panel observed-activity"/,
+    );
+    expect(source).toContain('className="observed-activity-summary"');
+    expect(source).toContain('className="observed-activity-summary-state"');
+    expect(source).toContain('className="observed-activity-summary-counts"');
+    expect(stylesheet).toContain(
+      ".observed-activity > .observed-activity-header",
+    );
+    expect(source).toContain("Observed activity");
+    expect(source).toContain("observedConnectionLabel(connection.state)");
+    expect(source).toContain("threads.length");
   });
 
   test("wires project-open and explicit-refresh reads to the planned T3 routes", () => {
@@ -96,12 +114,14 @@ describe("observed activity presentation", () => {
     expect(mainSource).toContain("{ taskId: target.id }");
     expect(mainSource).toContain("{ subtaskId: target.id }");
     expect(source).toMatch(
-      /Linking changes\s+Factory metadata only; it does not control T3/,
+      /Linking\s+changes\s+Factory metadata only; it does not control T3/,
     );
   });
 
   test("keeps the observation panel compact at 390px-oriented mobile width", () => {
     expect(stylesheet).toContain(".observed-activity");
+    expect(stylesheet).toContain(".observed-activity-summary");
+    expect(stylesheet).toContain(".observed-activity-summary-state");
     expect(stylesheet).toContain(".observed-counts");
     expect(stylesheet).toContain("grid-template-columns: repeat(5");
     expect(stylesheet).toContain("@media (max-width: 540px)");

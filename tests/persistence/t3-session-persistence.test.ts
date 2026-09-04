@@ -11,7 +11,9 @@ import {
 } from "../../src/application";
 
 function observation(projectId: string): CodeSessionObservationInput {
-  const observedAt = new Date("2026-09-02T12:00:00.000Z");
+  // Persistence uses the production clock, so this fixture must remain inside
+  // the reconciliation engine's 24-hour recent-activity window.
+  const observedAt = new Date();
   return {
     branch: "feature/factory-t3",
     externalProjectId: "t3-project-factory",

@@ -43,10 +43,10 @@ describe("Factory PWA cache policy", () => {
       const shellMarkup = await shell.text();
       expect(shellMarkup).toContain('content="#141210"');
       expect(shellMarkup).toContain(
-        "/fonts/ibm-plex-sans-latin-400-normal.woff2?v=22",
+        "/fonts/ibm-plex-sans-latin-400-normal.woff2?v=23",
       );
       expect(shellMarkup).toContain("apple-touch-icon");
-      expect(shellMarkup).toContain("/icons/apple-touch-icon.png?v=22");
+      expect(shellMarkup).toContain("/icons/apple-touch-icon.png?v=23");
 
       const manifestResponse = await fetch(
         new URL("/manifest.webmanifest", server.url),

@@ -312,8 +312,9 @@ authorization headers or tokens.
 
 ### PWA
 
-Each Project gets an **Observed activity** section, clearly separate from Factory Work State. It
-shows:
+Each Project gets an **Observed activity** section, clearly separate from Factory Work State. The
+whole section is collapsed by default. Its summary keeps the T3 connection state and compact session,
+running, and needs-attention counts visible; expanding it shows:
 
 - current connection state and last successful fetch time;
 - running, needs-attention, linked, unmatched, and ambiguous counts;

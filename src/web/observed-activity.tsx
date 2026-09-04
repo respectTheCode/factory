@@ -236,21 +236,20 @@ export function ObservedActivitySection({
   };
 
   return (
-    <section
-      aria-labelledby="observed-activity-title"
-      className="panel observed-activity"
-      data-observed-activity="true"
-    >
-      <div className="observed-activity-header">
-        <div>
-          <p className="eyebrow">Execution observations</p>
-          <h2 id="observed-activity-title">Observed activity</h2>
-          <p className="observed-authority-copy">
-            T3 activity is read-only evidence. Factory remains the planning and
-            verification authority.
-          </p>
-        </div>
-        <div className="observed-activity-header-actions">
+    <details className="panel observed-activity" data-observed-activity="true">
+      <summary className="observed-activity-summary">
+        <span className="observed-activity-summary-title">
+          <span className="eyebrow">Execution observations</span>
+          <span
+            aria-level={2}
+            className="observed-activity-summary-heading"
+            id="observed-activity-title"
+            role="heading"
+          >
+            Observed activity
+          </span>
+        </span>
+        <span className="observed-activity-summary-state">
           <span
             className={`observed-connection observed-connection-${connectionTone(connection.state)}`}
             data-observed-connection={connection.state}
@@ -258,6 +257,19 @@ export function ObservedActivitySection({
             <span aria-hidden="true" className="observed-connection-dot" />
             {observedConnectionLabel(connection.state)}
           </span>
+          <span className="observed-activity-summary-counts">
+            {threads.length} session{threads.length === 1 ? "" : "s"} ·{" "}
+            {counts.running} running · {counts.needsAttention} needing attention
+          </span>
+        </span>
+      </summary>
+
+      <div className="observed-activity-header">
+        <p className="observed-authority-copy">
+          T3 activity is read-only evidence. Factory remains the planning and
+          verification authority.
+        </p>
+        <div className="observed-activity-header-actions">
           {onRefresh && (
             <button
               className="secondary observed-refresh"
@@ -604,6 +616,6 @@ export function ObservedActivitySection({
           </div>
         </div>
       )}
-    </section>
+    </details>
   );
 }
