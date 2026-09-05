@@ -1953,6 +1953,16 @@ function Dashboard() {
                                 <div className="task-summary">
                                   <div className="task-summary-heading">
                                     <TaskStatusMenu
+                                      onResumeRollup={
+                                        task.archiveState
+                                          ? undefined
+                                          : () =>
+                                              void mutateAndRefresh(() =>
+                                                trpc.current!.tasks.resumeRollup.mutate(
+                                                  { taskId: task.id },
+                                                ),
+                                              )
+                                      }
                                       onDisposition={(archiveState) =>
                                         void mutateAndRefresh(() =>
                                           trpc.current!.tasks.archive.mutate({
@@ -3243,11 +3253,13 @@ function SubtaskActionIcon({ action }: { action: "edit" | "delete" }) {
 
 function TaskStatusMenu({
   onDisposition,
+  onResumeRollup,
   onState,
   state,
   taskName,
 }: {
   onDisposition?: (state: "released" | "wont_do") => void;
+  onResumeRollup?: () => void;
   onState: (state: TaskEditableWorkState, reason?: string) => void;
   state: WorkStatus;
   taskName: string;
@@ -3292,6 +3304,20 @@ function TaskStatusMenu({
         role="listbox"
       >
         <p className="status-menu-heading">Task status</p>
+        {onResumeRollup && (
+          <button
+            className="status-option"
+            role="option"
+            aria-selected={false}
+            type="button"
+            onClick={(event) => {
+              onResumeRollup();
+              closeMenu(event);
+            }}
+          >
+            <span>Use subtask status</span>
+          </button>
+        )}
         {taskStatusOrder.map((candidateState) => {
           const definition = statusDefinitions[candidateState];
           const selected = candidateState === state;

@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { normalizeWorkspaceRoot, sameWorkspaceRoot } from "./workspace";
 
 import {
   backupFactoryDatabase,
@@ -298,7 +299,7 @@ function workspaceRootFlag(flags: Map<string, string>): string | undefined {
   const value = flags.get("workspace-root");
   if (value === undefined) return undefined;
   if (!value.trim()) throw new Error("--workspace-root must not be empty.");
-  return resolve(value.trim());
+  return normalizeWorkspaceRoot(resolve(value.trim()));
 }
 
 function projectsMatchingContext(
@@ -319,8 +320,7 @@ function projectsMatchingContext(
     }
     if (
       workspaceRoot !== undefined &&
-      (project.workspaceRoot === undefined ||
-        resolve(project.workspaceRoot) !== workspaceRoot)
+      !sameWorkspaceRoot(project.workspaceRoot, workspaceRoot)
     ) {
       return false;
     }
@@ -654,6 +654,13 @@ async function main(args: string[]): Promise<void> {
     return;
   }
 
+  if (resource === "task" && action === "resume-rollup") {
+    const taskId = requiredFlag(parsed.flags, "task-id");
+    application.resumeTaskRollup(taskId);
+    output({ status: application.getTaskStatus(taskId) });
+    return;
+  }
+
   if (resource === "task" && action === "state") {
     const taskId = requiredFlag(parsed.flags, "task-id");
     application.setTaskWorkState({
@@ -874,7 +881,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|state|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify",
+    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|state|resume-rollup|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify",
   );
 }
 

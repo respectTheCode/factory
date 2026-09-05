@@ -477,6 +477,13 @@ function createRouter(
           projectUpdates.publish(input.projectId);
           return result;
         }),
+      resumeRollup: trpc.procedure
+        .input(z.object({ taskId: z.string().min(1) }))
+        .mutation(({ input }) => {
+          const result = application.resumeTaskRollup(input.taskId);
+          projectUpdates.publish(result.projectId);
+          return result;
+        }),
       setState: trpc.procedure
         .input(
           z.object({

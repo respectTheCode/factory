@@ -22,8 +22,8 @@ dashboard, CLI, and Codex skills.
 - A Status Report is an agent claim; only a human Verification can complete a Task.
 - Task Work State is durable and directly editable except for completion. Subtask rollup may
   promote a parent through non-completed states. An explicit human Task state remains in force
-  until a later higher Subtask transition or the completion rule; a same-state report does not
-  override a human hold.
+  until a later higher Subtask transition or an explicit resume-rollup action; same-state
+  reports and human acceptance do not silently release a manual hold.
 - Tasks and Subtasks retain a durable order within each Work State. Live state groups use the
   canonical display order: completed, blocked, awaiting verification, active, planned, backlog.
 - `released` and `wont_do` are explicit Archive States for quick Task/Subtask disposition;
@@ -65,12 +65,14 @@ go to stderr.
 - A blocked report includes what unblocks the work. Blocked and awaiting-verification state
   changes without an actionable reason are rejected.
 - Moving a Subtask to a higher non-completed state promotes a rollup-controlled parent Task;
-  moving all relevant Subtasks down recomputes that rollup state. A direct human Task-state
+  the rollup uses all non-archived children, so partial delivery remains active and all delivered
+  children request verification together. A direct human Task-state
   change may move either direction, including planned to active and active to planned.
 - Task and Subtask reorder commands accept the complete ordered ID list for one current state
   group and persist that order without changing state.
 - A Task or Subtask may be archived as `released` or `wont_do` from the dashboard, tRPC, or CLI.
-  Archived Tasks leave Attention, while archived Subtasks do not silently change their parent.
+  Archived Tasks leave Attention. Subtask scope changes recompute automatic parent state and
+  destination ordering, without changing a manual hold or archiving the parent.
 - A human verification retains the original Status Report and is the only action that can make
   the Task completed when its acceptance rule is satisfied.
 - Rejected and deferred reports remain historical observations rather than being overwritten.

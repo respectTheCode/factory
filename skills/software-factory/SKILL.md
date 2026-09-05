@@ -1,9 +1,17 @@
 ---
 name: software-factory
-description: Use the Software Factory CLI to create and inspect project work, report subtask status, and leave human verification to the PWA.
+description: Keep Software Factory tasks and subtasks current during coding, planning, review, and delivery work in Factory-tracked projects. Use at work start and handoff to resolve context, record evidence and blockers, and leave verification to the human.
 ---
 
 # Software Factory
+
+Codex and Claude share this operating loop. Check Factory at the start of work in a tracked
+project and reconcile the affected records before the final handoff. A review-only request
+permits reads and proposed corrections, not status mutations. When implementation or data
+maintenance is authorized, updating its Factory records is part of that work.
+
+Set `FACTORY_REPORTER=codex` for Codex or `FACTORY_REPORTER=claude` for Claude. Use that
+identity for reports; do not copy another client's attribution from an example.
 
 Use the CLI from the Factory checkout so agent updates share the same SQLite
 state as the PWA. The CLI emits one stable JSON object per command with
@@ -74,9 +82,9 @@ bun run src/cli.ts subtask update --subtask-id SUBTASK_ID \
   --title "Subtask title" --description "What must be checked" \
   --pull-request-url "https://github.com/org/repository/pull/124" \
   --database "$FACTORY_DB"
-bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state in_progress --reporter codex --evidence "What changed" --database "$FACTORY_DB"
+bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state in_progress --reporter "$FACTORY_REPORTER" --evidence "What changed" --database "$FACTORY_DB"
 bun run src/cli.ts subtask report --json --subtask-id SUBTASK_ID --state backlog \
-  --reason "What I need to check before starting" --reporter codex --database "$FACTORY_DB"
+  --reason "What I need to check before starting" --reporter "$FACTORY_REPORTER" --database "$FACTORY_DB"
 bun run src/cli.ts subtask reorder --task-id TASK_ID --state planned \
   --subtask-ids SUBTASK_ID_2\|SUBTASK_ID_1 --database "$FACTORY_DB"
 bun run src/cli.ts subtask status --json --task-id TASK_ID --database "$FACTORY_DB"
@@ -160,7 +168,9 @@ human-only PWA concern.
 
 ## Agent operating loop
 
-For coding work, resolve the current checkout before reading or reporting Factory work. The CLI
+For coding work, resolve the current checkout before reading or reporting Factory work. First
+resolve the Project without a branch filter and inspect its existing Tasks. Then use the branch
+filter when it identifies the work. The CLI
 normalizes common HTTPS, SSH URL, and SCP-style Git origins plus absolute workspace roots.
 `project context` fails closed when every supplied Project identity does not resolve to exactly
 one Project, or when a supplied branch matches zero or multiple Tasks:
@@ -178,11 +188,19 @@ else
   CONTEXT_SELECTOR=(--workspace-root "$REPO_CHECKOUT")
 fi
 bun run src/cli.ts project context "${CONTEXT_SELECTOR[@]}" \
-  --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
+  --json --database "$FACTORY_DB"
+# For a task-specific branch, resolve its unique Task as well:
+if [[ -n "$GIT_BRANCH" ]]; then
+  bun run src/cli.ts project context "${CONTEXT_SELECTOR[@]}" \
+    --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
+fi
+# Continue below only after selecting the correct PROJECT_ID and TASK_ID.
 bun run src/cli.ts project t3-status --project-id PROJECT_ID \
   --json --database "$FACTORY_DB"
-bun run src/cli.ts session auto-link --project-id PROJECT_ID --task-id TASK_ID \
-  --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
+if [[ -n "$GIT_BRANCH" ]]; then
+  bun run src/cli.ts session auto-link --project-id PROJECT_ID --task-id TASK_ID \
+    --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
+fi
 bun run src/cli.ts project attention "${CONTEXT_SELECTOR[@]}" \
   --json --database "$FACTORY_DB"
 bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
@@ -209,15 +227,68 @@ link` or the PWA's collapsed **Manage associations** section only as a fallback.
 association with its `--association-id`; never remove unrelated associations. Association changes
 are Factory metadata only and never change T3, Work State, Status Reports, or Verification.
 
-If the checkout has no Git remote, the exact absolute workspace root remains sufficient. If the
-checkout is detached and `git branch --show-current` is empty, omit `--branch-name` and inspect
-the returned Project Tasks. Do not infer a Project or Task after a resolver error; ask Kevin to
-correct missing or duplicate Factory context.
+If the checkout has no Git remote, the normalized absolute workspace root remains sufficient. Workspace matching removes trailing
+slashes and lexical dot segments; it does not resolve symlinks. Stored or remote relative roots
+are not Project identities: correct their metadata to an absolute root rather than guessing. If the
+checkout is detached and `git branch --show-current` is empty, omit the branch-filtered command
+and automatic session association.
+
+A missing branch match on `main`, `master`, or a maintenance branch does not mean the Project is
+missing. Use the successful Project-only result to inspect Task details and histories. Select an
+existing Task only when the user's stated scope or explicit Task ID identifies it unambiguously;
+do not rewrite historical branch names to make a resolver pass. For authorized new work with no
+existing matching outcome, create a bounded Task and reportable Subtasks after checking for
+duplicates. If the intended Task remains ambiguous, report the candidates and leave those records
+unchanged. A missing or duplicate Project identity still fails closed: ask Kevin to resolve it.
+
+Session association is optional metadata, not a prerequisite for reporting resolved work. T3
+observes only sessions available through its API; a Codex or Claude session outside T3 may have
+no match. Never claim it was linked, invent its identity, or let that failure suppress the work
+report.
 
 When work starts, submit `in_progress`. Submit `blocked` with the blocker in `--evidence`, or
 submit `complete` only when the evidence is ready for Kevin to review. Reports are observations,
 not approval; never attempt to verify from an agent process. After reporting, read the Task
 status again and include the returned `report.id` in any handoff or summary.
+
+For an authorized Task with no Subtasks, use `task state --state active` at work start and
+create a concrete reportable Subtask for the outcome before submitting a status report. There
+is no Task-level `report` command. Do not create artificial progress for a read-only inspection.
+
+Before appending, read the latest report. Append when the state, evidence, blocker, or concrete
+human check changed; an unchanged observation is a no-op. Include the observed revision or PR,
+checks actually run, and remaining checks. Distinguish implementation, merge, deployment, and
+human acceptance. Historical evidence is not a fresh deployment or production check. On a
+metadata-only correction, use `subtask update` rather than manufacturing a new progress report.
+
+After child reports, inspect the parent. Automatic rollup uses all in-scope, non-archived
+Subtasks: any blocker makes it blocked; all complete reports awaiting acceptance or already
+accepted make it awaiting verification; partially delivered work remains active. Only current
+human-accepted complete reports can yield completed. Adding, removing, archiving, or restoring
+scope recomputes automatic parents and their display order; manual holds remain deliberate.
+
+Avoid redundant `task state` writes: they create a manual hold. When an obsolete hold prevents
+the parent from reflecting its Subtasks, use `task resume-rollup --task-id ... --json` (the UI
+calls this **Use subtask status**) and inspect the returned status. This releases the hold without
+creating reports or accepting anything. Preserve a hold that represents an unresolved decision
+or blocker. Never archive unfinished work to make a parent look ready, reopen an accepted
+Subtask merely to refresh its timestamp, or manufacture a report to release a parent hold.
+
+Keep titles, descriptions, PR links, and remaining Subtasks aligned with the authorized scope.
+Do not temporarily reset a started Task to `planned` to bypass the acceptance-criteria guard;
+record a changed scope in the description and hand off any criteria change for human review.
+The final handoff names affected Task/Subtask IDs, new report IDs, remaining work, and any
+unresolved Factory or session association failure. A session ending alone is never evidence
+that its work completed.
+
+## Local installation
+
+The maintained source is `skills/software-factory/SKILL.md` in the Factory checkout. Install the
+same content for both local agents at `~/.codex/skills/software-factory/SKILL.md` and
+`~/.claude/skills/software-factory/SKILL.md`, then compare their hashes with the source. Factory
+service deployment does not install agent skills. New sessions must discover the installed
+skill; an existing session's already-loaded instructions are not proof of adoption. Remote
+agents need their own supported client and installation; these local paths do not configure them.
 
 Tracker links can be attached through the CLI, PWA, or tRPC API. They remain references to the
 source item in Linear or Notion; Factory does not push updates to either system.

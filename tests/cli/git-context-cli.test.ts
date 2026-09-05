@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
+import { createFactoryApplication } from "../../src/application";
 
 type ProjectCreateOutput = {
   schemaVersion: 1;
@@ -43,6 +44,27 @@ async function runCli(
 }
 
 describe("git context CLI metadata", () => {
+  test("does not anchor a persisted relative workspace root to the CLI cwd", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "factory-relative-root-"));
+    try {
+      const databasePath = join(directory, "factory.sqlite");
+      const app = createFactoryApplication({ databasePath });
+      app.createProject({ name: "Legacy relative root", workspaceRoot: "." });
+      const result = await runCli([
+        "project",
+        "context",
+        "--workspace-root",
+        ".",
+        "--database",
+        databasePath,
+        "--json",
+      ]);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout).toBe("");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   test("resolves project and task context by workspace root without a Git remote", async () => {
     const temporaryDirectory = mkdtempSync(
       join(tmpdir(), "software-factory-cli-workspace-context-"),

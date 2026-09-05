@@ -123,15 +123,20 @@ record. A Status Report does not replace Kevin's Verification.
 - A Task is completed only when it has at least one Subtask and every Subtask's current report
   is `complete` with a latest Verification of `accepted`. A Task with no Subtasks remains
   planned. Human acceptance attests that the Task's visible acceptance criteria are satisfied.
-- A Task whose state is controlled by Subtask rollup follows the highest current non-completed
-  Subtask state and may move down again when those Subtasks change. A direct human Task-state
-  choice remains in force until a Subtask later moves to a higher non-completed state or the
-  completion rule is satisfied; a same-state report does not override a human hold.
+- A Task controlled by Subtask rollup considers all non-archived children: any blocked child
+  makes it blocked; all awaiting-verification or accepted-complete children make it awaiting
+  verification; partial delivery remains active. All current reports must be human-accepted
+  complete for automatic completion. With no remaining children it is planned.
+- A manual Task-state choice remains in force until a later higher Subtask transition or an
+  explicit `task resume-rollup` action. Same-state reports and acceptance alone do not release
+  a hold. Resuming rollup creates neither a Status Report nor a Verification.
+- Adding, removing, archiving, and restoring Subtasks recomputes automatic parent state and
+  moves a changed parent to the destination state's order tail. Manual holds are preserved.
 - Task dependencies are informational in v1 and do not independently block completion.
 - `released` and `wont_do` are explicit Archive States, distinct from human-verified
   `completed`. Archived Tasks disappear from Attention but remain addressable, counted, and
-  recoverable with a restore action. Archiving a Subtask changes only that Subtask; it does not
-  silently archive its parent Task or erase its report/verification history.
+  recoverable with a restore action. Archiving a Subtask removes it from automatic parent rollup; it does not
+  archive its parent Task or erase its report/verification history.
 
 ### 3.4 Mobile web and CLI
 

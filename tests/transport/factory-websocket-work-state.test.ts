@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import { createFactoryServer } from "../../src/server";
+import { createFactoryApplication } from "../../src/application";
 
 type RawTRPCResponse = {
   id: number;
@@ -58,6 +59,48 @@ function responseError(response: RawTRPCResponse): string {
   expect(response.error).toBeDefined();
   return response.error?.message ?? "";
 }
+
+test("resumes subtask tracking through the PWA transport without accepting reports", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "factory-rollup-websocket-"));
+  const databasePath = join(directory, "factory.sqlite");
+  const app = createFactoryApplication({ databasePath });
+  const project = app.createProject({ name: "Resume tracking" });
+  const task = app.createTask({ projectId: project.id, name: "Held work" });
+  const child = app.createSubtask({ taskId: task.id, name: "Review slice" });
+  const report = app.reportSubtaskStatus({
+    subtaskId: child.id,
+    reportedState: "complete",
+    reporter: "codex",
+    reason: "Check the slice.",
+  });
+  app.setTaskWorkState({ taskId: task.id, workState: "active" });
+  const { server, socket } = await openServerSocket(databasePath);
+  try {
+    responseData(
+      await sendRawTRPCRequest(socket, {
+        id: 1,
+        method: "mutation",
+        params: { path: "tasks.resumeRollup", input: { taskId: task.id } },
+      }),
+    );
+    const status = responseData(
+      await sendRawTRPCRequest(socket, {
+        id: 2,
+        method: "query",
+        params: { path: "tasks.status", input: { taskId: task.id } },
+      }),
+    );
+    expect(status).toMatchObject({
+      taskState: "awaiting_verification",
+      taskCompleted: false,
+    });
+    expect(app.getSubtaskReportHistory(child.id)).toEqual([report]);
+  } finally {
+    socket.close();
+    server.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 async function openServerSocket(databasePath: string) {
   const server = createFactoryServer({ port: 0, databasePath });

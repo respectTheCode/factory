@@ -1,4 +1,5 @@
 import { parseGitHubPullRequestUrl } from "./github";
+import { sameWorkspaceRoot } from "./workspace";
 
 /**
  * Pure matching and reconciliation rules for external coding-session
@@ -210,7 +211,7 @@ export function matchReconciliationTarget(
 
   const workspaceMatches = targets.filter(
     (target) =>
-      same(session.workspaceRoot, target.workspaceRoot) &&
+      sameWorkspaceRoot(session.workspaceRoot, target.workspaceRoot) &&
       same(session.branch, target.branchName),
   );
   if (workspaceMatches.length > 0) {

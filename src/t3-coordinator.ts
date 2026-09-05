@@ -1,3 +1,4 @@
+import { sameWorkspaceRoot } from "./workspace";
 import type {
   CodeSessionObservationInput,
   FactoryApplication,
@@ -188,7 +189,7 @@ function matchingBasis(
   const basis: Array<"t3ProjectId" | "workspaceRoot" | "repositoryIdentity"> =
     [];
   if (factoryProject.t3ProjectId === t3Project.id) basis.push("t3ProjectId");
-  if (factoryProject.workspaceRoot === t3Project.workspaceRoot)
+  if (sameWorkspaceRoot(factoryProject.workspaceRoot, t3Project.workspaceRoot))
     basis.push("workspaceRoot");
   if (
     projectRepositoryKey(factoryProject) !== undefined &&
@@ -211,7 +212,7 @@ function contradictsExplicitMapping(
   }
   if (
     factoryProject.workspaceRoot !== undefined &&
-    factoryProject.workspaceRoot !== t3Project.workspaceRoot
+    !sameWorkspaceRoot(factoryProject.workspaceRoot, t3Project.workspaceRoot)
   ) {
     return true;
   }

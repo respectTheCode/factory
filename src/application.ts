@@ -1,3 +1,4 @@
+import { sameWorkspaceRoot } from "./workspace";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
@@ -680,7 +681,8 @@ export class FactoryApplication {
 
   removeSubtask(subtaskId: string): void {
     this.refreshFromPersistence();
-    if (!this.subtasks.some((subtask) => subtask.id === subtaskId)) {
+    const subtask = this.subtasks.find((subtask) => subtask.id === subtaskId);
+    if (!subtask) {
       throw new Error(`Subtask ${subtaskId} does not exist.`);
     }
 
@@ -705,6 +707,7 @@ export class FactoryApplication {
         (candidateId) => candidateId !== subtaskId,
       );
     }
+    this.reconcileAutomaticTaskRollup(subtask.taskId);
     this.save();
   }
 
@@ -890,6 +893,18 @@ export class FactoryApplication {
     return this.updateTask({ stateReason: reason, taskId, workState });
   }
 
+  resumeTaskRollup(taskId: string): Task {
+    this.refreshFromPersistence();
+    const task = this.tasks.find((candidate) => candidate.id === taskId);
+    if (!task) throw new Error(`Task ${taskId} does not exist.`);
+    if (task.archiveState)
+      throw new Error("Restore the Task before changing its work state.");
+    const rollup = this.getTaskRollup(taskId);
+    this.setTaskRollupState(task, rollup.state, rollup.reason);
+    this.save();
+    return task;
+  }
+
   createSubtask({
     description,
     name,
@@ -920,6 +935,7 @@ export class FactoryApplication {
     };
 
     this.subtasks.push(subtask);
+    this.reconcileAutomaticTaskRollup(taskId);
     this.save();
     return subtask;
   }
@@ -987,6 +1003,7 @@ export class FactoryApplication {
     if (!task) throw new Error(`Task ${taskId} does not exist.`);
 
     delete task.archiveState;
+    this.reconcileAutomaticTaskRollup(taskId);
     this.save();
   }
 
@@ -998,6 +1015,7 @@ export class FactoryApplication {
     if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
 
     subtask.archiveState = archiveState;
+    this.reconcileAutomaticTaskRollup(subtask.taskId);
     this.save();
   }
 
@@ -1009,6 +1027,7 @@ export class FactoryApplication {
     if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
 
     delete subtask.archiveState;
+    this.reconcileAutomaticTaskRollup(subtask.taskId);
     this.save();
   }
 
@@ -1184,19 +1203,12 @@ export class FactoryApplication {
           subtask.verificationState === "accepted",
       );
 
-    const taskState = task.archiveState
-      ? task.archiveState
-      : task.workStateSource === "manual" && task.workState
-        ? task.workState
-        : task.workStateSource === "rollup" && task.workState
-          ? task.workState
-          : taskCompleted
-            ? "completed"
-            : (task.workState ??
-              this.deriveTaskWorkState(taskCompleted, activeSubtasks));
+    const taskState = task.archiveState ?? this.getEffectiveTaskWorkState(task);
     const stateReason =
       taskState === "blocked" || taskState === "awaiting_verification"
-        ? (task.stateReason ??
+        ? ((task.workStateSource === "rollup"
+            ? this.getTaskRollup(taskId).reason
+            : task.stateReason) ??
           activeSubtasks.find((subtask) => subtask.effectiveState === taskState)
             ?.reason)
         : undefined;
@@ -1510,7 +1522,7 @@ export class FactoryApplication {
       }
       if (
         project.workspaceRoot !== undefined &&
-        project.workspaceRoot !== observation.workspaceRoot
+        !sameWorkspaceRoot(project.workspaceRoot, observation.workspaceRoot)
       ) {
         throw new Error(
           `T3 workspace does not match Factory Project ${project.id}.`,
@@ -2522,12 +2534,11 @@ export class FactoryApplication {
           subtask.taskId === task.id && subtask.archiveState === undefined,
       )
       .map((subtask) => this.getSubtaskEffectiveWorkState(subtask));
-    if (
-      task.workState &&
-      (task.workStateSource === "manual" || task.workStateSource === "rollup")
-    ) {
+    if (task.workState && task.workStateSource === "manual") {
       return task.workState;
     }
+    if (task.workStateSource === "rollup")
+      return this.getTaskRollup(task.id).state;
     if (this.taskWouldBeCompleted(task.id)) return "completed";
     if (task.workState) return task.workState;
     if (activeSubtasks.length === 0) return "planned";
@@ -2555,13 +2566,57 @@ export class FactoryApplication {
   }
 
   private deriveStateFromEffectiveSubtasks(states: WorkState[]): WorkState {
-    return states.reduce(
-      (highest, state) =>
-        state === "completed" || compareWorkStates(state, highest) <= 0
-          ? highest
-          : state,
-      "backlog" as WorkState,
+    if (states.length === 0) return "planned";
+    if (states.every((state) => state === "completed")) return "completed";
+    if (states.includes("blocked")) return "blocked";
+    if (
+      states.every(
+        (state) => state === "completed" || state === "awaiting_verification",
+      )
+    ) {
+      return "awaiting_verification";
+    }
+    if (
+      states.some(
+        (state) =>
+          state === "active" ||
+          state === "completed" ||
+          state === "awaiting_verification",
+      )
+    ) {
+      return "active";
+    }
+    return states.includes("planned") ? "planned" : "backlog";
+  }
+
+  private getTaskRollup(taskId: string): { state: WorkState; reason?: string } {
+    const children = this.subtasks.filter(
+      (subtask) => subtask.taskId === taskId && !subtask.archiveState,
     );
+    const state = this.deriveStateFromEffectiveSubtasks(
+      children.map((child) => this.getSubtaskEffectiveWorkState(child)),
+    );
+    if (state !== "blocked" && state !== "awaiting_verification")
+      return { state };
+    const child = children.find(
+      (candidate) => this.getSubtaskEffectiveWorkState(candidate) === state,
+    );
+    const reason = child && this.getSubtaskStateReason(child);
+    const task = this.tasks.find((candidate) => candidate.id === taskId);
+    return {
+      state,
+      reason:
+        reason ||
+        (task?.workState === state ? task.stateReason : undefined) ||
+        `Review Subtask ${child?.id}: its historical report has no recorded ${state === "blocked" ? "unblocker" : "verification check"}.`,
+    };
+  }
+
+  private reconcileAutomaticTaskRollup(taskId: string): void {
+    const task = this.tasks.find((candidate) => candidate.id === taskId);
+    if (!task || task.archiveState || task.workStateSource !== "rollup") return;
+    const rollup = this.getTaskRollup(taskId);
+    this.setTaskRollupState(task, rollup.state, rollup.reason);
   }
 
   private promoteParentTask(
@@ -2602,16 +2657,7 @@ export class FactoryApplication {
       return;
     }
 
-    const candidateSubtask = activeSubtasks
-      .map((subtask) => ({
-        reason: this.getSubtaskStateReason(subtask),
-        state: this.getSubtaskEffectiveWorkState(subtask),
-      }))
-      .filter(({ state }) => state !== "completed")
-      .sort((left, right) => compareWorkStates(right.state, left.state))[0];
-    if (!candidateSubtask) {
-      return;
-    }
+    const candidateSubtask = this.getTaskRollup(taskId);
 
     if (
       !isRollup &&
@@ -2633,7 +2679,8 @@ export class FactoryApplication {
     workState: WorkState,
     reason?: string,
   ): void {
-    const previousState = this.getEffectiveTaskWorkState(task);
+    const previousState =
+      task.workState ?? this.getEffectiveTaskWorkState(task);
     task.workState = workState;
     task.workStateSource = "rollup";
     if (workState === "blocked" || workState === "awaiting_verification") {
@@ -2682,6 +2729,8 @@ export class FactoryApplication {
     if (workState !== "blocked" && workState !== "awaiting_verification") {
       return undefined;
     }
+    if (task.workStateSource === "rollup")
+      return this.getTaskRollup(task.id).reason;
     if (task.stateReason) return task.stateReason;
     return this.subtasks
       .filter(
@@ -2787,35 +2836,6 @@ export class FactoryApplication {
   private getTaskWorkState(taskId: string): ProjectWorkState {
     const status = this.getTaskStatus(taskId);
     return status.taskState;
-  }
-
-  private deriveTaskWorkState(
-    taskCompleted: boolean,
-    subtasks: TaskStatus["subtasks"],
-  ): ProjectWorkState {
-    if (taskCompleted) return "completed";
-
-    if (subtasks.some((subtask) => subtask.effectiveState === "blocked")) {
-      return "blocked";
-    }
-
-    if (
-      subtasks.some(
-        (subtask) => subtask.effectiveState === "awaiting_verification",
-      )
-    ) {
-      return "awaiting_verification";
-    }
-
-    if (subtasks.some((subtask) => subtask.effectiveState === "active")) {
-      return "active";
-    }
-
-    if (subtasks.some((subtask) => subtask.effectiveState === "planned")) {
-      return "planned";
-    }
-
-    return "backlog";
   }
 
   private getCurrentVerification(reportId: string): Verification | undefined {
