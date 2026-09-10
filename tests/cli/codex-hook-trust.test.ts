@@ -69,6 +69,17 @@ describe("Codex hook trust helpers", () => {
     });
   });
 
+  test("reports a changed hook as modified so its new hash is recorded", () => {
+    const fixture = hooksListFixture();
+    const factory = fixture.result.data[0]?.hooks.find((hook) =>
+      hook.command.includes("factory-session-brief-hook.sh"),
+    );
+    if (!factory) throw new Error("fixture lost the Factory hook");
+    factory.trustStatus = "modified";
+
+    expect(findFactoryCodexHook(fixture)?.trustStatus).toBe("modified");
+  });
+
   test("rejects an ambiguous Factory hook list", () => {
     const fixture = hooksListFixture();
     fixture.result.data[0]?.hooks.push({

@@ -1,4 +1,9 @@
-export type CodexHookTrustStatus = "trusted" | "untrusted";
+/**
+ * Codex reports "trusted", "untrusted" for a never-trusted hook, and
+ * "modified" when a trusted hook's definition changed. Any value other than
+ * "trusted" means the current hash must be recorded.
+ */
+export type CodexHookTrustStatus = "trusted" | "untrusted" | "modified";
 
 export type FactoryCodexHook = {
   key: string;
@@ -75,8 +80,14 @@ export function findFactoryCodexHook(
       if (typeof hook.currentHash !== "string") {
         throw new Error("Factory Codex hook is missing its current hash.");
       }
-      if (hook.trustStatus !== "trusted" && hook.trustStatus !== "untrusted") {
-        throw new Error("Factory Codex hook has an invalid trust status.");
+      if (
+        hook.trustStatus !== "trusted" &&
+        hook.trustStatus !== "untrusted" &&
+        hook.trustStatus !== "modified"
+      ) {
+        throw new Error(
+          `Factory Codex hook has an unexpected trust status: ${String(hook.trustStatus)}.`,
+        );
       }
       if (typeof hook.enabled !== "boolean") {
         throw new Error("Factory Codex hook is missing its enabled state.");
