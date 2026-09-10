@@ -62,6 +62,22 @@ notifications, or blocks a session. It is context loading only. It is distinct
 from the reporting hooks deferred in
 [`docs/reviews/2026-09-04-tool-fixes-and-hooks.md`](reviews/2026-09-04-tool-fixes-and-hooks.md).
 
+## Trusting the Codex hook
+
+Codex skips an untrusted non-managed hook. Trust is tied to the exact hook
+definition, so the hash changes whenever that definition changes, including when
+the installer changes the Codex `additionalContextLimit` of 4000 tokens. After
+installing or updating the hook, record its current hash with:
+
+```sh
+bun run scripts/trust-codex-session-hook.ts
+```
+
+The alternative is to review and trust the hook through `/hooks` inside an
+interactive Codex session. `--dangerously-bypass-hook-trust` is reserved for
+one-off automation and should not replace recording trust for the installed
+hook.
+
 ## Verification
 
 Run the script directly with a SessionStart-shaped payload. Use a tracked
