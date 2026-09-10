@@ -46,4 +46,13 @@ describe("Software Factory skill", () => {
     );
     expect(skill).toContain("only as a fallback");
   });
+
+  test("documents the bounded session-start project brief", () => {
+    expect(skill).toContain("bun run src/cli.ts project brief");
+    expect(skill).toContain(
+      "Session-start hooks inject `project brief` as the session's bounded starting context.",
+    );
+    expect(skill).toContain("capped at 8000 characters by default");
+    expect(skill).toContain("truncated brief is never a complete record");
+  });
 });

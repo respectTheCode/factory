@@ -2144,6 +2144,7 @@ export class FactoryApplication {
     dependencies: string[];
     repositoryLinks: string[];
     workState?: WorkState;
+    workStateSource?: "manual" | "rollup";
     stateReason?: string;
     sortOrder?: number;
     archiveState?: ArchiveState;
@@ -2167,6 +2168,9 @@ export class FactoryApplication {
       dependencies: task.dependencies,
       repositoryLinks: task.repositoryLinks,
       ...(task.workState ? { workState: task.workState } : {}),
+      ...(task.workStateSource
+        ? { workStateSource: task.workStateSource }
+        : {}),
       ...(taskStateReason ? { stateReason: taskStateReason } : {}),
       ...(task.sortOrder !== undefined ? { sortOrder: task.sortOrder } : {}),
       ...(task.archiveState ? { archiveState: task.archiveState } : {}),

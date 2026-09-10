@@ -47,6 +47,9 @@ bun run src/cli.ts project context \
   --workspace-root "/absolute/path/to/repository" \
   --git-origin-url "git@github.com:org/repository.git" \
   --branch-name "GRA-143-preview-environments" --json --database "$FACTORY_DB"
+bun run src/cli.ts project brief \
+  --workspace-root "/absolute/path/to/repository" \
+  --branch-name "GRA-143-preview-environments" --json --database "$FACTORY_DB"
 bun run src/cli.ts project create --name "Project name" --database "$FACTORY_DB"
 bun run src/cli.ts project create --name "Project name" \
   --git-origin-url "git@github.com:org/repository.git" --database "$FACTORY_DB"
@@ -167,6 +170,11 @@ self-approve its work; rejected or deferred verification reasons remain a
 human-only PWA concern.
 
 ## Agent operating loop
+
+Session-start hooks inject `project brief` as the session's bounded starting context. It is
+capped at 8000 characters by default with a truncation notice when the cap is reached. A
+truncated brief is never a complete record; run `task detail` for the full Task record. The
+brief is a starting point, not a substitute for the loop below.
 
 For coding work, resolve the current checkout before reading or reporting Factory work. First
 resolve the Project without a branch filter and inspect its existing Tasks. Then use the branch

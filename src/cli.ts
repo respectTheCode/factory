@@ -11,6 +11,14 @@ import {
   type WorkState,
 } from "./application";
 import { createGitHubStatusReader, parseGitHubPullRequestUrl } from "./github";
+import {
+  DEFAULT_BRIEF_MAX_CHARACTERS,
+  renderBrief,
+  type BriefAttentionItem,
+  type BriefInput,
+  type BriefSubtask,
+  type BriefTask,
+} from "./brief";
 import { createT3Coordinator } from "./t3-coordinator";
 import { createT3ActivityReader, MAX_T3_THREAD_TURN_LIMIT } from "./t3";
 import { resolveT3AccessToken } from "./t3-credential";
@@ -256,6 +264,194 @@ function gitOriginFlag(flags: Map<string, string>): string | undefined {
   if (value === undefined) return undefined;
   if (!value.trim()) throw new Error("--git-origin-url must not be empty.");
   return value.trim();
+}
+
+function briefMaxCharacters(flags: Map<string, string>): number {
+  const configured = flags.get("max-chars");
+  if (configured === undefined) return DEFAULT_BRIEF_MAX_CHARACTERS;
+  const value = Number(configured);
+  if (
+    !/^\d+$/.test(configured) ||
+    !Number.isSafeInteger(value) ||
+    value < 1000
+  ) {
+    throw new Error("--max-chars must be an integer of at least 1000.");
+  }
+  return value;
+}
+
+function firstReportLine(report: {
+  evidence?: string;
+  reason?: string;
+}): string | undefined {
+  const value = report.reason?.trim() || report.evidence?.trim();
+  return value?.split(/\r?\n/, 1)[0]?.trim() || undefined;
+}
+
+function makeBriefInput({
+  application,
+  candidateTaskIds,
+  checkoutPath,
+  databasePath,
+  generatedAt,
+  hierarchy,
+  maxCharacters,
+  project,
+  projectDetail,
+  selector,
+  selectedTask,
+  branchResolutionNote,
+}: {
+  application: ReturnType<typeof createFactoryApplication>;
+  candidateTaskIds: string[];
+  checkoutPath: string;
+  databasePath: string;
+  generatedAt: string;
+  hierarchy: ReturnType<
+    ReturnType<typeof createFactoryApplication>["getProjectHierarchy"]
+  >;
+  maxCharacters: number;
+  project: ReturnType<
+    ReturnType<typeof createFactoryApplication>["listProjects"]
+  >[number];
+  projectDetail: ReturnType<
+    ReturnType<typeof createFactoryApplication>["getProjectDetail"]
+  >;
+  selector: BriefInput["selector"];
+  selectedTask?: ReturnType<
+    ReturnType<typeof createFactoryApplication>["getTaskDetail"]
+  >;
+  branchResolutionNote?: string;
+}): BriefInput {
+  let task: BriefTask | undefined;
+  if (selectedTask) {
+    const hierarchyTask = hierarchy.tasks.find(
+      (candidate) => candidate.id === selectedTask.id,
+    );
+    if (!hierarchyTask) {
+      throw new Error(
+        `Factory Task ${selectedTask.id} is not present in Project ${project.id}.`,
+      );
+    }
+
+    const status = application.getTaskStatus(selectedTask.id);
+    const subtasks: BriefSubtask[] = hierarchyTask.subtasks
+      .filter((subtask) => subtask.archiveState === undefined)
+      .map((subtask) => {
+        const subtaskStatus = status.subtasks.find(
+          (candidate) => candidate.subtaskId === subtask.id,
+        );
+        const reports = application.getSubtaskReportHistory(subtask.id);
+        const latestReport = reports.at(-1);
+        return {
+          id: subtask.id,
+          name: subtask.name,
+          ...(subtask.description === undefined
+            ? {}
+            : { description: subtask.description }),
+          effectiveState: subtaskStatus?.effectiveState ?? "planned",
+          ...(latestReport
+            ? {
+                latestReport: {
+                  state: latestReport.reportedState,
+                  reporter: latestReport.reporter,
+                  ...(firstReportLine(latestReport)
+                    ? { reasonOrEvidence: firstReportLine(latestReport) }
+                    : {}),
+                  createdAt: latestReport.createdAt.toISOString(),
+                },
+              }
+            : {}),
+        };
+      });
+    const reportSubtaskId = subtasks.find((subtask) => {
+      const reports = application.getSubtaskReportHistory(subtask.id);
+      const verifications = application.getSubtaskVerificationHistory(
+        subtask.id,
+      );
+      return !reports.some(
+        (report) =>
+          report.reportedState === "complete" &&
+          verifications.some(
+            (verification) =>
+              verification.reportId === report.id &&
+              verification.decision === "accepted",
+          ),
+      );
+    })?.id;
+
+    task = {
+      id: selectedTask.id,
+      name: selectedTask.name,
+      ...(selectedTask.objective === undefined
+        ? {}
+        : { objective: selectedTask.objective }),
+      ...(selectedTask.branchName === undefined
+        ? {}
+        : { branchName: selectedTask.branchName }),
+      ...(selectedTask.pullRequestUrl === undefined
+        ? {}
+        : { pullRequestUrl: selectedTask.pullRequestUrl }),
+      acceptanceCriteria: selectedTask.acceptanceCriteria,
+      dependencies: selectedTask.dependencies,
+      workState: selectedTask.archiveState ?? status.taskState,
+      ...(status.stateReason === undefined
+        ? {}
+        : { stateReason: status.stateReason }),
+      manualHold: selectedTask.workStateSource === "manual",
+      trackerLinks: selectedTask.trackerLinks.map((link) => ({
+        stableId: link.stableId,
+        system: link.system,
+        url: link.url,
+      })),
+      subtasks,
+      ...(reportSubtaskId ? { reportSubtaskId } : {}),
+    };
+  }
+
+  const attention: BriefAttentionItem[] = application
+    .getAttentionProjection()
+    .filter((item) => item.projectId === project.id)
+    .map((item) => ({
+      taskId: item.taskId,
+      taskName: item.taskName,
+      state: item.state,
+      ...(item.owner ? { owner: item.owner } : {}),
+      ...(item.priority ? { priority: item.priority } : {}),
+    }));
+
+  return {
+    attention,
+    branchResolutionNote,
+    candidateTaskIds,
+    checkoutPath,
+    databasePath,
+    generatedAt,
+    maxCharacters,
+    openTasks: hierarchy.tasks
+      .filter((candidate) => candidate.archiveState === undefined)
+      .map((candidate) => ({
+        id: candidate.id,
+        name: candidate.name,
+        ...(candidate.branchName ? { branchName: candidate.branchName } : {}),
+        workState: candidate.workState ?? "planned",
+      })),
+    project: {
+      id: project.id,
+      name: project.name,
+      ...(project.gitOriginUrl ? { gitOriginUrl: project.gitOriginUrl } : {}),
+      ...(project.workspaceRoot
+        ? { workspaceRoot: project.workspaceRoot }
+        : {}),
+      trackerLinks: projectDetail.trackerLinks.map((link) => ({
+        stableId: link.stableId,
+        system: link.system,
+        url: link.url,
+      })),
+    },
+    selector,
+    ...(task ? { task } : {}),
+  };
 }
 
 function normalizeGitOriginUrl(value: string): string {
@@ -515,6 +711,113 @@ async function main(args: string[]): Promise<void> {
         tasks,
       },
     });
+    return;
+  }
+
+  if (resource === "project" && action === "brief") {
+    const gitOriginUrl = gitOriginFlag(parsed.flags);
+    const workspaceRoot = workspaceRootFlag(parsed.flags);
+    if (!gitOriginUrl && !workspaceRoot) {
+      throw new Error(
+        "Provide at least one of --git-origin-url or --workspace-root.",
+      );
+    }
+
+    const projects = projectsMatchingContext(application, {
+      gitOriginUrl,
+      workspaceRoot,
+    });
+    const selector = contextSelectorDescription({
+      gitOriginUrl,
+      workspaceRoot,
+    });
+    if (projects.length === 0) {
+      throw new Error(`No Factory Project matches ${selector}.`);
+    }
+    if (projects.length > 1) {
+      throw new Error(
+        `${selector} matches multiple Factory Projects: ${projects
+          .map((project) => project.id)
+          .join(", ")}.`,
+      );
+    }
+
+    const project = projects[0];
+    if (!project) throw new Error("Factory Project resolution failed.");
+    const hierarchy = application.getProjectHierarchy(project.id);
+    const projectDetail = application.getProjectDetail(project.id);
+    const branchFlag = parsed.flags.get("branch-name");
+    const branchName = branchFlag?.trim();
+    if (branchFlag !== undefined && !branchName) {
+      throw new Error("--branch-name must not be empty.");
+    }
+
+    const taskId = parsed.flags.has("task-id")
+      ? requiredFlag(parsed.flags, "task-id")
+      : undefined;
+    let selectedTask:
+      | ReturnType<ReturnType<typeof createFactoryApplication>["getTaskDetail"]>
+      | undefined;
+    let candidateTaskIds: string[] = [];
+    let branchResolutionNote: string | undefined;
+    if (taskId) {
+      const taskDetail = application.getTaskDetail(taskId);
+      if (taskDetail.projectId !== project.id) {
+        throw new Error(
+          `Factory Task ${taskId} does not belong to Project ${project.id}.`,
+        );
+      }
+      selectedTask = taskDetail;
+    } else if (branchName) {
+      const branchMatches = hierarchy.tasks.filter(
+        (task) =>
+          task.archiveState === undefined && task.branchName === branchName,
+      );
+      if (branchMatches.length === 1) {
+        const matchingTask = branchMatches[0];
+        if (!matchingTask) throw new Error("Factory Task resolution failed.");
+        selectedTask = application.getTaskDetail(matchingTask.id);
+      } else if (branchMatches.length === 0) {
+        branchResolutionNote = `Branch ${branchName} matched zero non-archived Tasks.`;
+      } else {
+        candidateTaskIds = branchMatches.map((task) => task.id);
+        branchResolutionNote = `Branch ${branchName} matched several non-archived Tasks; candidates: ${candidateTaskIds.join(", ")}.`;
+      }
+    }
+
+    const maxCharacters = briefMaxCharacters(parsed.flags);
+    const rendered = renderBrief(
+      makeBriefInput({
+        application,
+        branchResolutionNote,
+        candidateTaskIds,
+        checkoutPath: resolve(process.cwd()),
+        databasePath: resolve(databasePath),
+        generatedAt: new Date().toISOString(),
+        hierarchy,
+        maxCharacters,
+        project,
+        projectDetail,
+        selector: {
+          ...(workspaceRoot ? { workspaceRoot } : {}),
+          ...(gitOriginUrl ? { gitOriginUrl } : {}),
+        },
+        selectedTask,
+      }),
+    );
+    const brief = {
+      ...rendered,
+      candidateTaskIds,
+      project: { id: project.id, name: project.name },
+      task: selectedTask
+        ? { id: selectedTask.id, name: selectedTask.name }
+        : null,
+    };
+    if (parsed.flags.get("json") === "true") {
+      output({ brief });
+    } else {
+      console.log(rendered.markdown);
+    }
     return;
   }
 
@@ -881,7 +1184,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|update|list|context|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|state|resume-rollup|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify",
+    "Usage: database backup|check, project create|update|list|context|brief|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|state|resume-rollup|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify",
   );
 }
 
