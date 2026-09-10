@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import {
+  CODEX_ADDITIONAL_CONTEXT_LIMIT,
   mergeSessionStartHook,
   factorySessionHookCommand,
 } from "../src/session-hooks";
@@ -83,7 +84,13 @@ async function installOne(
   scriptPath: string,
 ): Promise<InstallResult> {
   const command = factorySessionHookCommand(client, scriptPath);
-  const merged = mergeSessionStartHook(settings, { command, timeout: 10 });
+  const merged = mergeSessionStartHook(settings, {
+    command,
+    timeout: 10,
+    ...(client === "codex"
+      ? { additionalContextLimit: CODEX_ADDITIONAL_CONTEXT_LIMIT }
+      : {}),
+  });
   const nextContent = `${JSON.stringify(merged, null, 2)}\n`;
   const previousContent = existsSync(path) ? await Bun.file(path).text() : "";
   const changed = previousContent !== nextContent;

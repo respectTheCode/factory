@@ -5,7 +5,15 @@ export type SessionHookClient = "claude" | "codex";
 export type SessionHookEntry = {
   command: string;
   timeout?: number;
+  /**
+   * Codex only: approximate token threshold above which Codex writes the
+   * hook's additionalContext to disk and sends a preview instead. Codex
+   * defaults to 2500 tokens, which a full brief can exceed.
+   */
+  additionalContextLimit?: number;
 };
+
+export const CODEX_ADDITIONAL_CONTEXT_LIMIT = 4000;
 
 type JsonObject = Record<string, unknown>;
 
@@ -50,7 +58,13 @@ export function mergeSessionStartHook(
 
       replacedExistingHook = true;
       replacedInGroup = true;
-      return { ...hook, command: entry.command };
+      return {
+        ...hook,
+        command: entry.command,
+        ...(entry.additionalContextLimit === undefined
+          ? {}
+          : { additionalContextLimit: entry.additionalContextLimit }),
+      };
     });
 
     return replacedInGroup ? { ...groupObject, hooks: groupHooks } : group;
@@ -63,6 +77,9 @@ export function mergeSessionStartHook(
           type: "command",
           command: entry.command,
           timeout: entry.timeout ?? 10,
+          ...(entry.additionalContextLimit === undefined
+            ? {}
+            : { additionalContextLimit: entry.additionalContextLimit }),
         },
       ],
     });

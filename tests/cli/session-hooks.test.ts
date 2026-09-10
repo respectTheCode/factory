@@ -124,6 +124,7 @@ describe("session-start hook configuration", () => {
 
     const merged = mergeSessionStartHook(settings, {
       command: "bash '/tmp/factory-session-brief-hook.sh' claude",
+      additionalContextLimit: 4000,
     });
 
     expect(settings).toEqual({
@@ -152,6 +153,7 @@ describe("session-start hook configuration", () => {
               type: "command",
               command: "bash '/tmp/factory-session-brief-hook.sh' claude",
               timeout: 10,
+              additionalContextLimit: 4000,
             },
           ],
         },
@@ -286,7 +288,23 @@ describe("session-start hook installer", () => {
       expect(writtenClaude.hooks.SessionStart[2]?.hooks[0]?.command).toBe(
         factorySessionHookCommand("claude", hookScript),
       );
+      expect(writtenClaude.hooks.SessionStart[2]?.hooks[0]).not.toHaveProperty(
+        "additionalContextLimit",
+      );
       expect(existsSync(fixtures.codexHooks)).toBe(true);
+      const writtenCodex = JSON.parse(
+        readFileSync(fixtures.codexHooks, "utf8"),
+      ) as {
+        hooks: {
+          SessionStart: Array<{
+            hooks: Array<{ command?: string; additionalContextLimit?: number }>;
+          }>;
+        };
+      };
+      expect(writtenCodex.hooks.SessionStart[2]?.hooks[0]).toMatchObject({
+        command: factorySessionHookCommand("codex", hookScript),
+        additionalContextLimit: 4000,
+      });
 
       const second = runInstaller(argumentsForInstaller);
       expect(second.status).toBe(0);
