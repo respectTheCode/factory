@@ -104,7 +104,7 @@ describe("Factory planning WebSocket transport", () => {
             input: {
               description: "Original subtask description",
               name: "Original subtask title",
-              taskId: task.id,
+              taskId: task.simpleId as string,
             },
             path: "subtasks.create",
           },
@@ -119,7 +119,7 @@ describe("Factory planning WebSocket transport", () => {
             acceptanceCriteria: ["Updated criterion", "Second criterion"],
             name: "Updated task title",
             objective: "Updated task description",
-            taskId: task.id,
+            taskId: task.simpleId as string,
           },
           path: "tasks.update",
         },
@@ -134,7 +134,7 @@ describe("Factory planning WebSocket transport", () => {
             description: "Updated subtask description",
             evidence: "Updated subtask evidence",
             name: "Updated subtask title",
-            subtaskId: subtask.id,
+            subtaskId: subtask.simpleId as string,
           },
           path: "subtasks.update",
         },
@@ -157,12 +157,14 @@ describe("Factory planning WebSocket transport", () => {
           data: {
             tasks: [
               {
+                simpleId: task.simpleId,
                 name: "Updated task title",
                 subtasks: [
                   {
                     description: "Updated subtask description",
                     evidence: "Updated subtask evidence",
                     name: "Updated subtask title",
+                    simpleId: subtask.simpleId,
                   },
                 ],
               },
@@ -176,7 +178,7 @@ describe("Factory planning WebSocket transport", () => {
           id: 107,
           method: "query",
           params: {
-            input: { taskId: task.id },
+            input: { taskId: task.simpleId },
             path: "tasks.detail",
           },
         }),
@@ -188,6 +190,7 @@ describe("Factory planning WebSocket transport", () => {
             acceptanceCriteria: ["Updated criterion", "Second criterion"],
             name: "Updated task title",
             objective: "Updated task description",
+            simpleId: task.simpleId,
           },
         },
       });

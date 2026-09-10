@@ -56,7 +56,7 @@ describe("agent CLI read contract", () => {
         databasePath,
       ]);
       const task = JSON.parse(taskResult.stdout) as {
-        task: { id: string };
+        task: { id: string; simpleId: string };
       };
       const projectLinkResult = await runCli([
         "project",
@@ -87,7 +87,7 @@ describe("agent CLI read contract", () => {
         "task",
         "link",
         "--task-id",
-        task.task.id,
+        task.task.simpleId,
         "--system",
         "linear",
         "--stable-id",
@@ -117,13 +117,13 @@ describe("agent CLI read contract", () => {
         databasePath,
       ]);
       const subtask = JSON.parse(subtaskResult.stdout) as {
-        subtask: { id: string };
+        subtask: { id: string; simpleId: string };
       };
       const reportResult = await runCli([
         "subtask",
         "report",
         "--subtask-id",
-        subtask.subtask.id,
+        subtask.subtask.simpleId,
         "--state",
         "in_progress",
         "--reporter",
@@ -152,6 +152,7 @@ describe("agent CLI read contract", () => {
             projectName: "Grail roadmap",
             state: "active",
             taskId: task.task.id,
+            taskSimpleId: task.task.simpleId,
             taskName: "Release the next build",
           },
         ],
@@ -161,7 +162,7 @@ describe("agent CLI read contract", () => {
         "task",
         "detail",
         "--task-id",
-        task.task.id,
+        task.task.simpleId,
         "--json",
         "--database",
         databasePath,
@@ -170,6 +171,7 @@ describe("agent CLI read contract", () => {
         schemaVersion: 1,
         task: {
           id: task.task.id,
+          simpleId: task.task.simpleId,
           name: "Release the next build",
           owner: "kevin",
           priority: "high",
@@ -181,7 +183,7 @@ describe("agent CLI read contract", () => {
         "subtask",
         "history",
         "--subtask-id",
-        subtask.subtask.id,
+        subtask.subtask.simpleId,
         "--json",
         "--database",
         databasePath,
@@ -204,7 +206,7 @@ describe("agent CLI read contract", () => {
         "subtask",
         "verify",
         "--subtask-id",
-        subtask.subtask.id,
+        subtask.subtask.simpleId,
         "--decision",
         "accepted",
         "--database",

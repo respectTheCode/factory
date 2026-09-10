@@ -179,7 +179,7 @@ describe("project brief CLI", () => {
           candidateTaskIds: string[];
           markdown: string;
           project: { id: string; name: string };
-          task: { id: string; name: string } | null;
+          task: { id: string; name: string; simpleId: string } | null;
         };
       };
 
@@ -192,46 +192,47 @@ describe("project brief CLI", () => {
       expect(payload.brief.task).toEqual({
         id: task.id,
         name: task.name,
+        simpleId: task.simpleId!,
       });
       expect(payload.brief.candidateTaskIds).toEqual([]);
       expect(payload.brief.markdown).toContain(
         `# Factory brief: Factory (${project.id})`,
       );
       expect(payload.brief.markdown).toContain(
-        `## Task ${task.id}: Add project brief`,
+        `## Task ${task.simpleId}: Add project brief`,
       );
       expect(payload.brief.markdown).toContain(
-        `- ${accepted.id} — Accepted check: accepted`,
+        `- ${accepted.simpleId} — Accepted check: accepted`,
       );
       expect(payload.brief.markdown).not.toContain(
         "This description is hidden after acceptance.",
       );
       expect(payload.brief.markdown).toContain(
-        `- ${awaiting.id} — Awaiting check: awaiting verification`,
+        `- ${awaiting.simpleId} — Awaiting check: awaiting verification`,
       );
       expect(payload.brief.markdown).not.toContain(
         "This description is hidden while awaiting verification.",
       );
       expect(payload.brief.markdown).not.toContain(
-        `subtask report --json --subtask-id ${awaiting.id}`,
+        `subtask report --json --subtask-id ${awaiting.simpleId}`,
       );
       expect(payload.brief.markdown).toContain(
-        `- ${open.id} — Open check: Render the current work evidence.`,
+        `- ${open.simpleId} — Open check: Render the current work evidence.`,
       );
       expect(payload.brief.markdown).toContain(
-        `subtask report --json --subtask-id ${open.id} --state in_progress --reporter "$FACTORY_REPORTER"`,
+        `subtask report --json --subtask-id ${open.simpleId} --state in_progress --reporter "$FACTORY_REPORTER"`,
       );
       expect(payload.brief.markdown).toContain(
-        `session auto-link --project-id ${project.id} --task-id ${task.id} --branch-name '${branchName}'`,
+        `session auto-link --project-id ${project.id} --task-id ${task.simpleId} --branch-name '${branchName}'`,
       );
       expect(payload.brief.markdown).toContain(
-        `subtask history --subtask-id ${open.id} --json`,
+        `subtask history --subtask-id ${open.simpleId} --json`,
       );
       expect(payload.brief.markdown).toContain(
-        `task detail --task-id ${task.id} --json`,
+        `task detail --task-id ${task.simpleId} --json`,
       );
       expect(payload.brief.markdown).not.toContain(
-        `subtask history --subtask-id ${accepted.id}`,
+        `subtask history --subtask-id ${accepted.simpleId}`,
       );
       expect(payload.brief.markdown).toContain(
         "- linear FACT-1: https://linear.app/app-press/issue/FACT-1",
@@ -345,8 +346,12 @@ describe("project brief CLI", () => {
       expect(payload.brief.task).toBeNull();
       expect(openTasksIndex).toBe(markdown.indexOf("## Open Tasks"));
       expect(markdown).toContain("Branch missing-branch matches no Task.");
-      expect(markdown).toContain(`- ${planned.id} — Planned task [planned]`);
-      expect(markdown).toContain(`- ${active.id} — Active task [active, high]`);
+      expect(markdown).toContain(
+        `- ${planned.simpleId} — Planned task [planned]`,
+      );
+      expect(markdown).toContain(
+        `- ${active.simpleId} — Active task [active, high]`,
+      );
       expect(markdown.indexOf("## Commands")).toBeLessThan(openTasksIndex);
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });
@@ -390,6 +395,7 @@ describe("project brief CLI", () => {
       const payload = JSON.parse(result.stdout) as {
         brief: {
           candidateTaskIds: string[];
+          candidateTaskSimpleIds: string[];
           markdown: string;
           task: null;
         };
@@ -398,8 +404,12 @@ describe("project brief CLI", () => {
       expect(result.exitCode).toBe(0);
       expect(payload.brief.task).toBeNull();
       expect(payload.brief.candidateTaskIds).toEqual([first.id, second.id]);
+      expect(payload.brief.candidateTaskSimpleIds).toEqual([
+        first.simpleId!,
+        second.simpleId!,
+      ]);
       expect(payload.brief.markdown).toContain(
-        `Branch ${branchName} matches several Tasks: ${first.id}, ${second.id}.`,
+        `Branch ${branchName} matches several Tasks: ${first.simpleId!}, ${second.simpleId!}.`,
       );
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });

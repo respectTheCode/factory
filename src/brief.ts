@@ -8,6 +8,7 @@ export type BriefTrackerLink = {
 
 export type BriefSubtask = {
   id: string;
+  simpleId: string;
   name: string;
   description?: string;
   effectiveState: string;
@@ -22,6 +23,7 @@ export type BriefSubtask = {
 
 export type BriefTask = {
   id: string;
+  simpleId: string;
   name: string;
   objective?: string;
   branchName?: string;
@@ -38,6 +40,7 @@ export type BriefTask = {
 
 export type BriefOpenTask = {
   id: string;
+  simpleId: string;
   name: string;
   workState: string;
   priority?: string;
@@ -88,7 +91,7 @@ function renderProjectSection(input: BriefInput): string[] {
 
 function renderTaskSection(task: BriefTask): string[] {
   const lines = [
-    `## Task ${task.id}: ${oneLine(task.name)}`,
+    `## Task ${task.simpleId}: ${oneLine(task.name)}`,
     `Objective: ${task.objective ? oneLine(task.objective) : "(none)"}`,
     `Branch: ${task.branchName ? oneLine(task.branchName) : "none"} · PR: ${
       task.pullRequestUrl ? oneLine(task.pullRequestUrl) : "none"
@@ -121,7 +124,7 @@ function renderOpenTasksSection(input: BriefInput): string[] {
     lines.push(
       ...visibleTasks.map(
         (task) =>
-          `- ${task.id} — ${oneLine(task.name)} [${task.workState}${
+          `- ${task.simpleId} — ${oneLine(task.name)} [${task.workState}${
             task.priority ? `, ${oneLine(task.priority)}` : ""
           }]`,
       ),
@@ -146,7 +149,7 @@ function renderSubtasksSection(task: BriefTask): string[] {
         : subtask.description
           ? oneLine(subtask.description)
           : "(none)";
-    lines.push(`- ${subtask.id} — ${oneLine(subtask.name)}: ${detail}`);
+    lines.push(`- ${subtask.simpleId} — ${oneLine(subtask.name)}: ${detail}`);
   }
   return lines;
 }
@@ -179,7 +182,7 @@ function renderCommands(input: BriefInput): string[] {
     }
     if (input.task.branchName) {
       lines.push(
-        `${cli} session auto-link --project-id ${input.project.id} --task-id ${input.task.id} --branch-name ${shellQuote(input.task.branchName)} --json --database "$FACTORY_DB"`,
+        `${cli} session auto-link --project-id ${input.project.id} --task-id ${input.task.simpleId} --branch-name ${shellQuote(input.task.branchName)} --json --database "$FACTORY_DB"`,
       );
     }
     if (input.task.reportSubtaskId) {
@@ -188,7 +191,7 @@ function renderCommands(input: BriefInput): string[] {
       );
     }
     lines.push(
-      `${cli} task detail --task-id ${input.task.id} --json --database "$FACTORY_DB"`,
+      `${cli} task detail --task-id ${input.task.simpleId} --json --database "$FACTORY_DB"`,
     );
   } else {
     lines.push(
@@ -210,8 +213,8 @@ function renderCurrentStatus(task: BriefTask): string[] {
     const report = subtask.latestReport;
     lines.push(
       report
-        ? `- ${subtask.id} ${subtask.effectiveState}; last report ${report.state} by ${report.reporter} ${report.createdAt.slice(0, 10)}`
-        : `- ${subtask.id} ${subtask.effectiveState}; no report`,
+        ? `- ${subtask.simpleId} ${subtask.effectiveState}; last report ${report.state} by ${report.reporter} ${report.createdAt.slice(0, 10)}`
+        : `- ${subtask.simpleId} ${subtask.effectiveState}; no report`,
     );
   }
   return lines;
@@ -234,7 +237,7 @@ function truncateBrief(
   }
 
   const continuation = input.task
-    ? `bun run src/cli.ts task detail --task-id ${input.task.id} --json --database \"$FACTORY_DB\"`
+    ? `bun run src/cli.ts task detail --task-id ${input.task.simpleId} --json --database \"$FACTORY_DB\"`
     : `bun run src/cli.ts project status --project-id ${input.project.id}`;
   const notice = `[Factory brief truncated to ${maxCharacters} of ${full.length} characters. Run: ${continuation}]`;
   const prefixBudget = Math.max(0, maxCharacters - notice.length - 1);

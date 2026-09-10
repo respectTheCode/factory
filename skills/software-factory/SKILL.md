@@ -103,6 +103,13 @@ bun run src/cli.ts session unlink --thread-id THREAD_ID --association-id ASSOCIA
   --json --database "$FACTORY_DB"
 ```
 
+Tasks and Subtasks expose both an internal UUID `id` and a durable human-readable `simpleId`.
+Tasks use `T-<number>` and Subtasks use `ST-<number>`. Every `--task-id`, `--subtask-id`,
+`--task-ids`, and `--subtask-ids` flag accepts either form; prefer the simple reference when
+communicating with Kevin or another agent. UUIDs remain the relationship keys, and simple IDs
+are never reused after deletion. CLI and project-brief JSON output retain both values; the brief's
+commands use the simple references.
+
 After taking a backup, remove a project only when its ID has been checked; removal cascades
 its Tasks, Subtasks, Status Reports, Verifications, and Tracker Links:
 

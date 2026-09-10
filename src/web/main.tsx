@@ -78,6 +78,7 @@ type AttentionItem = {
   projectId: string;
   projectName: string;
   taskId: string;
+  taskSimpleId: string;
   taskName: string;
   state: "backlog" | "planned" | "active" | "awaiting_verification" | "blocked";
   priority?: "low" | "medium" | "high" | "urgent";
@@ -96,6 +97,7 @@ type ProjectDetail = {
   }>;
   tasks: Array<{
     id: string;
+    simpleId: string;
     name: string;
     projectId: string;
     branchName?: string;
@@ -106,6 +108,7 @@ type ProjectDetail = {
     archiveState?: "released" | "wont_do";
     subtasks: Array<{
       id: string;
+      simpleId: string;
       name: string;
       taskId: string;
       description?: string;
@@ -119,6 +122,8 @@ type ProjectDetail = {
   }>;
 };
 type TaskStatus = {
+  taskId: string;
+  taskSimpleId: string;
   taskCompleted: boolean;
   taskState:
     | "backlog"
@@ -139,6 +144,7 @@ type TaskStatus = {
       | "blocked"
       | "complete";
     effectiveState: WorkStatus;
+    subtaskSimpleId?: string;
     reason?: string;
     verificationState:
       | "accepted"
@@ -157,6 +163,7 @@ type TaskDetail = {
   branchName?: string;
   pullRequestUrl?: string;
   id: string;
+  simpleId: string;
   name: string;
   projectId: string;
   objective?: string;
@@ -1309,7 +1316,12 @@ function Dashboard() {
                 {visibleAttention.map((item) => (
                   <article className="attention-item" key={item.taskId}>
                     <div>
-                      <strong>{item.taskName}</strong>
+                      <strong>
+                        <span className="row-reference">
+                          {item.taskSimpleId}
+                        </span>{" "}
+                        {item.taskName}
+                      </strong>
                       <p>
                         {item.projectName}
                         {item.owner ? ` · ${item.owner}` : ""}
@@ -1991,6 +2003,7 @@ function Dashboard() {
                                       expanded={taskRowExpanded}
                                       kind="task"
                                       name={task.name}
+                                      simpleId={task.simpleId}
                                       onToggle={() => toggleRow(taskRowKey)}
                                       actionsSummary={taskActionsSummary}
                                     />
@@ -2715,6 +2728,9 @@ function Dashboard() {
                                                           }
                                                           kind="subtask"
                                                           name={subtask.name}
+                                                          simpleId={
+                                                            subtask.simpleId
+                                                          }
                                                           onToggle={() =>
                                                             toggleRow(
                                                               subtaskRowKey,
@@ -3593,12 +3609,14 @@ function RowToggle({
   kind,
   name,
   onToggle,
+  simpleId,
 }: {
   actionsSummary?: GitHubActionsSummary;
   expanded: boolean;
   kind: "task" | "subtask";
   name: string;
   onToggle: () => void;
+  simpleId: string;
 }) {
   const rowLabel = `${expanded ? "Collapse" : "Expand"} ${kind} ${name}`;
   return (
@@ -3610,6 +3628,7 @@ function RowToggle({
       type="button"
     >
       <span className="row-title">
+        <span className="row-reference">{simpleId}</span>
         <span className="row-title-text">{name}</span>
         {actionsSummary && (
           <GitHubActionsSummaryBadge summary={actionsSummary} />

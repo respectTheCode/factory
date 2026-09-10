@@ -64,6 +64,15 @@ describe("PWA workflow controls", () => {
     expect(stylesheet).toContain(".subtask.row-collapsed .subtask-copy");
   });
 
+  test("shows the durable simple reference on Task and Subtask rows", () => {
+    expect(source).toContain("simpleId={task.simpleId}");
+    expect(source).toContain(
+      "simpleId={\n                                                            subtask.simpleId",
+    );
+    expect(source).toContain('className="row-reference"');
+    expect(stylesheet).toContain(".row-reference {");
+  });
+
   test("uses task expansion as the only subtask visibility control", () => {
     expect(source).not.toContain("collapsedTasks");
     expect(source).not.toContain("setCollapsedTasks");

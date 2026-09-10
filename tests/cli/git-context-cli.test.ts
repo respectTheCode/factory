@@ -19,6 +19,7 @@ type TaskCreateOutput = {
   schemaVersion: 1;
   task: {
     id: string;
+    simpleId: string;
     name: string;
     projectId: string;
     branchName: string;
@@ -368,6 +369,7 @@ describe("git context CLI metadata", () => {
             projectName: "Grail",
             state: "planned",
             taskId: task.id,
+            taskSimpleId: task.simpleId,
             taskName: "Preview environments",
           },
         ],

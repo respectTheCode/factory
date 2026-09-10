@@ -31,6 +31,11 @@ record. A Status Report does not replace Kevin's Verification.
 - **FR-001** — Factory must store Projects and Tasks as durable, addressable records. Every Task
   has a stored Work State: `backlog`, `planned`, `active`, `awaiting_verification`, `blocked`, or
   `completed`.
+- **FR-001a** — Every Task and Subtask must expose a durable human-readable `simpleId`: Tasks
+  use the `T-<number>` form and Subtasks use `ST-<number>`. UUID `id` values remain the internal
+  primary and relationship keys. Existing records are backfilled deterministically, new values
+  are monotonic and are not reused after deletion, and Task/Subtask CLI identifiers accept either
+  form.
 - **FR-002** — A Task must support an objective, acceptance criteria, priority, owner,
   dependencies, and links to zero or more repositories.
 - **FR-003** — A Task must contain zero or more Subtasks. A Subtask must support a title,

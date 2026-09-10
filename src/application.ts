@@ -6,6 +6,13 @@ import { Database } from "bun:sqlite";
 
 import { parseGitHubPullRequestUrl } from "./github";
 import {
+  backfillSimpleIds,
+  matchesSimpleId,
+  nextSimpleIdNumber,
+  SUBTASK_SIMPLE_ID_PREFIX,
+  TASK_SIMPLE_ID_PREFIX,
+} from "./simple-ids";
+import {
   computeReconciliationFindings,
   matchReconciliationTarget,
   type ReconciliationFindingDraft,
@@ -52,6 +59,7 @@ type TaskWorkStateSource = "manual" | "rollup";
 
 export type Task = {
   id: string;
+  simpleId?: string;
   name: string;
   projectId: string;
   branchName?: string;
@@ -72,6 +80,7 @@ export type Task = {
 
 export type Subtask = {
   id: string;
+  simpleId?: string;
   name: string;
   taskId: string;
   description?: string;
@@ -221,6 +230,7 @@ export type AttentionItem = {
   projectId: string;
   projectName: string;
   taskId: string;
+  taskSimpleId: string;
   taskName: string;
   state: Exclude<ProjectWorkState, "completed" | ArchiveState>;
   priority?: "low" | "medium" | "high" | "urgent";
@@ -228,6 +238,8 @@ export type AttentionItem = {
 };
 
 export type TaskStatus = {
+  taskId: string;
+  taskSimpleId: string;
   taskCompleted: boolean;
   taskState: ProjectWorkState;
   stateReason?: string;
@@ -245,6 +257,7 @@ export type TaskStatus = {
       | "unreported";
     id?: string;
     subtaskId?: string;
+    subtaskSimpleId?: string;
     reportId?: string;
     evidence?: string;
     reporter?: string;
@@ -277,6 +290,10 @@ export type FactoryState = {
   codeSessionObservations?: CodeSessionObservation[];
   sessionEvidence?: SessionEvidence[];
   reconciliationFindings?: ReconciliationFinding[];
+  simpleIdCounters?: {
+    nextSubtask: number;
+    nextTask: number;
+  };
 };
 
 export type ProjectT3Activity = {
@@ -326,6 +343,36 @@ type LegacyTargetedRun = Run & {
   taskId?: string;
   subtaskId?: string;
 };
+
+function normalizeSimpleIdState(state: FactoryState): FactoryState {
+  const tasks = backfillSimpleIds(state.tasks, TASK_SIMPLE_ID_PREFIX);
+  const subtasks = backfillSimpleIds(state.subtasks, SUBTASK_SIMPLE_ID_PREFIX);
+  return {
+    ...state,
+    tasks,
+    subtasks,
+    simpleIdCounters: {
+      nextSubtask: Math.max(
+        state.simpleIdCounters?.nextSubtask ?? 1,
+        nextSimpleIdNumber(subtasks, SUBTASK_SIMPLE_ID_PREFIX),
+      ),
+      nextTask: Math.max(
+        state.simpleIdCounters?.nextTask ?? 1,
+        nextSimpleIdNumber(tasks, TASK_SIMPLE_ID_PREFIX),
+      ),
+    },
+  };
+}
+
+function requiredSimpleId(
+  record: { id: string; simpleId?: string },
+  kind: "Task" | "Subtask",
+): string {
+  if (!record.simpleId) {
+    throw new Error(`${kind} ${record.id} is missing its simple ID.`);
+  }
+  return record.simpleId;
+}
 
 function normalizeExecutionState(state: FactoryState | undefined): {
   runs: Run[];
@@ -429,6 +476,7 @@ export type ProjectHierarchy = {
   workspaceRoot?: string;
   tasks: Array<{
     id: string;
+    simpleId: string;
     name: string;
     projectId: string;
     branchName?: string;
@@ -439,6 +487,7 @@ export type ProjectHierarchy = {
     archiveState?: ArchiveState;
     subtasks: Array<{
       id: string;
+      simpleId: string;
       name: string;
       taskId: string;
       description?: string;
@@ -469,6 +518,8 @@ export class FactoryApplication {
   private readonly codeSessionObservations: CodeSessionObservation[];
   private readonly sessionEvidence: SessionEvidence[];
   private readonly reconciliationFindings: ReconciliationFinding[];
+  private nextTaskSimpleId: number;
+  private nextSubtaskSimpleId: number;
 
   constructor({
     clock,
@@ -477,23 +528,41 @@ export class FactoryApplication {
     refresh,
     state,
   }: FactoryApplicationOptions) {
+    const normalizedState = state ? normalizeSimpleIdState(state) : undefined;
     this.clock = clock;
     this.idGenerator = idGenerator;
     this.persist = persist;
     this.refresh = refresh;
-    this.projects = state?.projects ?? [];
-    this.tasks = state?.tasks ?? [];
-    this.subtasks = state?.subtasks ?? [];
-    this.statusReports = state?.statusReports ?? [];
-    this.verifications = state?.verifications ?? [];
-    this.trackerLinks = state?.trackerLinks ?? [];
-    const executionState = normalizeExecutionState(state);
+    this.projects = normalizedState?.projects ?? [];
+    this.tasks = normalizedState?.tasks ?? [];
+    this.subtasks = normalizedState?.subtasks ?? [];
+    this.statusReports = normalizedState?.statusReports ?? [];
+    this.verifications = normalizedState?.verifications ?? [];
+    this.trackerLinks = normalizedState?.trackerLinks ?? [];
+    const executionState = normalizeExecutionState(normalizedState);
     this.runs = executionState.runs;
     this.codeSessions = executionState.codeSessions;
     this.codeSessionAssociations = executionState.associations;
-    this.codeSessionObservations = state?.codeSessionObservations ?? [];
-    this.sessionEvidence = state?.sessionEvidence ?? [];
-    this.reconciliationFindings = state?.reconciliationFindings ?? [];
+    this.codeSessionObservations =
+      normalizedState?.codeSessionObservations ?? [];
+    this.sessionEvidence = normalizedState?.sessionEvidence ?? [];
+    this.reconciliationFindings = normalizedState?.reconciliationFindings ?? [];
+    this.nextTaskSimpleId =
+      normalizedState?.simpleIdCounters?.nextTask ??
+      nextSimpleIdNumber(this.tasks, TASK_SIMPLE_ID_PREFIX);
+    this.nextSubtaskSimpleId =
+      normalizedState?.simpleIdCounters?.nextSubtask ??
+      nextSimpleIdNumber(this.subtasks, SUBTASK_SIMPLE_ID_PREFIX);
+  }
+
+  resolveTaskId(taskId: string): string {
+    this.refreshFromPersistence();
+    return this.requireTask(taskId).id;
+  }
+
+  resolveSubtaskId(subtaskId: string): string {
+    this.refreshFromPersistence();
+    return this.requireSubtask(subtaskId).id;
   }
 
   createProject({
@@ -635,13 +704,11 @@ export class FactoryApplication {
 
   removeTask(taskId: string): void {
     this.refreshFromPersistence();
-    if (!this.tasks.some((task) => task.id === taskId)) {
-      throw new Error(`Task ${taskId} does not exist.`);
-    }
+    const resolvedTaskId = this.requireTask(taskId).id;
 
     const subtaskIds = new Set(
       this.subtasks
-        .filter((subtask) => subtask.taskId === taskId)
+        .filter((subtask) => subtask.taskId === resolvedTaskId)
         .map((subtask) => subtask.id),
     );
     const reportIds = new Set(
@@ -650,22 +717,22 @@ export class FactoryApplication {
         .map((report) => report.id),
     );
 
-    removeMatching(this.tasks, (task) => task.id === taskId);
+    removeMatching(this.tasks, (task) => task.id === resolvedTaskId);
     removeMatching(this.subtasks, (subtask) => subtaskIds.has(subtask.id));
     removeMatching(this.statusReports, (report) => reportIds.has(report.id));
     removeMatching(this.verifications, (verification) =>
       reportIds.has(verification.reportId),
     );
-    removeMatching(this.trackerLinks, (link) => link.taskId === taskId);
+    removeMatching(this.trackerLinks, (link) => link.taskId === resolvedTaskId);
     removeMatching(
       this.codeSessionAssociations,
       (association) =>
-        association.taskId === taskId ||
+        association.taskId === resolvedTaskId ||
         (association.subtaskId !== undefined &&
           subtaskIds.has(association.subtaskId)),
     );
     for (const finding of this.reconciliationFindings) {
-      if (finding.taskId === taskId) delete finding.taskId;
+      if (finding.taskId === resolvedTaskId) delete finding.taskId;
       if (
         finding.subtaskId !== undefined &&
         subtaskIds.has(finding.subtaskId)
@@ -673,7 +740,8 @@ export class FactoryApplication {
         delete finding.subtaskId;
       }
       finding.candidateIds = finding.candidateIds.filter(
-        (candidateId) => candidateId !== taskId && !subtaskIds.has(candidateId),
+        (candidateId) =>
+          candidateId !== resolvedTaskId && !subtaskIds.has(candidateId),
       );
     }
     this.save();
@@ -681,30 +749,31 @@ export class FactoryApplication {
 
   removeSubtask(subtaskId: string): void {
     this.refreshFromPersistence();
-    const subtask = this.subtasks.find((subtask) => subtask.id === subtaskId);
-    if (!subtask) {
-      throw new Error(`Subtask ${subtaskId} does not exist.`);
-    }
+    const subtask = this.requireSubtask(subtaskId);
+    const resolvedSubtaskId = subtask.id;
 
     const reportIds = new Set(
       this.statusReports
-        .filter((report) => report.subtaskId === subtaskId)
+        .filter((report) => report.subtaskId === resolvedSubtaskId)
         .map((report) => report.id),
     );
 
-    removeMatching(this.subtasks, (subtask) => subtask.id === subtaskId);
+    removeMatching(
+      this.subtasks,
+      (candidate) => candidate.id === resolvedSubtaskId,
+    );
     removeMatching(this.statusReports, (report) => reportIds.has(report.id));
     removeMatching(this.verifications, (verification) =>
       reportIds.has(verification.reportId),
     );
     removeMatching(
       this.codeSessionAssociations,
-      (association) => association.subtaskId === subtaskId,
+      (association) => association.subtaskId === resolvedSubtaskId,
     );
     for (const finding of this.reconciliationFindings) {
-      if (finding.subtaskId === subtaskId) delete finding.subtaskId;
+      if (finding.subtaskId === resolvedSubtaskId) delete finding.subtaskId;
       finding.candidateIds = finding.candidateIds.filter(
-        (candidateId) => candidateId !== subtaskId,
+        (candidateId) => candidateId !== resolvedSubtaskId,
       );
     }
     this.reconcileAutomaticTaskRollup(subtask.taskId);
@@ -756,6 +825,7 @@ export class FactoryApplication {
     const normalizedPullRequestUrl = normalizePullRequestUrl(pullRequestUrl);
     const task = {
       id: this.idGenerator(),
+      simpleId: `${TASK_SIMPLE_ID_PREFIX}${this.nextTaskSimpleId}`,
       name,
       projectId,
       ...(branchName?.trim() ? { branchName: branchName.trim() } : {}),
@@ -774,6 +844,7 @@ export class FactoryApplication {
       createdAt: this.clock(),
     };
 
+    this.nextTaskSimpleId += 1;
     this.tasks.push(task);
     this.save();
     return task;
@@ -799,8 +870,7 @@ export class FactoryApplication {
     workState?: WorkState;
   }): Task {
     this.refreshFromPersistence();
-    const task = this.tasks.find((candidate) => candidate.id === taskId);
-    if (!task) throw new Error(`Task ${taskId} does not exist.`);
+    const task = this.requireTask(taskId);
 
     if (name !== undefined) {
       const trimmedName = name.trim();
@@ -895,11 +965,10 @@ export class FactoryApplication {
 
   resumeTaskRollup(taskId: string): Task {
     this.refreshFromPersistence();
-    const task = this.tasks.find((candidate) => candidate.id === taskId);
-    if (!task) throw new Error(`Task ${taskId} does not exist.`);
+    const task = this.requireTask(taskId);
     if (task.archiveState)
       throw new Error("Restore the Task before changing its work state.");
-    const rollup = this.getTaskRollup(taskId);
+    const rollup = this.getTaskRollup(task.id);
     this.setTaskRollupState(task, rollup.state, rollup.reason);
     this.save();
     return task;
@@ -917,25 +986,25 @@ export class FactoryApplication {
     taskId: string;
   }): Subtask {
     this.refreshFromPersistence();
-    if (!this.tasks.some((task) => task.id === taskId)) {
-      throw new Error(`Task ${taskId} does not exist.`);
-    }
+    const resolvedTaskId = this.requireTask(taskId).id;
 
     const normalizedPullRequestUrl = normalizePullRequestUrl(pullRequestUrl);
     const subtask = {
       id: this.idGenerator(),
+      simpleId: `${SUBTASK_SIMPLE_ID_PREFIX}${this.nextSubtaskSimpleId}`,
       name,
-      taskId,
+      taskId: resolvedTaskId,
       ...(description?.trim() ? { description: description.trim() } : {}),
       ...(normalizedPullRequestUrl
         ? { pullRequestUrl: normalizedPullRequestUrl }
         : {}),
-      sortOrder: this.nextSubtaskSortOrder(taskId, "planned"),
+      sortOrder: this.nextSubtaskSortOrder(resolvedTaskId, "planned"),
       createdAt: this.clock(),
     };
 
+    this.nextSubtaskSimpleId += 1;
     this.subtasks.push(subtask);
-    this.reconcileAutomaticTaskRollup(taskId);
+    this.reconcileAutomaticTaskRollup(resolvedTaskId);
     this.save();
     return subtask;
   }
@@ -954,10 +1023,7 @@ export class FactoryApplication {
     subtaskId: string;
   }): Subtask {
     this.refreshFromPersistence();
-    const subtask = this.subtasks.find(
-      (candidate) => candidate.id === subtaskId,
-    );
-    if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
+    const subtask = this.requireSubtask(subtaskId);
 
     if (name !== undefined) {
       const trimmedName = name.trim();
@@ -990,8 +1056,7 @@ export class FactoryApplication {
 
   archiveTask(taskId: string, archiveState: ArchiveState): void {
     this.refreshFromPersistence();
-    const task = this.tasks.find((candidate) => candidate.id === taskId);
-    if (!task) throw new Error(`Task ${taskId} does not exist.`);
+    const task = this.requireTask(taskId);
 
     task.archiveState = archiveState;
     this.save();
@@ -999,20 +1064,16 @@ export class FactoryApplication {
 
   restoreTask(taskId: string): void {
     this.refreshFromPersistence();
-    const task = this.tasks.find((candidate) => candidate.id === taskId);
-    if (!task) throw new Error(`Task ${taskId} does not exist.`);
+    const task = this.requireTask(taskId);
 
     delete task.archiveState;
-    this.reconcileAutomaticTaskRollup(taskId);
+    this.reconcileAutomaticTaskRollup(task.id);
     this.save();
   }
 
   archiveSubtask(subtaskId: string, archiveState: ArchiveState): void {
     this.refreshFromPersistence();
-    const subtask = this.subtasks.find(
-      (candidate) => candidate.id === subtaskId,
-    );
-    if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
+    const subtask = this.requireSubtask(subtaskId);
 
     subtask.archiveState = archiveState;
     this.reconcileAutomaticTaskRollup(subtask.taskId);
@@ -1021,10 +1082,7 @@ export class FactoryApplication {
 
   restoreSubtask(subtaskId: string): void {
     this.refreshFromPersistence();
-    const subtask = this.subtasks.find(
-      (candidate) => candidate.id === subtaskId,
-    );
-    if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
+    const subtask = this.requireSubtask(subtaskId);
 
     delete subtask.archiveState;
     this.reconcileAutomaticTaskRollup(subtask.taskId);
@@ -1045,12 +1103,7 @@ export class FactoryApplication {
     subtaskId: string;
   }): StatusReport {
     this.refreshFromPersistence();
-    const subtask = this.subtasks.find(
-      (candidate) => candidate.id === subtaskId,
-    );
-    if (!subtask) {
-      throw new Error(`Subtask ${subtaskId} does not exist.`);
-    }
+    const subtask = this.requireSubtask(subtaskId);
 
     const normalizedReason =
       reportedState === "blocked" || reportedState === "complete"
@@ -1068,7 +1121,7 @@ export class FactoryApplication {
 
     const report = {
       id: this.idGenerator(),
-      subtaskId,
+      subtaskId: subtask.id,
       reportedState,
       reporter,
       evidence: currentEvidence,
@@ -1134,13 +1187,10 @@ export class FactoryApplication {
 
   getTaskStatus(taskId: string): TaskStatus {
     this.refreshFromPersistence();
-    const task = this.tasks.find((candidate) => candidate.id === taskId);
-    if (!task) {
-      throw new Error(`Task ${taskId} does not exist.`);
-    }
+    const task = this.requireTask(taskId);
 
     const subtasks: TaskStatus["subtasks"] = this.subtasks
-      .filter((subtask) => subtask.taskId === taskId)
+      .filter((subtask) => subtask.taskId === task.id)
       .sort((left, right) => this.compareSubtasks(left, right))
       .map((subtask) => {
         const report = this.getCurrentStatusReport(subtask.id);
@@ -1149,6 +1199,7 @@ export class FactoryApplication {
           return {
             id: subtask.id,
             subtaskId: subtask.id,
+            subtaskSimpleId: requiredSimpleId(subtask, "Subtask"),
             ...(subtask.archiveState
               ? { archiveState: subtask.archiveState }
               : {}),
@@ -1177,6 +1228,7 @@ export class FactoryApplication {
             : {}),
           id: report.id,
           subtaskId: subtask.id,
+          subtaskSimpleId: requiredSimpleId(subtask, "Subtask"),
           reportId: report.id,
           reportedState: report.reportedState,
           effectiveState,
@@ -1207,13 +1259,15 @@ export class FactoryApplication {
     const stateReason =
       taskState === "blocked" || taskState === "awaiting_verification"
         ? ((task.workStateSource === "rollup"
-            ? this.getTaskRollup(taskId).reason
+            ? this.getTaskRollup(task.id).reason
             : task.stateReason) ??
           activeSubtasks.find((subtask) => subtask.effectiveState === taskState)
             ?.reason)
         : undefined;
 
     return {
+      taskId: task.id,
+      taskSimpleId: requiredSimpleId(task, "Task"),
       taskCompleted,
       ...(task.archiveState ? { archiveState: task.archiveState } : {}),
       taskState,
@@ -1311,6 +1365,7 @@ export class FactoryApplication {
             projectId: project.id,
             projectName: project.name,
             taskId: task.id,
+            taskSimpleId: requiredSimpleId(task, "Task"),
             taskName: task.name,
             state,
             ...(task.priority ? { priority: task.priority } : {}),
@@ -1328,24 +1383,20 @@ export class FactoryApplication {
 
   getSubtaskReportHistory(subtaskId: string): StatusReport[] {
     this.refreshFromPersistence();
-    if (!this.subtasks.some((subtask) => subtask.id === subtaskId)) {
-      throw new Error(`Subtask ${subtaskId} does not exist.`);
-    }
+    const resolvedSubtaskId = this.requireSubtask(subtaskId).id;
 
     return this.statusReports.filter(
-      (report) => report.subtaskId === subtaskId,
+      (report) => report.subtaskId === resolvedSubtaskId,
     );
   }
 
   getSubtaskVerificationHistory(subtaskId: string): Verification[] {
     this.refreshFromPersistence();
-    if (!this.subtasks.some((subtask) => subtask.id === subtaskId)) {
-      throw new Error(`Subtask ${subtaskId} does not exist.`);
-    }
+    const resolvedSubtaskId = this.requireSubtask(subtaskId).id;
 
     const reportIds = new Set(
       this.statusReports
-        .filter((report) => report.subtaskId === subtaskId)
+        .filter((report) => report.subtaskId === resolvedSubtaskId)
         .map((report) => report.id),
     );
     return this.verifications.filter((verification) =>
@@ -1379,6 +1430,7 @@ export class FactoryApplication {
           const taskStateReason = this.getTaskStateReason(task, taskState);
           return {
             id: task.id,
+            simpleId: requiredSimpleId(task, "Task"),
             name: task.name,
             projectId: project.id,
             ...(task.branchName ? { branchName: task.branchName } : {}),
@@ -1398,6 +1450,7 @@ export class FactoryApplication {
                 const subtaskStateReason = this.getSubtaskStateReason(subtask);
                 return {
                   id: subtask.id,
+                  simpleId: requiredSimpleId(subtask, "Subtask"),
                   name: subtask.name,
                   taskId: subtask.taskId,
                   ...(subtask.pullRequestUrl
@@ -2078,11 +2131,13 @@ export class FactoryApplication {
     ...link
   }: TrackerLinkFields & { taskId: string }): TrackerLink {
     this.refreshFromPersistence();
-    if (!this.tasks.some((task) => task.id === taskId)) {
-      throw new Error(`Task ${taskId} does not exist.`);
-    }
+    const resolvedTaskId = this.requireTask(taskId).id;
 
-    const trackerLink = { id: this.idGenerator(), taskId, ...link };
+    const trackerLink = {
+      id: this.idGenerator(),
+      taskId: resolvedTaskId,
+      ...link,
+    };
     this.trackerLinks.push(trackerLink);
     this.save();
     return trackerLink;
@@ -2133,6 +2188,7 @@ export class FactoryApplication {
 
   getTaskDetail(taskId: string): {
     id: string;
+    simpleId: string;
     name: string;
     projectId: string;
     branchName?: string;
@@ -2151,12 +2207,12 @@ export class FactoryApplication {
     trackerLinks: TrackerLink[];
   } {
     this.refreshFromPersistence();
-    const task = this.tasks.find((candidate) => candidate.id === taskId);
-    if (!task) throw new Error(`Task ${taskId} does not exist.`);
+    const task = this.requireTask(taskId);
     const currentWorkState = this.getEffectiveTaskWorkState(task);
     const taskStateReason = this.getTaskStateReason(task, currentWorkState);
     return {
       id: task.id,
+      simpleId: requiredSimpleId(task, "Task"),
       name: task.name,
       projectId: task.projectId,
       ...(task.branchName ? { branchName: task.branchName } : {}),
@@ -2174,12 +2230,13 @@ export class FactoryApplication {
       ...(taskStateReason ? { stateReason: taskStateReason } : {}),
       ...(task.sortOrder !== undefined ? { sortOrder: task.sortOrder } : {}),
       ...(task.archiveState ? { archiveState: task.archiveState } : {}),
-      trackerLinks: this.trackerLinks.filter((link) => link.taskId === taskId),
+      trackerLinks: this.trackerLinks.filter((link) => link.taskId === task.id),
     };
   }
 
   getSubtaskDetail(subtaskId: string): {
     id: string;
+    simpleId: string;
     name: string;
     taskId: string;
     description?: string;
@@ -2187,12 +2244,10 @@ export class FactoryApplication {
     pullRequestUrl?: string;
   } {
     this.refreshFromPersistence();
-    const subtask = this.subtasks.find(
-      (candidate) => candidate.id === subtaskId,
-    );
-    if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
+    const subtask = this.requireSubtask(subtaskId);
     return {
       id: subtask.id,
+      simpleId: requiredSimpleId(subtask, "Subtask"),
       name: subtask.name,
       taskId: subtask.taskId,
       ...(subtask.description !== undefined
@@ -2215,6 +2270,9 @@ export class FactoryApplication {
     workState: WorkState;
   }): Task[] {
     this.refreshFromPersistence();
+    const resolvedTaskIds = orderedTaskIds.map(
+      (taskId) => this.requireTask(taskId).id,
+    );
     if (!this.projects.some((project) => project.id === projectId)) {
       throw new Error(`Project ${projectId} does not exist.`);
     }
@@ -2226,7 +2284,7 @@ export class FactoryApplication {
     );
     const wrongStateTask = this.tasks.find(
       (task) =>
-        orderedTaskIds.includes(task.id) &&
+        resolvedTaskIds.includes(task.id) &&
         task.projectId === projectId &&
         task.archiveState === undefined &&
         this.getEffectiveTaskWorkState(task) !== workState,
@@ -2235,12 +2293,12 @@ export class FactoryApplication {
       throw new Error(`Tasks must belong to the same state (${workState}).`);
     }
     this.validateCompleteOrdering(
-      orderedTaskIds,
+      resolvedTaskIds,
       group.map((task) => task.id),
       "Task",
       "project",
     );
-    orderedTaskIds.forEach((taskId, index) => {
+    resolvedTaskIds.forEach((taskId, index) => {
       const task = this.tasks.find((candidate) => candidate.id === taskId);
       if (task) task.sortOrder = index;
     });
@@ -2258,19 +2316,20 @@ export class FactoryApplication {
     workState: WorkState;
   }): Subtask[] {
     this.refreshFromPersistence();
-    if (!this.tasks.some((task) => task.id === taskId)) {
-      throw new Error(`Task ${taskId} does not exist.`);
-    }
+    const resolvedTaskId = this.requireTask(taskId).id;
+    const resolvedSubtaskIds = orderedSubtaskIds.map(
+      (subtaskId) => this.requireSubtask(subtaskId).id,
+    );
     const group = this.subtasks.filter(
       (subtask) =>
-        subtask.taskId === taskId &&
+        subtask.taskId === resolvedTaskId &&
         subtask.archiveState === undefined &&
         this.getSubtaskEffectiveWorkState(subtask) === workState,
     );
     const wrongStateSubtask = this.subtasks.find(
       (subtask) =>
-        orderedSubtaskIds.includes(subtask.id) &&
-        subtask.taskId === taskId &&
+        resolvedSubtaskIds.includes(subtask.id) &&
+        subtask.taskId === resolvedTaskId &&
         subtask.archiveState === undefined &&
         this.getSubtaskEffectiveWorkState(subtask) !== workState,
     );
@@ -2278,12 +2337,12 @@ export class FactoryApplication {
       throw new Error(`Subtasks must belong to the same state (${workState}).`);
     }
     this.validateCompleteOrdering(
-      orderedSubtaskIds,
+      resolvedSubtaskIds,
       group.map((subtask) => subtask.id),
       "Subtask",
       "task",
     );
-    orderedSubtaskIds.forEach((subtaskId, index) => {
+    resolvedSubtaskIds.forEach((subtaskId, index) => {
       const subtask = this.subtasks.find(
         (candidate) => candidate.id === subtaskId,
       );
@@ -2299,6 +2358,26 @@ export class FactoryApplication {
     );
     if (!project) throw new Error(`Project ${projectId} does not exist.`);
     return project;
+  }
+
+  private requireTask(taskId: string): Task {
+    const task = this.tasks.find(
+      (candidate) =>
+        candidate.id === taskId ||
+        matchesSimpleId(candidate, taskId, TASK_SIMPLE_ID_PREFIX),
+    );
+    if (!task) throw new Error(`Task ${taskId} does not exist.`);
+    return task;
+  }
+
+  private requireSubtask(subtaskId: string): Subtask {
+    const subtask = this.subtasks.find(
+      (candidate) =>
+        candidate.id === subtaskId ||
+        matchesSimpleId(candidate, subtaskId, SUBTASK_SIMPLE_ID_PREFIX),
+    );
+    if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
+    return subtask;
   }
 
   private requireRun(runId: string): Run {
@@ -2332,10 +2411,7 @@ export class FactoryApplication {
     taskId?: string;
   }): { taskId: string; subtaskId?: string } {
     if (subtaskId !== undefined) {
-      const subtask = this.subtasks.find(
-        (candidate) => candidate.id === subtaskId,
-      );
-      if (!subtask) throw new Error(`Subtask ${subtaskId} does not exist.`);
+      const subtask = this.requireSubtask(subtaskId);
       const parent = this.tasks.find(
         (candidate) => candidate.id === subtask.taskId,
       );
@@ -2344,21 +2420,20 @@ export class FactoryApplication {
           "T3 thread target must belong to the selected Project.",
         );
       }
-      if (taskId !== undefined && taskId !== parent.id) {
+      if (taskId !== undefined && this.requireTask(taskId).id !== parent.id) {
         throw new Error("The Subtask does not belong to the selected Task.");
       }
-      return { subtaskId, taskId: parent.id };
+      return { subtaskId: subtask.id, taskId: parent.id };
     }
 
     if (taskId !== undefined) {
-      const task = this.tasks.find((candidate) => candidate.id === taskId);
-      if (!task) throw new Error(`Task ${taskId} does not exist.`);
+      const task = this.requireTask(taskId);
       if (task.projectId !== projectId) {
         throw new Error(
           "T3 thread target must belong to the selected Project.",
         );
       }
-      return { taskId };
+      return { taskId: task.id };
     }
 
     throw new Error("A T3 thread association requires a Task or Subtask.");
@@ -2851,26 +2926,27 @@ export class FactoryApplication {
   private refreshFromPersistence(): void {
     const state = this.refresh?.();
     if (!state) return;
+    const normalizedState = normalizeSimpleIdState(state);
 
-    this.projects.splice(0, this.projects.length, ...state.projects);
-    this.tasks.splice(0, this.tasks.length, ...state.tasks);
-    this.subtasks.splice(0, this.subtasks.length, ...state.subtasks);
+    this.projects.splice(0, this.projects.length, ...normalizedState.projects);
+    this.tasks.splice(0, this.tasks.length, ...normalizedState.tasks);
+    this.subtasks.splice(0, this.subtasks.length, ...normalizedState.subtasks);
     this.statusReports.splice(
       0,
       this.statusReports.length,
-      ...state.statusReports,
+      ...normalizedState.statusReports,
     );
     this.verifications.splice(
       0,
       this.verifications.length,
-      ...state.verifications,
+      ...normalizedState.verifications,
     );
     this.trackerLinks.splice(
       0,
       this.trackerLinks.length,
-      ...(state.trackerLinks ?? []),
+      ...(normalizedState.trackerLinks ?? []),
     );
-    const executionState = normalizeExecutionState(state);
+    const executionState = normalizeExecutionState(normalizedState);
     this.runs.splice(0, this.runs.length, ...executionState.runs);
     this.codeSessions.splice(
       0,
@@ -2885,18 +2961,24 @@ export class FactoryApplication {
     this.codeSessionObservations.splice(
       0,
       this.codeSessionObservations.length,
-      ...(state.codeSessionObservations ?? []),
+      ...(normalizedState.codeSessionObservations ?? []),
     );
     this.sessionEvidence.splice(
       0,
       this.sessionEvidence.length,
-      ...(state.sessionEvidence ?? []),
+      ...(normalizedState.sessionEvidence ?? []),
     );
     this.reconciliationFindings.splice(
       0,
       this.reconciliationFindings.length,
-      ...(state.reconciliationFindings ?? []),
+      ...(normalizedState.reconciliationFindings ?? []),
     );
+    this.nextTaskSimpleId =
+      normalizedState.simpleIdCounters?.nextTask ??
+      nextSimpleIdNumber(this.tasks, TASK_SIMPLE_ID_PREFIX);
+    this.nextSubtaskSimpleId =
+      normalizedState.simpleIdCounters?.nextSubtask ??
+      nextSimpleIdNumber(this.subtasks, SUBTASK_SIMPLE_ID_PREFIX);
   }
 
   private save(): void {
@@ -2913,6 +2995,10 @@ export class FactoryApplication {
       codeSessionObservations: this.codeSessionObservations,
       sessionEvidence: this.sessionEvidence,
       reconciliationFindings: this.reconciliationFindings,
+      simpleIdCounters: {
+        nextSubtask: this.nextSubtaskSimpleId,
+        nextTask: this.nextTaskSimpleId,
+      },
     });
   }
 }
@@ -3088,7 +3174,7 @@ export function backupFactoryDatabase({
 }
 
 function hydrateState(state: FactoryState): FactoryState {
-  return {
+  return normalizeSimpleIdState({
     projects: state.projects.map((project) => ({
       ...project,
       createdAt: new Date(project.createdAt),
@@ -3165,5 +3251,5 @@ function hydrateState(state: FactoryState): FactoryState {
         updatedAt: new Date(finding.updatedAt),
       }),
     ),
-  };
+  });
 }

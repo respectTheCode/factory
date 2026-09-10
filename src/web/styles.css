@@ -2082,6 +2082,14 @@ option {
   white-space: nowrap;
 }
 
+.row-reference {
+  color: var(--accent);
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
 .row-chevron {
   color: var(--ink-faint);
   flex: 0 0 auto;

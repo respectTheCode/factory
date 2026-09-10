@@ -338,6 +338,7 @@ function makeBriefInput({
         const latestReport = reports.at(-1);
         return {
           id: subtask.id,
+          simpleId: subtask.simpleId,
           name: subtask.name,
           ...(subtask.description === undefined
             ? {}
@@ -362,10 +363,11 @@ function makeBriefInput({
       });
     const reportSubtaskId = subtasks.find(
       (subtask) => !subtask.accepted && !subtask.awaitingVerification,
-    )?.id;
+    )?.simpleId;
 
     task = {
       id: selectedTask.id,
+      simpleId: selectedTask.simpleId,
       name: selectedTask.name,
       ...(selectedTask.objective === undefined
         ? {}
@@ -404,6 +406,7 @@ function makeBriefInput({
         const taskDetail = application.getTaskDetail(candidate.id);
         return {
           id: candidate.id,
+          simpleId: candidate.simpleId,
           name: candidate.name,
           ...(taskDetail.priority ? { priority: taskDetail.priority } : {}),
           workState: candidate.workState ?? "planned",
@@ -727,6 +730,7 @@ async function main(args: string[]): Promise<void> {
       | ReturnType<ReturnType<typeof createFactoryApplication>["getTaskDetail"]>
       | undefined;
     let candidateTaskIds: string[] = [];
+    let candidateTaskSimpleIds: string[] = [];
     let branchResolutionNote: string | undefined;
     if (taskId) {
       const taskDetail = application.getTaskDetail(taskId);
@@ -749,7 +753,8 @@ async function main(args: string[]): Promise<void> {
         branchResolutionNote = `Branch ${branchName} matches no Task.`;
       } else {
         candidateTaskIds = branchMatches.map((task) => task.id);
-        branchResolutionNote = `Branch ${branchName} matches several Tasks: ${candidateTaskIds.join(", ")}.`;
+        candidateTaskSimpleIds = branchMatches.map((task) => task.simpleId);
+        branchResolutionNote = `Branch ${branchName} matches several Tasks: ${candidateTaskSimpleIds.join(", ")}.`;
       }
     }
 
@@ -770,9 +775,14 @@ async function main(args: string[]): Promise<void> {
     const brief = {
       ...rendered,
       candidateTaskIds,
+      candidateTaskSimpleIds,
       project: { id: project.id, name: project.name },
       task: selectedTask
-        ? { id: selectedTask.id, name: selectedTask.name }
+        ? {
+            id: selectedTask.id,
+            name: selectedTask.name,
+            simpleId: selectedTask.simpleId,
+          }
         : null,
     };
     if (parsed.flags.get("json") === "true") {

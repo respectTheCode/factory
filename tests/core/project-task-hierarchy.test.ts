@@ -65,11 +65,13 @@ describe("project planning", () => {
       tasks: [
         {
           id: task.id,
+          simpleId: task.simpleId!,
           name: "Prepare the release",
           projectId: project.id,
           subtasks: [
             {
               id: subtask.id,
+              simpleId: subtask.simpleId!,
               name: "Check the install flow",
               taskId: task.id,
               sortOrder: 0,
