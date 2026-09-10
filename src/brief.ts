@@ -1,4 +1,4 @@
-export const DEFAULT_BRIEF_MAX_CHARACTERS = 8000;
+export const DEFAULT_BRIEF_MAX_CHARACTERS = 6000;
 
 export type BriefTrackerLink = {
   system: string;
@@ -11,10 +11,11 @@ export type BriefSubtask = {
   name: string;
   description?: string;
   effectiveState: string;
+  accepted: boolean;
+  awaitingVerification: boolean;
   latestReport?: {
     state: string;
     reporter: string;
-    reasonOrEvidence?: string;
     createdAt: string;
   };
 };
@@ -38,38 +39,21 @@ export type BriefTask = {
 export type BriefOpenTask = {
   id: string;
   name: string;
-  branchName?: string;
   workState: string;
-};
-
-export type BriefAttentionItem = {
-  taskId: string;
-  taskName: string;
-  state: string;
   priority?: string;
-  owner?: string;
 };
 
 export type BriefInput = {
   project: {
     id: string;
     name: string;
-    workspaceRoot?: string;
-    gitOriginUrl?: string;
     trackerLinks: BriefTrackerLink[];
   };
   task?: BriefTask;
   openTasks: BriefOpenTask[];
-  candidateTaskIds: string[];
   branchResolutionNote?: string;
   databasePath: string;
   checkoutPath: string;
-  selector: {
-    workspaceRoot?: string;
-    gitOriginUrl?: string;
-  };
-  attention: BriefAttentionItem[];
-  generatedAt: string;
   maxCharacters?: number;
 };
 
@@ -88,81 +72,63 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function renderLinks(links: BriefTrackerLink[]): string[] {
-  if (links.length === 0) return ["- Tracker links: none"];
-  return [
-    "- Tracker links:",
-    ...links.map(
-      (link) =>
-        `  - ${oneLine(link.system)} ${oneLine(link.stableId)}: ${link.url}`,
-    ),
-  ];
+function renderTrackerLinks(links: BriefTrackerLink[]): string[] {
+  return links.map(
+    (link) =>
+      `- ${oneLine(link.system)} ${oneLine(link.stableId)}: ${oneLine(link.url)}`,
+  );
 }
 
 function renderProjectSection(input: BriefInput): string[] {
-  const lines = [
-    `# Factory brief: ${oneLine(input.project.name)}`,
-    `- Project id: ${input.project.id}`,
+  return [
+    `# Factory brief: ${oneLine(input.project.name)} (${input.project.id})`,
+    ...renderTrackerLinks(input.project.trackerLinks),
   ];
-  if (input.project.workspaceRoot) {
-    lines.push(`- Workspace root: ${input.project.workspaceRoot}`);
-  }
-  if (input.project.gitOriginUrl) {
-    lines.push(`- Git origin: ${input.project.gitOriginUrl}`);
-  }
-  lines.push(...renderLinks(input.project.trackerLinks));
-  return lines;
 }
 
 function renderTaskSection(task: BriefTask): string[] {
   const lines = [
-    "## Task",
-    `- Name: ${oneLine(task.name)}`,
-    `- ID: ${task.id}`,
-    `- Objective: ${task.objective ? oneLine(task.objective) : "(none)"}`,
-    `- Branch: ${task.branchName ?? "(none)"}`,
-    `- PR URL: ${task.pullRequestUrl ?? "(none)"}`,
-    "- Acceptance criteria:",
+    `## Task ${task.id}: ${oneLine(task.name)}`,
+    `Objective: ${task.objective ? oneLine(task.objective) : "(none)"}`,
+    `Branch: ${task.branchName ? oneLine(task.branchName) : "none"} · PR: ${
+      task.pullRequestUrl ? oneLine(task.pullRequestUrl) : "none"
+    }`,
+    "Acceptance criteria:",
   ];
   if (task.acceptanceCriteria.length === 0) {
-    lines.push("  1. (none)");
+    lines.push("1. (none)");
   } else {
     task.acceptanceCriteria.forEach((criterion, index) => {
-      lines.push(`  ${index + 1}. ${oneLine(criterion)}`);
+      lines.push(`${index + 1}. ${oneLine(criterion)}`);
     });
   }
-  lines.push("- Dependencies:");
-  if (task.dependencies.length === 0) {
-    lines.push("  - (none)");
-  } else {
+  if (task.dependencies.length > 0) {
     lines.push(
-      ...task.dependencies.map((dependency) => `  - ${oneLine(dependency)}`),
+      `Dependencies: ${task.dependencies.map((dependency) => oneLine(dependency)).join(", ")}`,
     );
   }
-  if (task.trackerLinks.length > 0) {
-    lines.push(...renderLinks(task.trackerLinks));
-  }
+  lines.push(...renderTrackerLinks(task.trackerLinks));
   return lines;
 }
 
 function renderOpenTasksSection(input: BriefInput): string[] {
   const visibleTasks = input.openTasks.slice(0, 20);
   const lines = ["## Open Tasks"];
+  if (input.branchResolutionNote) lines.push(input.branchResolutionNote);
   if (visibleTasks.length === 0) {
     lines.push("- None");
   } else {
     lines.push(
       ...visibleTasks.map(
         (task) =>
-          `- ${task.id} — ${oneLine(task.name)}${
-            task.branchName ? ` (branch: ${task.branchName})` : ""
-          }`,
+          `- ${task.id} — ${oneLine(task.name)} [${task.workState}${
+            task.priority ? `, ${oneLine(task.priority)}` : ""
+          }]`,
       ),
     );
     const remaining = input.openTasks.length - visibleTasks.length;
     if (remaining > 0) lines.push(`+${remaining} more`);
   }
-  if (input.branchResolutionNote) lines.push(`- ${input.branchResolutionNote}`);
   return lines;
 }
 
@@ -173,128 +139,91 @@ function renderSubtasksSection(task: BriefTask): string[] {
     return lines;
   }
   for (const subtask of task.subtasks) {
-    lines.push(`- ${subtask.id} — ${oneLine(subtask.name)}`);
-    lines.push(
-      `  Description: ${subtask.description ? oneLine(subtask.description) : "(none)"}`,
-    );
+    const detail = subtask.accepted
+      ? "accepted"
+      : subtask.awaitingVerification
+        ? "awaiting verification"
+        : subtask.description
+          ? oneLine(subtask.description)
+          : "(none)";
+    lines.push(`- ${subtask.id} — ${oneLine(subtask.name)}: ${detail}`);
   }
   return lines;
+}
+
+function renderHowToWork(): string[] {
+  return [
+    "## How to work",
+    "- Before starting a Subtask, report in_progress with --evidence. At handoff, report complete with --reason naming the human check, or blocked with the blocker.",
+    "- Never verify or complete; a human does that in the dashboard. Reports are append-only claims.",
+    "- Set FACTORY_REPORTER=claude or codex. Full rules: skills/software-factory/SKILL.md",
+  ];
 }
 
 function renderCommands(input: BriefInput): string[] {
   const cli = "bun run src/cli.ts";
   const lines = [
-    "## Commands",
-    `Checkout: ${input.checkoutPath}`,
-    "Full operating rules: skills/software-factory/SKILL.md",
+    `## Commands (run from ${input.checkoutPath})`,
     "",
     "```sh",
     `export FACTORY_DB=${shellQuote(input.databasePath)}`,
     'export T3_BASE_URL="${T3_BASE_URL:-http://127.0.0.1:3773}"',
     'export T3_ACCESS_TOKEN_FILE="${T3_ACCESS_TOKEN_FILE:-$HOME/Library/Application Support/Factory/secrets/t3-read-token}"',
-    "# Set FACTORY_REPORTER=claude or codex before reporting.",
   ];
 
-  if (input.task?.reportSubtaskId) {
-    lines.push(
-      `${cli} subtask report --json --subtask-id ${input.task.reportSubtaskId} --state in_progress --reporter \"$FACTORY_REPORTER\" --evidence \"...\" --database \"$FACTORY_DB\"`,
-    );
-  } else if (input.task) {
-    lines.push("# All listed Subtasks have an accepted complete report.");
-  }
-
-  if (input.task?.branchName) {
-    lines.push(
-      `${cli} session auto-link --project-id ${input.project.id} --task-id ${input.task.id} --branch-name ${shellQuote(input.task.branchName)} --json --database \"$FACTORY_DB\"`,
-    );
-  }
-
   if (input.task) {
-    for (const subtask of input.task.subtasks) {
+    if (input.task.reportSubtaskId) {
       lines.push(
-        `${cli} subtask history --subtask-id ${subtask.id} --json --database \"$FACTORY_DB\"`,
+        `${cli} subtask report --json --subtask-id ${input.task.reportSubtaskId} --state in_progress --reporter "$FACTORY_REPORTER" --evidence "..." --database "$FACTORY_DB"`,
+      );
+    }
+    if (input.task.branchName) {
+      lines.push(
+        `${cli} session auto-link --project-id ${input.project.id} --task-id ${input.task.id} --branch-name ${shellQuote(input.task.branchName)} --json --database "$FACTORY_DB"`,
+      );
+    }
+    if (input.task.reportSubtaskId) {
+      lines.push(
+        `${cli} subtask history --subtask-id ${input.task.reportSubtaskId} --json --database "$FACTORY_DB"`,
       );
     }
     lines.push(
-      `${cli} task detail --task-id ${input.task.id} --json --database \"$FACTORY_DB\"`,
+      `${cli} task detail --task-id ${input.task.id} --json --database "$FACTORY_DB"`,
+    );
+  } else {
+    lines.push(
+      `${cli} task detail --task-id TASK_ID --json --database "$FACTORY_DB"`,
+      `${cli} subtask report --json --subtask-id SUBTASK_ID --state in_progress --reporter "$FACTORY_REPORTER" --evidence "..." --database "$FACTORY_DB"`,
     );
   }
 
-  const selectorFlags = [
-    input.selector.workspaceRoot === undefined
-      ? undefined
-      : `--workspace-root ${shellQuote(input.selector.workspaceRoot)}`,
-    input.selector.gitOriginUrl === undefined
-      ? undefined
-      : `--git-origin-url ${shellQuote(input.selector.gitOriginUrl)}`,
-  ].filter((flag): flag is string => flag !== undefined);
-  lines.push(
-    `${cli} project attention${selectorFlags.length > 0 ? ` ${selectorFlags.join(" ")}` : ""} --json --database \"$FACTORY_DB\"`,
-  );
   lines.push("```");
   return lines;
 }
 
-function renderCurrentStatus(input: BriefInput): string[] {
+function renderCurrentStatus(task: BriefTask): string[] {
   const lines = ["## Current status"];
-  if (input.task) {
+  const hold = task.manualHold ? ", manual hold" : "";
+  const reason = task.stateReason ? ` — ${oneLine(task.stateReason)}` : "";
+  lines.push(`- Task: ${task.workState}${hold}${reason}`);
+  for (const subtask of task.subtasks) {
+    const report = subtask.latestReport;
     lines.push(
-      `- Task work state: ${input.task.workState}; manual hold: ${input.task.manualHold ? "yes" : "no"}${
-        input.task.stateReason ? ` — ${oneLine(input.task.stateReason)}` : ""
-      }`,
-    );
-    for (const subtask of input.task.subtasks) {
-      const report = subtask.latestReport;
-      lines.push(
-        `- Subtask ${subtask.id} (${oneLine(subtask.name)}): effective state ${subtask.effectiveState}; ${
-          report
-            ? `Status Report: ${report.state} by ${report.reporter}; ${
-                report.reasonOrEvidence
-                  ? oneLine(report.reasonOrEvidence)
-                  : "no reason or evidence"
-              }; ${report.createdAt}`
-            : "Status Report: none"
-        }`,
-      );
-    }
-  } else {
-    lines.push("- Task work state: no Task resolved (project-only brief).");
-  }
-
-  lines.push("- Open attention items:");
-  if (input.attention.length === 0) {
-    lines.push("  - None");
-  } else {
-    lines.push(
-      ...input.attention.map(
-        (item) =>
-          `  - ${item.taskId} — ${oneLine(item.taskName)}: ${item.state}${
-            item.priority ? `; priority ${item.priority}` : ""
-          }${item.owner ? `; owner ${item.owner}` : ""}`,
-      ),
+      report
+        ? `- ${subtask.id} ${subtask.effectiveState}; last report ${report.state} by ${report.reporter} ${report.createdAt.slice(0, 10)}`
+        : `- ${subtask.id} ${subtask.effectiveState}; no report`,
     );
   }
-  lines.push(`Generated ${input.generatedAt}`);
   return lines;
 }
 
-export function renderBrief(input: BriefInput): BriefRenderResult {
-  const maxCharacters = input.maxCharacters ?? DEFAULT_BRIEF_MAX_CHARACTERS;
-  const stable = [
-    ...renderProjectSection(input),
-    "",
-    ...(input.task
-      ? [
-          ...renderTaskSection(input.task),
-          "",
-          ...renderSubtasksSection(input.task),
-        ]
-      : renderOpenTasksSection(input)),
-    "",
-    ...renderCommands(input),
-  ].join("\n");
-  const currentStatus = renderCurrentStatus(input).join("\n");
-  const full = `${stable}\n\n${currentStatus}`;
+function truncateBrief(
+  stable: string,
+  volatile: string,
+  input: BriefInput,
+  maxCharacters: number,
+): BriefRenderResult {
+  const full = `${stable}\n\n${volatile}`;
   if (full.length <= maxCharacters) {
     return {
       characterCount: full.length,
@@ -306,16 +235,13 @@ export function renderBrief(input: BriefInput): BriefRenderResult {
 
   const continuation = input.task
     ? `bun run src/cli.ts task detail --task-id ${input.task.id} --json --database \"$FACTORY_DB\"`
-    : `bun run src/cli.ts project status --project-id ${input.project.id} --json --database \"$FACTORY_DB\"`;
+    : `bun run src/cli.ts project status --project-id ${input.project.id}`;
   const notice = `[Factory brief truncated to ${maxCharacters} of ${full.length} characters. Run: ${continuation}]`;
   const prefixBudget = Math.max(0, maxCharacters - notice.length - 1);
-  let prefix: string;
-  if (stable.length >= prefixBudget) {
-    prefix = stable.slice(0, prefixBudget);
-  } else {
-    const currentBudget = Math.max(0, prefixBudget - stable.length - 1);
-    prefix = `${stable}\n${currentStatus.slice(0, currentBudget)}`;
-  }
+  const prefix =
+    stable.length >= prefixBudget
+      ? stable.slice(0, prefixBudget)
+      : `${stable}\n${volatile.slice(0, Math.max(0, prefixBudget - stable.length - 1))}`;
   const markdown = `${prefix}\n${notice}`;
   return {
     characterCount: markdown.length,
@@ -323,4 +249,26 @@ export function renderBrief(input: BriefInput): BriefRenderResult {
     maxCharacters,
     truncated: true,
   };
+}
+
+export function renderBrief(input: BriefInput): BriefRenderResult {
+  const maxCharacters = input.maxCharacters ?? DEFAULT_BRIEF_MAX_CHARACTERS;
+  const stableSections = [renderProjectSection(input)];
+  if (input.task) {
+    stableSections.push(
+      renderTaskSection(input.task),
+      renderSubtasksSection(input.task),
+      renderHowToWork(),
+      renderCommands(input),
+    );
+  } else {
+    stableSections.push(renderHowToWork(), renderCommands(input));
+  }
+  const stable = stableSections
+    .map((section) => section.join("\n"))
+    .join("\n\n");
+  const volatile = input.task
+    ? renderCurrentStatus(input.task).join("\n")
+    : renderOpenTasksSection(input).join("\n");
+  return truncateBrief(stable, volatile, input, maxCharacters);
 }

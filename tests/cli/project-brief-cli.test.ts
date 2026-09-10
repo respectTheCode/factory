@@ -24,12 +24,19 @@ async function runCli(
   return { exitCode, stderr, stdout };
 }
 
+function makeTemporaryPaths(prefix: string) {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), prefix));
+  return {
+    databasePath: join(temporaryDirectory, "factory.sqlite"),
+    temporaryDirectory,
+  };
+}
+
 describe("project brief CLI", () => {
   test("fails closed when the selected Project does not exist", async () => {
-    const temporaryDirectory = mkdtempSync(
-      join(tmpdir(), "software-factory-project-brief-missing-"),
+    const { databasePath, temporaryDirectory } = makeTemporaryPaths(
+      "software-factory-project-brief-missing-",
     );
-    const databasePath = join(temporaryDirectory, "factory.sqlite");
 
     try {
       const result = await runCli([
@@ -52,10 +59,9 @@ describe("project brief CLI", () => {
   });
 
   test("fails closed and names both Projects when the selector is ambiguous", async () => {
-    const temporaryDirectory = mkdtempSync(
-      join(tmpdir(), "software-factory-project-brief-ambiguous-"),
+    const { databasePath, temporaryDirectory } = makeTemporaryPaths(
+      "software-factory-project-brief-ambiguous-",
     );
-    const databasePath = join(temporaryDirectory, "factory.sqlite");
 
     try {
       const app = createFactoryApplication({ databasePath });
@@ -85,17 +91,15 @@ describe("project brief CLI", () => {
     }
   });
 
-  test("renders the uniquely matched branch Task, Subtask, and read commands", async () => {
-    const temporaryDirectory = mkdtempSync(
-      join(tmpdir(), "software-factory-project-brief-branch-"),
+  test("renders the matched Task and only the first open Subtask commands", async () => {
+    const { databasePath, temporaryDirectory } = makeTemporaryPaths(
+      "software-factory-project-brief-branch-",
     );
-    const databasePath = join(temporaryDirectory, "factory.sqlite");
     const branchName = "factory-project-brief";
 
     try {
       const app = createFactoryApplication({ databasePath });
       const project = app.createProject({
-        gitOriginUrl: "git@github.com:app-press/factory.git",
         name: "Factory",
         workspaceRoot: temporaryDirectory,
       });
@@ -119,16 +123,43 @@ describe("project brief CLI", () => {
         taskId: task.id,
         url: "https://linear.app/app-press/issue/FACT-2",
       });
-      const subtask = app.createSubtask({
-        description: "Render the current work evidence.",
-        name: "Render current status",
+      const accepted = app.createSubtask({
+        description: "This description is hidden after acceptance.",
+        name: "Accepted check",
+        taskId: task.id,
+      });
+      const acceptedReport = app.reportSubtaskStatus({
+        reason: "The human acceptance check is complete.",
+        reportedState: "complete",
+        reporter: "codex",
+        subtaskId: accepted.id,
+      });
+      app.verifyStatusReport({
+        decision: "accepted",
+        reportId: acceptedReport.id,
+        verifier: "kevin",
+      });
+      const awaiting = app.createSubtask({
+        description: "This description is hidden while awaiting verification.",
+        name: "Awaiting check",
         taskId: task.id,
       });
       app.reportSubtaskStatus({
-        evidence: "Status report evidence appears in the volatile section.",
+        reason: "Kevin checks the rendered output.",
+        reportedState: "complete",
+        reporter: "claude",
+        subtaskId: awaiting.id,
+      });
+      const open = app.createSubtask({
+        description: "Render the current work evidence.",
+        name: "Open check",
+        taskId: task.id,
+      });
+      app.reportSubtaskStatus({
+        evidence: "The report evidence is not part of the brief.",
         reportedState: "in_progress",
         reporter: "codex",
-        subtaskId: subtask.id,
+        subtaskId: open.id,
       });
 
       const result = await runCli([
@@ -162,37 +193,63 @@ describe("project brief CLI", () => {
         id: task.id,
         name: task.name,
       });
-      expect(payload.brief.markdown).toContain(`## Task`);
-      expect(payload.brief.markdown).toContain(task.id);
-      expect(payload.brief.markdown).toContain(subtask.id);
+      expect(payload.brief.candidateTaskIds).toEqual([]);
       expect(payload.brief.markdown).toContain(
-        `subtask report --json --subtask-id ${subtask.id} --state in_progress --reporter "$FACTORY_REPORTER"`,
+        `# Factory brief: Factory (${project.id})`,
+      );
+      expect(payload.brief.markdown).toContain(
+        `## Task ${task.id}: Add project brief`,
+      );
+      expect(payload.brief.markdown).toContain(
+        `- ${accepted.id} — Accepted check: accepted`,
+      );
+      expect(payload.brief.markdown).not.toContain(
+        "This description is hidden after acceptance.",
+      );
+      expect(payload.brief.markdown).toContain(
+        `- ${awaiting.id} — Awaiting check: awaiting verification`,
+      );
+      expect(payload.brief.markdown).not.toContain(
+        "This description is hidden while awaiting verification.",
+      );
+      expect(payload.brief.markdown).not.toContain(
+        `subtask report --json --subtask-id ${awaiting.id}`,
+      );
+      expect(payload.brief.markdown).toContain(
+        `- ${open.id} — Open check: Render the current work evidence.`,
+      );
+      expect(payload.brief.markdown).toContain(
+        `subtask report --json --subtask-id ${open.id} --state in_progress --reporter "$FACTORY_REPORTER"`,
       );
       expect(payload.brief.markdown).toContain(
         `session auto-link --project-id ${project.id} --task-id ${task.id} --branch-name '${branchName}'`,
       );
       expect(payload.brief.markdown).toContain(
-        `subtask history --subtask-id ${subtask.id} --json`,
+        `subtask history --subtask-id ${open.id} --json`,
       );
       expect(payload.brief.markdown).toContain(
         `task detail --task-id ${task.id} --json`,
       );
-      expect(payload.brief.markdown).toContain("FACT-1");
-      expect(payload.brief.markdown).toContain(
-        'export T3_BASE_URL="${T3_BASE_URL:-http://127.0.0.1:3773}"',
+      expect(payload.brief.markdown).not.toContain(
+        `subtask history --subtask-id ${accepted.id}`,
       );
-      expect(payload.brief.markdown).toContain("export T3_ACCESS_TOKEN_FILE=");
-      expect(payload.brief.candidateTaskIds).toEqual([]);
+      expect(payload.brief.markdown).toContain(
+        "- linear FACT-1: https://linear.app/app-press/issue/FACT-1",
+      );
+      expect(payload.brief.markdown).toContain(
+        "- linear FACT-2: https://linear.app/app-press/issue/FACT-2",
+      );
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }
   });
 
-  test("keeps stable content and Commands before the volatile Current status", async () => {
-    const temporaryDirectory = mkdtempSync(
-      join(tmpdir(), "software-factory-project-brief-order-"),
+  test("keeps Commands before Current status and omits volatile evidence", async () => {
+    const { databasePath, temporaryDirectory } = makeTemporaryPaths(
+      "software-factory-project-brief-order-",
     );
-    const databasePath = join(temporaryDirectory, "factory.sqlite");
+    const longEvidence =
+      "This is a known long sentence that must never appear in the session brief evidence output.";
 
     try {
       const app = createFactoryApplication({ databasePath });
@@ -203,12 +260,12 @@ describe("project brief CLI", () => {
       const task = app.createTask({
         acceptanceCriteria: ["Acceptance is visible before status."],
         name: "Ordering task",
-        objective: "Objective is visible before status.",
+        objective: "Objective is visible before any report line.",
         projectId: project.id,
       });
       const subtask = app.createSubtask({ name: "Child", taskId: task.id });
       app.reportSubtaskStatus({
-        evidence: "Status Report text should be volatile.",
+        evidence: longEvidence,
         reportedState: "in_progress",
         reporter: "codex",
         subtaskId: subtask.id,
@@ -230,28 +287,25 @@ describe("project brief CLI", () => {
       expect(markdown.indexOf("## Commands")).toBeLessThan(
         markdown.indexOf("## Current status"),
       );
-      expect(
-        markdown.indexOf("Objective is visible before status."),
-      ).toBeLessThan(
-        markdown.indexOf("Status Report text should be volatile."),
+      expect(markdown.indexOf(task.objective as string)).toBeLessThan(
+        markdown.indexOf("last report"),
       );
-      expect(
-        markdown.indexOf("Acceptance is visible before status."),
-      ).toBeLessThan(
-        markdown.indexOf("Status Report text should be volatile."),
-      );
-      expect(markdown.split("\n").at(-1)).toMatch(/^Generated /);
-      expect(markdown).not.toContain("Factory brief truncated");
+      expect(markdown).not.toContain("Tracker links: none");
+      expect(markdown).not.toContain("Generated ");
+      expect(markdown).not.toContain("Open attention items");
+      expect(markdown).not.toContain("project attention");
+      expect(markdown).not.toContain(longEvidence);
+      expect(markdown).not.toContain("Status Report");
+      expect(markdown.split("\n").at(-1)).toContain("2026-");
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }
   });
 
-  test("renders a project-only brief when the branch matches no Task", async () => {
-    const temporaryDirectory = mkdtempSync(
-      join(tmpdir(), "software-factory-project-brief-open-"),
+  test("puts project-only Open Tasks last and includes each Task state", async () => {
+    const { databasePath, temporaryDirectory } = makeTemporaryPaths(
+      "software-factory-project-brief-open-",
     );
-    const databasePath = join(temporaryDirectory, "factory.sqlite");
 
     try {
       const app = createFactoryApplication({ databasePath });
@@ -259,11 +313,16 @@ describe("project brief CLI", () => {
         name: "Open task project",
         workspaceRoot: temporaryDirectory,
       });
-      const task = app.createTask({
-        branchName: "different-branch",
-        name: "Existing open task",
+      const planned = app.createTask({
+        name: "Planned task",
         projectId: project.id,
       });
+      const active = app.createTask({
+        name: "Active task",
+        priority: "high",
+        projectId: project.id,
+      });
+      app.setTaskWorkState({ taskId: active.id, workState: "active" });
 
       const result = await runCli([
         "project",
@@ -277,31 +336,27 @@ describe("project brief CLI", () => {
         databasePath,
       ]);
       const payload = JSON.parse(result.stdout) as {
-        brief: {
-          candidateTaskIds: string[];
-          markdown: string;
-          task: null;
-        };
+        brief: { markdown: string; task: null };
       };
+      const markdown = payload.brief.markdown;
+      const openTasksIndex = markdown.lastIndexOf("## Open Tasks");
 
       expect(result.exitCode).toBe(0);
       expect(payload.brief.task).toBeNull();
-      expect(payload.brief.candidateTaskIds).toEqual([]);
-      expect(payload.brief.markdown).toContain("## Open Tasks");
-      expect(payload.brief.markdown).toContain(task.id);
-      expect(payload.brief.markdown).toContain(
-        "Branch missing-branch matched zero non-archived Tasks.",
-      );
+      expect(openTasksIndex).toBe(markdown.indexOf("## Open Tasks"));
+      expect(markdown).toContain("Branch missing-branch matches no Task.");
+      expect(markdown).toContain(`- ${planned.id} — Planned task [planned]`);
+      expect(markdown).toContain(`- ${active.id} — Active task [active, high]`);
+      expect(markdown.indexOf("## Commands")).toBeLessThan(openTasksIndex);
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }
   });
 
-  test("renders project-only context and candidate IDs when a branch is ambiguous", async () => {
-    const temporaryDirectory = mkdtempSync(
-      join(tmpdir(), "software-factory-project-brief-branch-ambiguous-"),
+  test("reports ambiguous branch candidates in a project-only brief", async () => {
+    const { databasePath, temporaryDirectory } = makeTemporaryPaths(
+      "software-factory-project-brief-branch-ambiguous-",
     );
-    const databasePath = join(temporaryDirectory, "factory.sqlite");
     const branchName = "duplicate-branch";
 
     try {
@@ -344,20 +399,53 @@ describe("project brief CLI", () => {
       expect(payload.brief.task).toBeNull();
       expect(payload.brief.candidateTaskIds).toEqual([first.id, second.id]);
       expect(payload.brief.markdown).toContain(
-        `Branch ${branchName} matched several non-archived Tasks; candidates: ${first.id}, ${second.id}.`,
+        `Branch ${branchName} matches several Tasks: ${first.id}, ${second.id}.`,
       );
-      expect(payload.brief.markdown).toContain(first.id);
-      expect(payload.brief.markdown).toContain(second.id);
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });
     }
   });
 
-  test("caps output with a final notice and reports truncation in JSON", async () => {
-    const temporaryDirectory = mkdtempSync(
-      join(tmpdir(), "software-factory-project-brief-cap-"),
+  test("includes the three How to work lines", async () => {
+    const { databasePath, temporaryDirectory } = makeTemporaryPaths(
+      "software-factory-project-brief-how-to-work-",
     );
-    const databasePath = join(temporaryDirectory, "factory.sqlite");
+
+    try {
+      const app = createFactoryApplication({ databasePath });
+      app.createProject({
+        name: "How to work project",
+        workspaceRoot: temporaryDirectory,
+      });
+
+      const result = await runCli([
+        "project",
+        "brief",
+        "--workspace-root",
+        temporaryDirectory,
+        "--database",
+        databasePath,
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain(
+        "- Before starting a Subtask, report in_progress with --evidence. At handoff, report complete with --reason naming the human check, or blocked with the blocker.",
+      );
+      expect(result.stdout).toContain(
+        "- Never verify or complete; a human does that in the dashboard. Reports are append-only claims.",
+      );
+      expect(result.stdout).toContain(
+        "- Set FACTORY_REPORTER=claude or codex. Full rules: skills/software-factory/SKILL.md",
+      );
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test("caps output with a final notice and reports the default cap in JSON", async () => {
+    const { databasePath, temporaryDirectory } = makeTemporaryPaths(
+      "software-factory-project-brief-cap-",
+    );
 
     try {
       const app = createFactoryApplication({ databasePath });
@@ -416,7 +504,11 @@ describe("project brief CLI", () => {
         databasePath,
       ]);
       const defaultPayload = JSON.parse(defaultResult.stdout) as {
-        brief: { markdown: string; truncated: boolean };
+        brief: {
+          markdown: string;
+          maxCharacters: number;
+          truncated: boolean;
+        };
       };
 
       expect(cappedResult.exitCode).toBe(0);
@@ -427,6 +519,7 @@ describe("project brief CLI", () => {
         /^\[Factory brief truncated to 1000 of \d+ characters\. Run:/,
       );
       expect(defaultResult.exitCode).toBe(0);
+      expect(defaultPayload.brief.maxCharacters).toBe(6000);
       expect(defaultPayload.brief.truncated).toBe(false);
       expect(defaultPayload.brief.markdown).not.toContain(
         "Factory brief truncated",

@@ -52,7 +52,7 @@ describe("Software Factory skill", () => {
     expect(skill).toContain(
       "Session-start hooks inject `project brief` as the session's bounded starting context.",
     );
-    expect(skill).toContain("capped at 8000 characters by default");
+    expect(skill).toContain("capped at 6000 characters by default");
     expect(skill).toContain("truncated brief is never a complete record");
   });
 });

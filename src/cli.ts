@@ -14,7 +14,6 @@ import { createGitHubStatusReader, parseGitHubPullRequestUrl } from "./github";
 import {
   DEFAULT_BRIEF_MAX_CHARACTERS,
   renderBrief,
-  type BriefAttentionItem,
   type BriefInput,
   type BriefSubtask,
   type BriefTask,
@@ -290,23 +289,18 @@ function firstReportLine(report: {
 
 function makeBriefInput({
   application,
-  candidateTaskIds,
   checkoutPath,
   databasePath,
-  generatedAt,
   hierarchy,
   maxCharacters,
   project,
   projectDetail,
-  selector,
   selectedTask,
   branchResolutionNote,
 }: {
   application: ReturnType<typeof createFactoryApplication>;
-  candidateTaskIds: string[];
   checkoutPath: string;
   databasePath: string;
-  generatedAt: string;
   hierarchy: ReturnType<
     ReturnType<typeof createFactoryApplication>["getProjectHierarchy"]
   >;
@@ -317,7 +311,6 @@ function makeBriefInput({
   projectDetail: ReturnType<
     ReturnType<typeof createFactoryApplication>["getProjectDetail"]
   >;
-  selector: BriefInput["selector"];
   selectedTask?: ReturnType<
     ReturnType<typeof createFactoryApplication>["getTaskDetail"]
   >;
@@ -350,35 +343,26 @@ function makeBriefInput({
             ? {}
             : { description: subtask.description }),
           effectiveState: subtaskStatus?.effectiveState ?? "planned",
+          accepted:
+            subtaskStatus?.reportedState === "complete" &&
+            subtaskStatus.verificationState === "accepted",
+          awaitingVerification:
+            subtaskStatus?.effectiveState === "awaiting_verification" &&
+            subtaskStatus.verificationState !== "accepted",
           ...(latestReport
             ? {
                 latestReport: {
                   state: latestReport.reportedState,
                   reporter: latestReport.reporter,
-                  ...(firstReportLine(latestReport)
-                    ? { reasonOrEvidence: firstReportLine(latestReport) }
-                    : {}),
                   createdAt: latestReport.createdAt.toISOString(),
                 },
               }
             : {}),
         };
       });
-    const reportSubtaskId = subtasks.find((subtask) => {
-      const reports = application.getSubtaskReportHistory(subtask.id);
-      const verifications = application.getSubtaskVerificationHistory(
-        subtask.id,
-      );
-      return !reports.some(
-        (report) =>
-          report.reportedState === "complete" &&
-          verifications.some(
-            (verification) =>
-              verification.reportId === report.id &&
-              verification.decision === "accepted",
-          ),
-      );
-    })?.id;
+    const reportSubtaskId = subtasks.find(
+      (subtask) => !subtask.accepted && !subtask.awaitingVerification,
+    )?.id;
 
     task = {
       id: selectedTask.id,
@@ -409,47 +393,31 @@ function makeBriefInput({
     };
   }
 
-  const attention: BriefAttentionItem[] = application
-    .getAttentionProjection()
-    .filter((item) => item.projectId === project.id)
-    .map((item) => ({
-      taskId: item.taskId,
-      taskName: item.taskName,
-      state: item.state,
-      ...(item.owner ? { owner: item.owner } : {}),
-      ...(item.priority ? { priority: item.priority } : {}),
-    }));
-
   return {
-    attention,
     branchResolutionNote,
-    candidateTaskIds,
     checkoutPath,
     databasePath,
-    generatedAt,
     maxCharacters,
     openTasks: hierarchy.tasks
       .filter((candidate) => candidate.archiveState === undefined)
-      .map((candidate) => ({
-        id: candidate.id,
-        name: candidate.name,
-        ...(candidate.branchName ? { branchName: candidate.branchName } : {}),
-        workState: candidate.workState ?? "planned",
-      })),
+      .map((candidate) => {
+        const taskDetail = application.getTaskDetail(candidate.id);
+        return {
+          id: candidate.id,
+          name: candidate.name,
+          ...(taskDetail.priority ? { priority: taskDetail.priority } : {}),
+          workState: candidate.workState ?? "planned",
+        };
+      }),
     project: {
       id: project.id,
       name: project.name,
-      ...(project.gitOriginUrl ? { gitOriginUrl: project.gitOriginUrl } : {}),
-      ...(project.workspaceRoot
-        ? { workspaceRoot: project.workspaceRoot }
-        : {}),
       trackerLinks: projectDetail.trackerLinks.map((link) => ({
         stableId: link.stableId,
         system: link.system,
         url: link.url,
       })),
     },
-    selector,
     ...(task ? { task } : {}),
   };
 }
@@ -778,10 +746,10 @@ async function main(args: string[]): Promise<void> {
         if (!matchingTask) throw new Error("Factory Task resolution failed.");
         selectedTask = application.getTaskDetail(matchingTask.id);
       } else if (branchMatches.length === 0) {
-        branchResolutionNote = `Branch ${branchName} matched zero non-archived Tasks.`;
+        branchResolutionNote = `Branch ${branchName} matches no Task.`;
       } else {
         candidateTaskIds = branchMatches.map((task) => task.id);
-        branchResolutionNote = `Branch ${branchName} matched several non-archived Tasks; candidates: ${candidateTaskIds.join(", ")}.`;
+        branchResolutionNote = `Branch ${branchName} matches several Tasks: ${candidateTaskIds.join(", ")}.`;
       }
     }
 
@@ -790,18 +758,12 @@ async function main(args: string[]): Promise<void> {
       makeBriefInput({
         application,
         branchResolutionNote,
-        candidateTaskIds,
         checkoutPath: resolve(process.cwd()),
         databasePath: resolve(databasePath),
-        generatedAt: new Date().toISOString(),
         hierarchy,
         maxCharacters,
         project,
         projectDetail,
-        selector: {
-          ...(workspaceRoot ? { workspaceRoot } : {}),
-          ...(gitOriginUrl ? { gitOriginUrl } : {}),
-        },
         selectedTask,
       }),
     );

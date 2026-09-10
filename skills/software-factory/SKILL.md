@@ -172,7 +172,7 @@ human-only PWA concern.
 ## Agent operating loop
 
 Session-start hooks inject `project brief` as the session's bounded starting context. It is
-capped at 8000 characters by default with a truncation notice when the cap is reached. A
+capped at 6000 characters by default with a truncation notice when the cap is reached. A
 truncated brief is never a complete record; run `task detail` for the full Task record. The
 brief is a starting point, not a substitute for the loop below.
 
