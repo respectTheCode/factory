@@ -178,6 +178,10 @@ describe("project brief CLI", () => {
         `task detail --task-id ${task.id} --json`,
       );
       expect(payload.brief.markdown).toContain("FACT-1");
+      expect(payload.brief.markdown).toContain(
+        'export T3_BASE_URL="${T3_BASE_URL:-http://127.0.0.1:3773}"',
+      );
+      expect(payload.brief.markdown).toContain("export T3_ACCESS_TOKEN_FILE=");
       expect(payload.brief.candidateTaskIds).toEqual([]);
     } finally {
       rmSync(temporaryDirectory, { force: true, recursive: true });

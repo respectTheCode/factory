@@ -190,6 +190,8 @@ function renderCommands(input: BriefInput): string[] {
     "",
     "```sh",
     `export FACTORY_DB=${shellQuote(input.databasePath)}`,
+    'export T3_BASE_URL="${T3_BASE_URL:-http://127.0.0.1:3773}"',
+    'export T3_ACCESS_TOKEN_FILE="${T3_ACCESS_TOKEN_FILE:-$HOME/Library/Application Support/Factory/secrets/t3-read-token}"',
     "# Set FACTORY_REPORTER=claude or codex before reporting.",
   ];
 
