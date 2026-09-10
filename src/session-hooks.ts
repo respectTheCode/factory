@@ -5,6 +5,7 @@ export type SessionHookClient = "claude" | "codex";
 export type SessionHookEntry = {
   command: string;
   timeout?: number;
+  matcher?: string;
   /**
    * Codex only: approximate token threshold above which Codex writes the
    * hook's additionalContext to disk and sends a preview instead. Codex
@@ -14,6 +15,7 @@ export type SessionHookEntry = {
 };
 
 export const CODEX_ADDITIONAL_CONTEXT_LIMIT = 4000;
+export const FACTORY_SESSION_HOOK_MATCHER = "startup|clear";
 
 type JsonObject = Record<string, unknown>;
 
@@ -67,11 +69,18 @@ export function mergeSessionStartHook(
       };
     });
 
-    return replacedInGroup ? { ...groupObject, hooks: groupHooks } : group;
+    return replacedInGroup
+      ? {
+          ...groupObject,
+          ...(entry.matcher === undefined ? {} : { matcher: entry.matcher }),
+          hooks: groupHooks,
+        }
+      : group;
   });
 
   if (!replacedExistingHook) {
     sessionStart.push({
+      ...(entry.matcher === undefined ? {} : { matcher: entry.matcher }),
       hooks: [
         {
           type: "command",

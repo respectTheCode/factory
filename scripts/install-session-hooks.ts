@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 
 import {
   CODEX_ADDITIONAL_CONTEXT_LIMIT,
+  FACTORY_SESSION_HOOK_MATCHER,
   mergeSessionStartHook,
   factorySessionHookCommand,
 } from "../src/session-hooks";
@@ -87,6 +88,7 @@ async function installOne(
   const merged = mergeSessionStartHook(settings, {
     command,
     timeout: 10,
+    matcher: FACTORY_SESSION_HOOK_MATCHER,
     ...(client === "codex"
       ? { additionalContextLimit: CODEX_ADDITIONAL_CONTEXT_LIMIT }
       : {}),
@@ -134,6 +136,7 @@ export async function runInstaller(args: string[]): Promise<void> {
       claude,
       codex,
       scriptPath,
+      matcher: FACTORY_SESSION_HOOK_MATCHER,
     },
   };
 

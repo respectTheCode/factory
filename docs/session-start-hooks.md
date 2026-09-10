@@ -17,6 +17,19 @@ that file is user-managed. A missing Codex `~/.codex/hooks.json` starts from an
 empty configuration. Use `--dry-run` to inspect the JSON report without writing,
 and `--json` for the stable machine-readable report.
 
+## When the hook fires
+
+The Factory group uses the matcher `"startup|clear"`, so it injects the brief
+once per fresh context: on `startup` for a new session and on `clear` after
+`/clear`. It does not inject on `resume` or `compact`: the original brief is
+already in the resumed transcript, and the compacted summary retains the
+Factory IDs. The shell script also skips those two sources as a belt-and-braces
+guard if an installed group has no matcher.
+
+Changing the Factory group changes Codex's hook hash. After reinstalling the
+hook, rerun `bun run scripts/trust-codex-session-hook.ts` so Codex trusts the
+new definition.
+
 The hook uses these environment overrides:
 
 - `FACTORY_CHECKOUT` — Factory checkout containing `src/cli.ts`; by default it

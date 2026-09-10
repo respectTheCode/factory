@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 
 import { describe, expect, test } from "bun:test";
 import {
+  FACTORY_SESSION_HOOK_MATCHER,
   factorySessionHookCommand,
   mergeSessionStartHook,
 } from "../../src/session-hooks";
@@ -124,6 +125,7 @@ describe("session-start hook configuration", () => {
 
     const merged = mergeSessionStartHook(settings, {
       command: "bash '/tmp/factory-session-brief-hook.sh' claude",
+      matcher: FACTORY_SESSION_HOOK_MATCHER,
       additionalContextLimit: 4000,
     });
 
@@ -148,6 +150,7 @@ describe("session-start hook configuration", () => {
           hooks: [{ type: "command", command: "echo existing" }],
         },
         {
+          matcher: FACTORY_SESSION_HOOK_MATCHER,
           hooks: [
             {
               type: "command",
@@ -166,8 +169,17 @@ describe("session-start hook configuration", () => {
       "codex",
       "/tmp/factory scripts/factory-session-brief-hook.sh",
     );
-    const first = mergeSessionStartHook({}, { command });
-    const second = mergeSessionStartHook(first, { command });
+    const first = mergeSessionStartHook(
+      {},
+      {
+        command,
+        matcher: FACTORY_SESSION_HOOK_MATCHER,
+      },
+    );
+    const second = mergeSessionStartHook(first, {
+      command,
+      matcher: FACTORY_SESSION_HOOK_MATCHER,
+    });
 
     expect(second).toEqual(first);
     expect((second.hooks as Record<string, unknown>).SessionStart).toHaveLength(
@@ -194,14 +206,17 @@ describe("session-start hook configuration", () => {
       },
     };
     const command = "bash '/new/factory-session-brief-hook.sh' codex";
-    const merged = mergeSessionStartHook(settings, { command });
+    const merged = mergeSessionStartHook(settings, {
+      command,
+      matcher: FACTORY_SESSION_HOOK_MATCHER,
+    });
     const groups = (merged.hooks as Record<string, unknown>)
       .SessionStart as Array<Record<string, unknown>>;
 
     expect(groups).toHaveLength(2);
     expect(groups[0]).toEqual(settings.hooks.SessionStart[0]);
     expect(groups[1]).toEqual({
-      matcher: "startup",
+      matcher: FACTORY_SESSION_HOOK_MATCHER,
       hooks: [{ type: "command", timeout: 3, command }],
     });
   });
@@ -229,6 +244,7 @@ describe("session-start hook installer", () => {
           claude: { path: string; changed: boolean; dryRun: boolean };
           codex: { path: string; changed: boolean; dryRun: boolean };
           scriptPath: string;
+          matcher: string;
         };
       };
       expect(report).toMatchObject({
@@ -240,6 +256,7 @@ describe("session-start hook installer", () => {
             dryRun: true,
           },
           codex: { path: fixtures.codexHooks, changed: true, dryRun: true },
+          matcher: FACTORY_SESSION_HOOK_MATCHER,
         },
       });
       expect(report.install.scriptPath).toBe(hookScript);
@@ -266,6 +283,7 @@ describe("session-start hook installer", () => {
         install: {
           claude: { path: string; changed: boolean; dryRun: boolean };
           codex: { path: string; changed: boolean; dryRun: boolean };
+          matcher: string;
         };
       };
       expect(firstReport.install.claude).toEqual({
@@ -278,13 +296,22 @@ describe("session-start hook installer", () => {
         changed: true,
         dryRun: false,
       });
+      expect(firstReport.install.matcher).toBe(FACTORY_SESSION_HOOK_MATCHER);
 
       const writtenClaude = JSON.parse(
         readFileSync(fixtures.claudeSettings, "utf8"),
       ) as {
-        hooks: { SessionStart: Array<{ hooks: Array<{ command?: string }> }> };
+        hooks: {
+          SessionStart: Array<{
+            matcher?: string;
+            hooks: Array<{ command?: string }>;
+          }>;
+        };
       };
       expect(writtenClaude.hooks.SessionStart).toHaveLength(3);
+      expect(writtenClaude.hooks.SessionStart[2]?.matcher).toBe(
+        FACTORY_SESSION_HOOK_MATCHER,
+      );
       expect(writtenClaude.hooks.SessionStart[2]?.hooks[0]?.command).toBe(
         factorySessionHookCommand("claude", hookScript),
       );
@@ -297,10 +324,14 @@ describe("session-start hook installer", () => {
       ) as {
         hooks: {
           SessionStart: Array<{
+            matcher?: string;
             hooks: Array<{ command?: string; additionalContextLimit?: number }>;
           }>;
         };
       };
+      expect(writtenCodex.hooks.SessionStart[2]?.matcher).toBe(
+        FACTORY_SESSION_HOOK_MATCHER,
+      );
       expect(writtenCodex.hooks.SessionStart[2]?.hooks[0]).toMatchObject({
         command: factorySessionHookCommand("codex", hookScript),
         additionalContextLimit: 4000,
@@ -363,7 +394,7 @@ describe("factory session brief hook", () => {
         FAKE_BRIEF: "# Factory project brief\n\nTracked project",
       };
       const expectedContext =
-        "Factory brief for this checkout (injected by SessionStart hook; full rules in the software-factory skill):\n\n# Factory project brief\n\nTracked project";
+        "Factory brief for this checkout (SessionStart hook). Act on it; full rules are in the software-factory skill.\n\n# Factory project brief\n\nTracked project";
 
       const claudeResult = runHook("claude", payload, environment);
       expect(claudeResult.status).toBe(0);
@@ -377,6 +408,59 @@ describe("factory session brief hook", () => {
       const codexResult = runHook("codex", payload, environment);
       expect(codexResult.status).toBe(0);
       expect(codexResult.stdout).toBe(`${expectedContext}\n`);
+    } finally {
+      rmSync(fixture.directory, { force: true, recursive: true });
+    }
+  });
+
+  test("stays silent for resumed and compacted session sources", () => {
+    const fixture = makeFakeCheckout();
+    try {
+      for (const source of ["resume", "compact"] as const) {
+        const result = runHook(
+          "claude",
+          JSON.stringify({
+            session_id: `session-${source}`,
+            cwd: fixture.directory,
+            hook_event_name: "SessionStart",
+            source,
+          }),
+          {
+            FACTORY_CHECKOUT: fixture.directory,
+            FACTORY_DB: fixture.database,
+            FAKE_BRIEF: "should not appear",
+          },
+        );
+        expect(result.status).toBe(0);
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toBe("");
+      }
+    } finally {
+      rmSync(fixture.directory, { force: true, recursive: true });
+    }
+  });
+
+  test("injects when the source field is absent", () => {
+    const fixture = makeFakeCheckout();
+    try {
+      const result = runHook(
+        "codex",
+        JSON.stringify({
+          session_id: "session-without-source",
+          cwd: fixture.directory,
+          hook_event_name: "SessionStart",
+        }),
+        {
+          FACTORY_CHECKOUT: fixture.directory,
+          FACTORY_DB: fixture.database,
+          FAKE_BRIEF: "# Factory project brief\n\nTracked project",
+        },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe(
+        "Factory brief for this checkout (SessionStart hook). Act on it; full rules are in the software-factory skill.\n\n# Factory project brief\n\nTracked project\n",
+      );
+      expect(result.stderr).toBe("");
     } finally {
       rmSync(fixture.directory, { force: true, recursive: true });
     }

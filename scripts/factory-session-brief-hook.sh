@@ -30,6 +30,11 @@ print(value, end="")
 ' "$field" 2>/dev/null || true
 }
 
+source=$(json_field source)
+case "$source" in
+  resume|compact) exit 0 ;;
+esac
+
 agent_id=$(json_field agent_id)
 [ -z "$agent_id" ] || exit 0
 
@@ -92,7 +97,7 @@ else
 fi
 [ -n "$brief" ] || exit 0
 
-preamble="Factory brief for this checkout (injected by SessionStart hook; full rules in the software-factory skill):"
+preamble="Factory brief for this checkout (SessionStart hook). Act on it; full rules are in the software-factory skill."
 context=$(printf '%s\n\n%s' "$preamble" "$brief") || exit 0
 
 if [ "$client" = "claude" ]; then
