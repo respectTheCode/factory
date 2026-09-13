@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+import {
+  installCodexHookTrust,
+  type CodexAppServerProcess,
+} from "../../src/codex-hook-trust-install";
 import {
   findFactoryCodexHook,
   upsertTrustedHash,
@@ -57,6 +65,36 @@ function hooksListFixture() {
       ],
     },
   };
+}
+
+function appServerStub(transcript: string) {
+  const state = { killed: false, request: "" };
+  const stdout = new ReadableStream<Uint8Array<ArrayBuffer>>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(transcript));
+      controller.close();
+    },
+  });
+  const process: CodexAppServerProcess = {
+    stdin: {
+      write(input) {
+        state.request += input;
+        return input.length;
+      },
+      flush() {
+        return 0;
+      },
+    },
+    stdout,
+    get killed() {
+      return state.killed;
+    },
+    kill() {
+      state.killed = true;
+    },
+  };
+
+  return { process, state };
 }
 
 describe("Codex hook trust helpers", () => {
@@ -139,5 +177,55 @@ name = "example"
   test("is idempotent", () => {
     const first = upsertTrustedHash("[hooks]\n", factoryKey, factoryHash);
     expect(upsertTrustedHash(first, factoryKey, factoryHash)).toBe(first);
+  });
+
+  test("trusts the current hash from a stubbed app-server transcript", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "factory-codex-hook-trust-"));
+    const configPath = join(directory, "config.toml");
+    const config = `[hooks.state."${factoryKey}"]
+trusted_hash = "sha256:old"
+enabled = false
+`;
+    writeFileSync(configPath, config);
+    const stub = appServerStub(
+      [
+        JSON.stringify({ jsonrpc: "2.0", method: "notification" }),
+        JSON.stringify(hooksListFixture()),
+      ].join("\n") + "\n",
+    );
+
+    try {
+      const trust = await installCodexHookTrust({
+        codexBin: "/stub/codex",
+        codexConfigPath: configPath,
+        cwd: directory,
+        dryRun: true,
+        spawnAppServer: () => stub.process,
+      });
+
+      expect(trust).toEqual({
+        path: configPath,
+        key: factoryKey,
+        hash: factoryHash,
+        previousStatus: "untrusted",
+        changed: true,
+        dryRun: true,
+      });
+      expect(readFileSync(configPath, "utf8")).toBe(config);
+      expect(stub.state.killed).toBe(true);
+
+      const requests = stub.state.request
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(requests.map((request) => request.method)).toEqual([
+        "initialize",
+        "initialized",
+        "hooks/list",
+      ]);
+      expect(requests[2]?.params).toEqual({ cwd: directory });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

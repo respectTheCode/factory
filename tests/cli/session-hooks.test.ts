@@ -1,5 +1,6 @@
 import {
   existsSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -16,6 +17,7 @@ import {
   factorySessionHookCommand,
   mergeSessionStartHook,
 } from "../../src/session-hooks";
+import { installSessionHooks } from "../../src/session-hook-install";
 
 const repositoryRoot = join(import.meta.dir, "../..");
 const hookScript = join(
@@ -109,6 +111,41 @@ function makeInstallerFixtures(): {
 }
 
 describe("session-start hook configuration", () => {
+  test("shared installer merges both client configurations", () => {
+    const fixtures = makeInstallerFixtures();
+    try {
+      const report = installSessionHooks({
+        claudeSettingsPath: fixtures.claudeSettings,
+        codexHooksPath: fixtures.codexHooks,
+        scriptPath: hookScript,
+      });
+
+      expect(report.schemaVersion).toBe(1);
+      expect(report.install.claude.changed).toBe(true);
+      expect(report.install.codex.changed).toBe(true);
+      expect(
+        JSON.parse(readFileSync(fixtures.claudeSettings, "utf8")),
+      ).toMatchObject({
+        hooks: {
+          SessionStart: [
+            {},
+            {},
+            {
+              matcher: FACTORY_SESSION_HOOK_MATCHER,
+              hooks: [
+                {
+                  command: factorySessionHookCommand("claude", hookScript),
+                },
+              ],
+            },
+          ],
+        },
+      });
+    } finally {
+      rmSync(fixtures.directory, { force: true, recursive: true });
+    }
+  });
+
   test("adds a group while preserving unrelated settings and groups", () => {
     const settings = {
       unrelated: { enabled: true },
@@ -264,6 +301,69 @@ describe("session-start hook installer", () => {
       expect(readFileSync(fixtures.codexHooks, "utf8")).toBe(beforeCodex);
     } finally {
       rmSync(fixtures.directory, { force: true, recursive: true });
+    }
+  });
+
+  test("uses FACTORY_CLI without a checkout or Bun", () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "factory-session-hook-client-"),
+    );
+    const home = join(directory, "home");
+    const config = join(home, ".config", "factory");
+    const fakeFactory = join(directory, "factory");
+    const argsPath = join(directory, "args");
+    const urlPath = join(directory, "url");
+    mkdirSync(config, { recursive: true });
+    writeFileSync(
+      join(config, "env"),
+      "FACTORY_URL=http://192.168.1.10:3000\nFACTORY_ACCESS_TOKEN_FILE=/private/token\n",
+    );
+    writeFileSync(
+      fakeFactory,
+      [
+        "#!/bin/sh",
+        'printf \'%s\\n\' "$@" > "$FAKE_ARGS"',
+        'printf \'%s\' "$FACTORY_URL" > "$FAKE_URL"',
+        "printf '%b' '# Factory project brief\\n\\nFrom compiled client'",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(fakeFactory, 0o755);
+
+    try {
+      const result = runHook(
+        "codex",
+        JSON.stringify({
+          session_id: "compiled-client",
+          cwd: directory,
+          hook_event_name: "SessionStart",
+          source: "startup",
+        }),
+        {
+          HOME: home,
+          FACTORY_CLI: fakeFactory,
+          FACTORY_URL: "",
+          FACTORY_ACCESS_TOKEN_FILE: "",
+          FAKE_ARGS: argsPath,
+          FAKE_URL: urlPath,
+        },
+      );
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toBe(
+        "Factory brief for this checkout (SessionStart hook). Act on it; full rules are in the software-factory skill.\n\n# Factory project brief\n\nFrom compiled client\n",
+      );
+      const args = readFileSync(argsPath, "utf8").trimEnd().split("\n");
+      expect(args.slice(0, 4)).toEqual([
+        "project",
+        "brief",
+        "--workspace-root",
+        directory,
+      ]);
+      expect(readFileSync(urlPath, "utf8")).toBe("http://192.168.1.10:3000");
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
     }
   });
 

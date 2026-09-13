@@ -57,6 +57,7 @@ export type BriefInput = {
   branchResolutionNote?: string;
   databasePath?: string;
   checkoutPath: string;
+  cliCommand?: string;
   remote?: {
     url: string;
     accessTokenFile: string;
@@ -175,8 +176,17 @@ function renderHowToWork(): string[] {
   ];
 }
 
-function renderCommands(input: BriefInput): string[] {
-  const cli = "bun run src/cli.ts";
+function resolvedCliCommand(input: BriefInput): string {
+  // The compiled client sets FACTORY_CLI_COMMAND so remote briefs stay
+  // usable on machines that have no Factory checkout or Bun installation.
+  return (
+    input.cliCommand?.trim() ||
+    Bun.env.FACTORY_CLI_COMMAND?.trim() ||
+    "bun run src/cli.ts"
+  );
+}
+
+function renderCommands(input: BriefInput, cli: string): string[] {
   const command = (value: string) =>
     input.remote
       ? `${cli} ${value}`
@@ -252,6 +262,7 @@ function truncateBrief(
   volatile: string,
   input: BriefInput,
   maxCharacters: number,
+  cli: string,
 ): BriefRenderResult {
   const full = `${stable}\n\n${volatile}`;
   if (full.length <= maxCharacters) {
@@ -265,9 +276,9 @@ function truncateBrief(
 
   const continuation = input.task
     ? input.remote
-      ? `bun run src/cli.ts task detail --task-id ${input.task.simpleId} --json`
-      : `bun run src/cli.ts task detail --task-id ${input.task.simpleId} --json --database \"$FACTORY_DB\"`
-    : `bun run src/cli.ts project status --project-id ${input.project.id}`;
+      ? `${cli} task detail --task-id ${input.task.simpleId} --json`
+      : `${cli} task detail --task-id ${input.task.simpleId} --json --database \"$FACTORY_DB\"`
+    : `${cli} project status --project-id ${input.project.id}`;
   const notice = `[Factory brief truncated to ${maxCharacters} of ${full.length} characters. Run: ${continuation}]`;
   const prefixBudget = Math.max(0, maxCharacters - notice.length - 1);
   const prefix =
@@ -285,16 +296,17 @@ function truncateBrief(
 
 export function renderBrief(input: BriefInput): BriefRenderResult {
   const maxCharacters = input.maxCharacters ?? DEFAULT_BRIEF_MAX_CHARACTERS;
+  const cli = resolvedCliCommand(input);
   const stableSections = [renderProjectSection(input)];
   if (input.task) {
     stableSections.push(
       renderTaskSection(input.task),
       renderSubtasksSection(input.task),
       renderHowToWork(),
-      renderCommands(input),
+      renderCommands(input, cli),
     );
   } else {
-    stableSections.push(renderHowToWork(), renderCommands(input));
+    stableSections.push(renderHowToWork(), renderCommands(input, cli));
   }
   const stable = stableSections
     .map((section) => section.join("\n"))
@@ -302,5 +314,5 @@ export function renderBrief(input: BriefInput): BriefRenderResult {
   const volatile = input.task
     ? renderCurrentStatus(input.task).join("\n")
     : renderOpenTasksSection(input).join("\n");
-  return truncateBrief(stable, volatile, input, maxCharacters);
+  return truncateBrief(stable, volatile, input, maxCharacters, cli);
 }
