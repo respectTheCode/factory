@@ -44,33 +44,52 @@ if [ -z "$cwd" ]; then
 fi
 [ -n "$cwd" ] || exit 0
 
-script_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) || exit 0
-default_checkout=$(cd "$script_dir/.." 2>/dev/null && pwd -P) || exit 0
-checkout=${FACTORY_CHECKOUT:-$default_checkout}
-
-if command -v realpath >/dev/null 2>&1; then
-  checkout=$(realpath "$checkout" 2>/dev/null || printf '%s' "$checkout")
-elif [ -d "$checkout" ]; then
-  checkout=$(cd "$checkout" 2>/dev/null && pwd -P) || exit 0
+factory_env=${FACTORY_ENV_FILE:-}
+if [ -z "$factory_env" ] && [ -n "${HOME:-}" ]; then
+  factory_env="$HOME/.config/factory/env"
 fi
-
-[ -d "$checkout" ] || exit 0
-[ -f "$checkout/src/cli.ts" ] || exit 0
+if [ -n "$factory_env" ] && [ -f "$factory_env" ]; then
+  set -a
+  . "$factory_env" 2>/dev/null || exit 0
+  set +a
+fi
 
 factory_url=${FACTORY_URL:-}
-if [ -z "$factory_url" ]; then
-  database=${FACTORY_DB:-$checkout/factory.sqlite}
-  [ -f "$database" ] || exit 0
+factory_cli=${FACTORY_CLI:-}
+if [ -z "$factory_cli" ]; then
+  factory_cli=$(command -v factory 2>/dev/null || true)
 fi
 
-bun_path=$(command -v bun 2>/dev/null || true)
-if [ ! -x "$bun_path" ] && [ -x /opt/homebrew/bin/bun ]; then
-  bun_path=/opt/homebrew/bin/bun
+if [ -n "$factory_cli" ]; then
+  [ -x "$factory_cli" ] || exit 0
+else
+  script_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) || exit 0
+  default_checkout=$(cd "$script_dir/.." 2>/dev/null && pwd -P) || exit 0
+  checkout=${FACTORY_CHECKOUT:-$default_checkout}
+
+  if command -v realpath >/dev/null 2>&1; then
+    checkout=$(realpath "$checkout" 2>/dev/null || printf '%s' "$checkout")
+  elif [ -d "$checkout" ]; then
+    checkout=$(cd "$checkout" 2>/dev/null && pwd -P) || exit 0
+  fi
+
+  [ -d "$checkout" ] || exit 0
+  [ -f "$checkout/src/cli.ts" ] || exit 0
+
+  if [ -z "$factory_url" ]; then
+    database=${FACTORY_DB:-$checkout/factory.sqlite}
+    [ -f "$database" ] || exit 0
+  fi
+
+  bun_path=$(command -v bun 2>/dev/null || true)
+  if [ ! -x "$bun_path" ] && [ -x /opt/homebrew/bin/bun ]; then
+    bun_path=/opt/homebrew/bin/bun
+  fi
+  if [ ! -x "$bun_path" ] && [ -n "${HOME:-}" ] && [ -x "$HOME/.bun/bin/bun" ]; then
+    bun_path=$HOME/.bun/bin/bun
+  fi
+  [ -x "$bun_path" ] || exit 0
 fi
-if [ ! -x "$bun_path" ] && [ -n "${HOME:-}" ] && [ -x "$HOME/.bun/bin/bun" ]; then
-  bun_path=$HOME/.bun/bin/bun
-fi
-[ -x "$bun_path" ] || exit 0
 
 workspace_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$cwd")
 origin=$(git -C "$workspace_root" remote get-url origin 2>/dev/null || true)
@@ -79,22 +98,31 @@ branch=$(git -C "$workspace_root" branch --show-current 2>/dev/null || true)
 run_brief() {
   selector=$1
   selector_value=$2
-  cd "$checkout" 2>/dev/null || return 1
-  if [ -n "$factory_url" ]; then
+  if [ -n "$factory_cli" ]; then
     if [ -n "$branch" ]; then
-      FACTORY_URL="$factory_url" FACTORY_ACCESS_TOKEN_FILE="${FACTORY_ACCESS_TOKEN_FILE:-}" \
-        "$bun_path" run src/cli.ts project brief "$selector" "$selector_value" \
+      "$factory_cli" project brief "$selector" "$selector_value" \
         --branch-name "$branch" 2>/dev/null
     else
-      FACTORY_URL="$factory_url" FACTORY_ACCESS_TOKEN_FILE="${FACTORY_ACCESS_TOKEN_FILE:-}" \
-        "$bun_path" run src/cli.ts project brief "$selector" "$selector_value" 2>/dev/null
+      "$factory_cli" project brief "$selector" "$selector_value" 2>/dev/null
     fi
-  elif [ -n "$branch" ]; then
-    "$bun_path" run src/cli.ts project brief "$selector" "$selector_value" \
-      --branch-name "$branch" --database "$database" 2>/dev/null
   else
-    "$bun_path" run src/cli.ts project brief "$selector" "$selector_value" \
-      --database "$database" 2>/dev/null
+    cd "$checkout" 2>/dev/null || return 1
+    if [ -n "$factory_url" ]; then
+      if [ -n "$branch" ]; then
+        FACTORY_URL="$factory_url" FACTORY_ACCESS_TOKEN_FILE="${FACTORY_ACCESS_TOKEN_FILE:-}" \
+          "$bun_path" run src/cli.ts project brief "$selector" "$selector_value" \
+          --branch-name "$branch" 2>/dev/null
+      else
+        FACTORY_URL="$factory_url" FACTORY_ACCESS_TOKEN_FILE="${FACTORY_ACCESS_TOKEN_FILE:-}" \
+          "$bun_path" run src/cli.ts project brief "$selector" "$selector_value" 2>/dev/null
+      fi
+    elif [ -n "$branch" ]; then
+      "$bun_path" run src/cli.ts project brief "$selector" "$selector_value" \
+        --branch-name "$branch" --database "$database" 2>/dev/null
+    else
+      "$bun_path" run src/cli.ts project brief "$selector" "$selector_value" \
+        --database "$database" 2>/dev/null
+    fi
   fi
 }
 

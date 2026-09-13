@@ -1,25 +1,13 @@
-import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
-import {
-  CODEX_ADDITIONAL_CONTEXT_LIMIT,
-  FACTORY_SESSION_HOOK_MATCHER,
-  mergeSessionStartHook,
-  factorySessionHookCommand,
-} from "../src/session-hooks";
+import { installSessionHooks } from "../src/session-hook-install";
 
 type InstallOptions = {
   claudeSettingsPath: string;
   codexHooksPath: string;
   dryRun: boolean;
   json: boolean;
-};
-
-type InstallResult = {
-  path: string;
-  changed: boolean;
-  dryRun: boolean;
 };
 
 function defaultPath(...parts: string[]): string {
@@ -61,84 +49,16 @@ function parseOptions(args: string[]): InstallOptions {
   return options;
 }
 
-async function readSettings(path: string, required: boolean): Promise<unknown> {
-  if (!existsSync(path)) {
-    if (required) {
-      throw new Error(`Claude settings file does not exist: ${path}`);
-    }
-    return {};
-  }
-
-  try {
-    return JSON.parse(await Bun.file(path).text()) as unknown;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Could not parse JSON at ${path}: ${message}`);
-  }
-}
-
-async function installOne(
-  path: string,
-  client: "claude" | "codex",
-  settings: unknown,
-  dryRun: boolean,
-  scriptPath: string,
-): Promise<InstallResult> {
-  const command = factorySessionHookCommand(client, scriptPath);
-  const merged = mergeSessionStartHook(settings, {
-    command,
-    timeout: 10,
-    matcher: FACTORY_SESSION_HOOK_MATCHER,
-    ...(client === "codex"
-      ? { additionalContextLimit: CODEX_ADDITIONAL_CONTEXT_LIMIT }
-      : {}),
-  });
-  const nextContent = `${JSON.stringify(merged, null, 2)}\n`;
-  const previousContent = existsSync(path) ? await Bun.file(path).text() : "";
-  const changed = previousContent !== nextContent;
-
-  if (changed && !dryRun) {
-    mkdirSync(dirname(path), { recursive: true });
-    await Bun.write(path, nextContent);
-  }
-
-  return { path, changed, dryRun };
-}
-
-export async function runInstaller(args: string[]): Promise<void> {
+export function runInstaller(args: string[]): void {
   const options = parseOptions(args);
   const scriptPath = resolve(import.meta.dir, "factory-session-brief-hook.sh");
-  const [claudeSettings, codexHooks] = await Promise.all([
-    readSettings(options.claudeSettingsPath, true),
-    readSettings(options.codexHooksPath, false),
-  ]);
-
-  const [claude, codex] = await Promise.all([
-    installOne(
-      options.claudeSettingsPath,
-      "claude",
-      claudeSettings,
-      options.dryRun,
-      scriptPath,
-    ),
-    installOne(
-      options.codexHooksPath,
-      "codex",
-      codexHooks,
-      options.dryRun,
-      scriptPath,
-    ),
-  ]);
-
-  const report = {
-    schemaVersion: 1,
-    install: {
-      claude,
-      codex,
-      scriptPath,
-      matcher: FACTORY_SESSION_HOOK_MATCHER,
-    },
-  };
+  const report = installSessionHooks({
+    claudeSettingsPath: options.claudeSettingsPath,
+    claudeSettingsRequired: true,
+    codexHooksPath: options.codexHooksPath,
+    dryRun: options.dryRun,
+    scriptPath,
+  });
 
   // --json is intentionally accepted for callers that require machine output;
   // the installer always emits this stable JSON report.
@@ -147,9 +67,11 @@ export async function runInstaller(args: string[]): Promise<void> {
 }
 
 if (import.meta.main) {
-  runInstaller(process.argv.slice(2)).catch((error: unknown) => {
+  try {
+    runInstaller(process.argv.slice(2));
+  } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(message);
     process.exitCode = 1;
-  });
+  }
 }

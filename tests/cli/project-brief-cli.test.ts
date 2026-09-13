@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import { createFactoryApplication } from "../../src/application";
+import { renderBrief } from "../../src/brief";
 
 async function runCli(
   args: string[],
@@ -33,6 +34,24 @@ function makeTemporaryPaths(prefix: string) {
 }
 
 describe("project brief CLI", () => {
+  test("renders the configured compiled client command", () => {
+    const rendered = renderBrief({
+      checkoutPath: "/agent/repository",
+      cliCommand: "factory",
+      openTasks: [],
+      project: { id: "project-id", name: "Factory", trackerLinks: [] },
+      remote: {
+        accessTokenFile: "/home/agent/.config/factory/access-token",
+        url: "http://192.168.1.10:3000",
+      },
+    });
+
+    expect(rendered.markdown).toContain(
+      "factory task detail --task-id TASK_ID --json",
+    );
+    expect(rendered.markdown).not.toContain("bun run src/cli.ts");
+  });
+
   test("fails closed when the selected Project does not exist", async () => {
     const { databasePath, temporaryDirectory } = makeTemporaryPaths(
       "software-factory-project-brief-missing-",
