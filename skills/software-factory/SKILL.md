@@ -30,6 +30,19 @@ export T3_ACCESS_TOKEN_FILE="${T3_ACCESS_TOKEN_FILE:-$HOME/Library/Application S
 The read-only token file is operator-provisioned with mode `0600`, and T3 reads are read-only.
 Never print, echo, or paste the token into a handoff.
 
+### Remote mode
+
+Agent machines that do not host the Factory service use the remote CLI instead of a local
+database. Set `FACTORY_URL` (the service on the local network, for example
+`http://192.168.1.20:3000`) and `FACTORY_ACCESS_TOKEN_FILE` (an absolute path to this machine's
+`0600` credential file, provisioned by Kevin). In remote mode omit `--database` from every
+command; passing both is an ambiguity error, and the CLI never falls back to a local database.
+Run `bun run src/cli.ts doctor --json` first: it reports the mode, API compatibility, and the
+machine identity with its Project scope, and exits non-zero when reporting cannot work. Reads
+and reports are limited to the credential's Projects; verification stays human-only in the
+dashboard. `subtask report` may add `--session-thread-id` with the current T3 thread so the
+report carries its session reference. Never print or paste the machine token.
+
 ## Choose the relevant operation
 
 - For routine work, use the reporting loop below. A fresh unambiguous session-start brief can supply the known project identity; inspect the selected task before reporting.

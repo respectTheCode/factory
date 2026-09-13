@@ -57,8 +57,11 @@ fi
 [ -d "$checkout" ] || exit 0
 [ -f "$checkout/src/cli.ts" ] || exit 0
 
-database=${FACTORY_DB:-$checkout/factory.sqlite}
-[ -f "$database" ] || exit 0
+factory_url=${FACTORY_URL:-}
+if [ -z "$factory_url" ]; then
+  database=${FACTORY_DB:-$checkout/factory.sqlite}
+  [ -f "$database" ] || exit 0
+fi
 
 bun_path=$(command -v bun 2>/dev/null || true)
 if [ ! -x "$bun_path" ] && [ -x /opt/homebrew/bin/bun ]; then
@@ -77,7 +80,16 @@ run_brief() {
   selector=$1
   selector_value=$2
   cd "$checkout" 2>/dev/null || return 1
-  if [ -n "$branch" ]; then
+  if [ -n "$factory_url" ]; then
+    if [ -n "$branch" ]; then
+      FACTORY_URL="$factory_url" FACTORY_ACCESS_TOKEN_FILE="${FACTORY_ACCESS_TOKEN_FILE:-}" \
+        "$bun_path" run src/cli.ts project brief "$selector" "$selector_value" \
+        --branch-name "$branch" 2>/dev/null
+    else
+      FACTORY_URL="$factory_url" FACTORY_ACCESS_TOKEN_FILE="${FACTORY_ACCESS_TOKEN_FILE:-}" \
+        "$bun_path" run src/cli.ts project brief "$selector" "$selector_value" 2>/dev/null
+    fi
+  elif [ -n "$branch" ]; then
     "$bun_path" run src/cli.ts project brief "$selector" "$selector_value" \
       --branch-name "$branch" --database "$database" 2>/dev/null
   else

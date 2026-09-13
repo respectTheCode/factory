@@ -55,8 +55,12 @@ export type BriefInput = {
   task?: BriefTask;
   openTasks: BriefOpenTask[];
   branchResolutionNote?: string;
-  databasePath: string;
+  databasePath?: string;
   checkoutPath: string;
+  remote?: {
+    url: string;
+    accessTokenFile: string;
+  };
   maxCharacters?: number;
 };
 
@@ -135,6 +139,14 @@ function renderOpenTasksSection(input: BriefInput): string[] {
   return lines;
 }
 
+// Long Subtask descriptions would otherwise consume the whole brief budget and
+// push the Commands section past the truncation point.
+const SUBTASK_DESCRIPTION_MAX = 240;
+
+function clip(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max - 1).trimEnd()}…`;
+}
+
 function renderSubtasksSection(task: BriefTask): string[] {
   const lines = ["## Subtasks"];
   if (task.subtasks.length === 0) {
@@ -147,7 +159,7 @@ function renderSubtasksSection(task: BriefTask): string[] {
       : subtask.awaitingVerification
         ? "awaiting verification"
         : subtask.description
-          ? oneLine(subtask.description)
+          ? clip(oneLine(subtask.description), SUBTASK_DESCRIPTION_MAX)
           : "(none)";
     lines.push(`- ${subtask.simpleId} — ${oneLine(subtask.name)}: ${detail}`);
   }
@@ -165,11 +177,20 @@ function renderHowToWork(): string[] {
 
 function renderCommands(input: BriefInput): string[] {
   const cli = "bun run src/cli.ts";
+  const command = (value: string) =>
+    input.remote
+      ? `${cli} ${value}`
+      : `${cli} ${value} --database "$FACTORY_DB"`;
   const lines = [
     `## Commands (run from ${input.checkoutPath})`,
     "",
     "```sh",
-    `export FACTORY_DB=${shellQuote(input.databasePath)}`,
+    ...(input.remote
+      ? [
+          `export FACTORY_URL=${shellQuote(input.remote.url)}`,
+          `export FACTORY_ACCESS_TOKEN_FILE=${shellQuote(input.remote.accessTokenFile)}`,
+        ]
+      : [`export FACTORY_DB=${shellQuote(input.databasePath ?? "")}`]),
     'export T3_BASE_URL="${T3_BASE_URL:-http://127.0.0.1:3773}"',
     'export T3_ACCESS_TOKEN_FILE="${T3_ACCESS_TOKEN_FILE:-$HOME/Library/Application Support/Factory/secrets/t3-read-token}"',
   ];
@@ -177,26 +198,32 @@ function renderCommands(input: BriefInput): string[] {
   if (input.task) {
     if (input.task.reportSubtaskId) {
       lines.push(
-        `${cli} subtask report --json --subtask-id ${input.task.reportSubtaskId} --state in_progress --reporter "$FACTORY_REPORTER" --evidence "..." --database "$FACTORY_DB"`,
+        command(
+          `subtask report --json --subtask-id ${input.task.reportSubtaskId} --state in_progress --reporter "$FACTORY_REPORTER" --evidence "..."`,
+        ),
       );
     }
     if (input.task.branchName) {
       lines.push(
-        `${cli} session auto-link --project-id ${input.project.id} --task-id ${input.task.simpleId} --branch-name ${shellQuote(input.task.branchName)} --json --database "$FACTORY_DB"`,
+        command(
+          `session auto-link --project-id ${input.project.id} --task-id ${input.task.simpleId} --branch-name ${shellQuote(input.task.branchName)} --json`,
+        ),
       );
     }
     if (input.task.reportSubtaskId) {
       lines.push(
-        `${cli} subtask history --subtask-id ${input.task.reportSubtaskId} --json --database "$FACTORY_DB"`,
+        command(
+          `subtask history --subtask-id ${input.task.reportSubtaskId} --json`,
+        ),
       );
     }
-    lines.push(
-      `${cli} task detail --task-id ${input.task.simpleId} --json --database "$FACTORY_DB"`,
-    );
+    lines.push(command(`task detail --task-id ${input.task.simpleId} --json`));
   } else {
     lines.push(
-      `${cli} task detail --task-id TASK_ID --json --database "$FACTORY_DB"`,
-      `${cli} subtask report --json --subtask-id SUBTASK_ID --state in_progress --reporter "$FACTORY_REPORTER" --evidence "..." --database "$FACTORY_DB"`,
+      command("task detail --task-id TASK_ID --json"),
+      command(
+        'subtask report --json --subtask-id SUBTASK_ID --state in_progress --reporter "$FACTORY_REPORTER" --evidence "..."',
+      ),
     );
   }
 
@@ -237,7 +264,9 @@ function truncateBrief(
   }
 
   const continuation = input.task
-    ? `bun run src/cli.ts task detail --task-id ${input.task.simpleId} --json --database \"$FACTORY_DB\"`
+    ? input.remote
+      ? `bun run src/cli.ts task detail --task-id ${input.task.simpleId} --json`
+      : `bun run src/cli.ts task detail --task-id ${input.task.simpleId} --json --database \"$FACTORY_DB\"`
     : `bun run src/cli.ts project status --project-id ${input.project.id}`;
   const notice = `[Factory brief truncated to ${maxCharacters} of ${full.length} characters. Run: ${continuation}]`;
   const prefixBudget = Math.max(0, maxCharacters - notice.length - 1);

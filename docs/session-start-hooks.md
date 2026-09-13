@@ -35,7 +35,11 @@ The hook uses these environment overrides:
 - `FACTORY_CHECKOUT` — Factory checkout containing `src/cli.ts`; by default it
   is the checkout one directory above this script.
 - `FACTORY_DB` — Factory SQLite database; by default it is
-  `$FACTORY_CHECKOUT/factory.sqlite`.
+  `$FACTORY_CHECKOUT/factory.sqlite`. Ignored when `FACTORY_URL` is set.
+- `FACTORY_URL` and `FACTORY_ACCESS_TOKEN_FILE` — remote mode. When
+  `FACTORY_URL` is set the hook passes no `--database` flag and the brief
+  exports these two variables instead of `FACTORY_DB`, so the session's
+  commands run against the remote service with the machine credential.
 
 The hook locates Bun through `command -v bun`, `/opt/homebrew/bin/bun`, and then
 `$HOME/.bun/bin/bun`. It passes the Git-origin selector first when an origin is

@@ -57,7 +57,7 @@ function makeFakeCheckout(): { directory: string; database: string } {
     '  console.error("brief failed");',
     "  process.exit(1);",
     "}",
-    'process.stdout.write(process.env.FAKE_BRIEF ?? "# Factory brief\\n\\nTracked project");',
+    'process.stdout.write(process.env.FAKE_CAPTURE === "1" ? JSON.stringify({ args: process.argv.slice(2), accessTokenFile: process.env.FACTORY_ACCESS_TOKEN_FILE, url: process.env.FACTORY_URL }) : (process.env.FAKE_BRIEF ?? "# Factory brief\\n\\nTracked project"));',
     "",
   ].join("\n");
 
@@ -354,6 +354,40 @@ describe("session-start hook installer", () => {
 });
 
 describe("factory session brief hook", () => {
+  test("passes remote settings and omits the local database", () => {
+    const fixture = makeFakeCheckout();
+    try {
+      const prefix =
+        "Factory brief for this checkout (SessionStart hook). Act on it; full rules are in the software-factory skill.\n\n";
+      const result = runHook(
+        "codex",
+        JSON.stringify({
+          cwd: fixture.directory,
+          hook_event_name: "SessionStart",
+          source: "startup",
+        }),
+        {
+          FACTORY_ACCESS_TOKEN_FILE: "/tmp/factory-access-token",
+          FACTORY_CHECKOUT: fixture.directory,
+          FACTORY_URL: "http://192.168.1.20:3000",
+          FAKE_CAPTURE: "1",
+        },
+      );
+      expect(result.status).toBe(0);
+      const capture = JSON.parse(result.stdout.slice(prefix.length)) as {
+        accessTokenFile: string;
+        args: string[];
+        url: string;
+      };
+      expect(capture.accessTokenFile).toBe("/tmp/factory-access-token");
+      expect(capture.url).toBe("http://192.168.1.20:3000");
+      expect(capture.args).not.toContain("--database");
+      expect(capture.args).not.toContain(fixture.database);
+    } finally {
+      rmSync(fixture.directory, { force: true, recursive: true });
+    }
+  });
+
   test("stays silent when the brief command fails", () => {
     const fixture = makeFakeCheckout();
     try {

@@ -6,10 +6,16 @@ import {
   checkFactoryDatabase,
   createFactoryApplication,
   type ArchiveState,
+  type FactoryApplication,
+  type ProjectHierarchy,
+  type ProjectMetadata,
+  type ProjectSummary,
   type ReportedState,
+  type TaskDetail,
   type VerificationDecision,
   type WorkState,
 } from "./application";
+import { FACTORY_API_VERSION } from "./api-version";
 import { createGitHubStatusReader, parseGitHubPullRequestUrl } from "./github";
 import {
   DEFAULT_BRIEF_MAX_CHARACTERS,
@@ -21,8 +27,48 @@ import {
 import { createT3Coordinator } from "./t3-coordinator";
 import { createT3ActivityReader, MAX_T3_THREAD_TURN_LIMIT } from "./t3";
 import { resolveT3AccessToken } from "./t3-credential";
+import { createMachineCredentialStore } from "./machine-credential";
+import {
+  createRemoteFactoryClient,
+  type FactoryRemoteBriefData,
+  type FactoryRemoteClient,
+} from "./remote-client";
 
 const SCHEMA_VERSION = 1 as const;
+
+type FactoryBackend = Pick<
+  FactoryRemoteClient,
+  | "addProjectTrackerLink"
+  | "addTaskTrackerLink"
+  | "archiveSubtask"
+  | "archiveTask"
+  | "createProject"
+  | "createSubtask"
+  | "createTask"
+  | "getAttentionProjection"
+  | "getPortfolioStatus"
+  | "getProjectBriefData"
+  | "getProjectContext"
+  | "getProjectDetail"
+  | "getProjectStatus"
+  | "getSubtaskDetail"
+  | "getSubtaskReportHistory"
+  | "getSubtaskVerificationHistory"
+  | "getTaskDetail"
+  | "getTaskStatus"
+  | "listProjects"
+  | "removeProject"
+  | "reorderSubtasks"
+  | "reorderTasks"
+  | "reportSubtaskStatus"
+  | "restoreSubtask"
+  | "restoreTask"
+  | "resumeTaskRollup"
+  | "setTaskWorkState"
+  | "updateProject"
+  | "updateSubtask"
+  | "updateTask"
+>;
 
 type ParsedArgs = {
   command: string[];
@@ -287,8 +333,12 @@ function firstReportLine(report: {
   return value?.split(/\r?\n/, 1)[0]?.trim() || undefined;
 }
 
-function makeBriefInput({
-  application,
+function isoDate(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+async function makeBriefInput({
+  backend,
   checkoutPath,
   databasePath,
   hierarchy,
@@ -297,25 +347,21 @@ function makeBriefInput({
   projectDetail,
   selectedTask,
   branchResolutionNote,
+  briefData,
+  remote,
 }: {
-  application: ReturnType<typeof createFactoryApplication>;
+  backend: FactoryBackend;
   checkoutPath: string;
-  databasePath: string;
-  hierarchy: ReturnType<
-    ReturnType<typeof createFactoryApplication>["getProjectHierarchy"]
-  >;
+  databasePath?: string;
+  hierarchy: ProjectHierarchy;
   maxCharacters: number;
-  project: ReturnType<
-    ReturnType<typeof createFactoryApplication>["listProjects"]
-  >[number];
-  projectDetail: ReturnType<
-    ReturnType<typeof createFactoryApplication>["getProjectDetail"]
-  >;
-  selectedTask?: ReturnType<
-    ReturnType<typeof createFactoryApplication>["getTaskDetail"]
-  >;
+  project: ProjectSummary;
+  projectDetail: ProjectMetadata;
+  selectedTask?: TaskDetail;
   branchResolutionNote?: string;
-}): BriefInput {
+  briefData?: FactoryRemoteBriefData;
+  remote?: { url: string; accessTokenFile: string };
+}): Promise<BriefInput> {
   let task: BriefTask | undefined;
   if (selectedTask) {
     const hierarchyTask = hierarchy.tasks.find(
@@ -327,40 +373,46 @@ function makeBriefInput({
       );
     }
 
-    const status = application.getTaskStatus(selectedTask.id);
-    const subtasks: BriefSubtask[] = hierarchyTask.subtasks
-      .filter((subtask) => subtask.archiveState === undefined)
-      .map((subtask) => {
-        const subtaskStatus = status.subtasks.find(
-          (candidate) => candidate.subtaskId === subtask.id,
-        );
-        const reports = application.getSubtaskReportHistory(subtask.id);
-        const latestReport = reports.at(-1);
-        return {
-          id: subtask.id,
-          simpleId: subtask.simpleId,
-          name: subtask.name,
-          ...(subtask.description === undefined
-            ? {}
-            : { description: subtask.description }),
-          effectiveState: subtaskStatus?.effectiveState ?? "planned",
-          accepted:
-            subtaskStatus?.reportedState === "complete" &&
-            subtaskStatus.verificationState === "accepted",
-          awaitingVerification:
-            subtaskStatus?.effectiveState === "awaiting_verification" &&
-            subtaskStatus.verificationState !== "accepted",
-          ...(latestReport
-            ? {
-                latestReport: {
-                  state: latestReport.reportedState,
-                  reporter: latestReport.reporter,
-                  createdAt: latestReport.createdAt.toISOString(),
-                },
-              }
-            : {}),
-        };
+    const status =
+      briefData?.taskStatuses.find(
+        (candidate) => candidate.taskId === selectedTask.id,
+      ) ?? (await backend.getTaskStatus(selectedTask.id));
+    const subtasks: BriefSubtask[] = [];
+    for (const subtask of hierarchyTask.subtasks.filter(
+      (candidate) => candidate.archiveState === undefined,
+    )) {
+      const subtaskStatus = status.subtasks.find(
+        (candidate) => candidate.subtaskId === subtask.id,
+      );
+      const reports =
+        briefData?.reports[subtask.id] ??
+        (await backend.getSubtaskReportHistory(subtask.id));
+      const latestReport = reports.at(-1);
+      subtasks.push({
+        id: subtask.id,
+        simpleId: subtask.simpleId,
+        name: subtask.name,
+        ...(subtask.description === undefined
+          ? {}
+          : { description: subtask.description }),
+        effectiveState: subtaskStatus?.effectiveState ?? "planned",
+        accepted:
+          subtaskStatus?.reportedState === "complete" &&
+          subtaskStatus.verificationState === "accepted",
+        awaitingVerification:
+          subtaskStatus?.effectiveState === "awaiting_verification" &&
+          subtaskStatus.verificationState !== "accepted",
+        ...(latestReport
+          ? {
+              latestReport: {
+                state: latestReport.reportedState,
+                reporter: latestReport.reporter,
+                createdAt: isoDate(latestReport.createdAt),
+              },
+            }
+          : {}),
       });
+    }
     const reportSubtaskId = subtasks.find(
       (subtask) => !subtask.accepted && !subtask.awaitingVerification,
     )?.simpleId;
@@ -398,20 +450,26 @@ function makeBriefInput({
   return {
     branchResolutionNote,
     checkoutPath,
-    databasePath,
+    ...(databasePath === undefined ? {} : { databasePath }),
+    ...(remote === undefined ? {} : { remote }),
     maxCharacters,
-    openTasks: hierarchy.tasks
-      .filter((candidate) => candidate.archiveState === undefined)
-      .map((candidate) => {
-        const taskDetail = application.getTaskDetail(candidate.id);
-        return {
-          id: candidate.id,
-          simpleId: candidate.simpleId,
-          name: candidate.name,
-          ...(taskDetail.priority ? { priority: taskDetail.priority } : {}),
-          workState: candidate.workState ?? "planned",
-        };
-      }),
+    openTasks: await Promise.all(
+      hierarchy.tasks
+        .filter((candidate) => candidate.archiveState === undefined)
+        .map(async (candidate) => {
+          const taskDetail =
+            briefData?.taskDetails.find(
+              (detail) => detail.id === candidate.id,
+            ) ?? (await backend.getTaskDetail(candidate.id));
+          return {
+            id: candidate.id,
+            simpleId: candidate.simpleId,
+            name: candidate.name,
+            ...(taskDetail.priority ? { priority: taskDetail.priority } : {}),
+            workState: candidate.workState ?? "planned",
+          };
+        }),
+    ),
     project: {
       id: project.id,
       name: project.name,
@@ -448,18 +506,16 @@ function normalizeGitOriginUrl(value: string): string {
   }
 }
 
-function projectsMatchingGitOrigin(
-  application: ReturnType<typeof createFactoryApplication>,
+async function projectsMatchingGitOrigin(
+  backend: FactoryBackend,
   gitOriginUrl: string,
 ) {
   const normalizedOrigin = normalizeGitOriginUrl(gitOriginUrl);
-  return application
-    .listProjects()
-    .filter(
-      (project) =>
-        project.gitOriginUrl !== undefined &&
-        normalizeGitOriginUrl(project.gitOriginUrl) === normalizedOrigin,
-    );
+  return (await backend.listProjects()).filter(
+    (project) =>
+      project.gitOriginUrl !== undefined &&
+      normalizeGitOriginUrl(project.gitOriginUrl) === normalizedOrigin,
+  );
 }
 
 function workspaceRootFlag(flags: Map<string, string>): string | undefined {
@@ -469,14 +525,14 @@ function workspaceRootFlag(flags: Map<string, string>): string | undefined {
   return normalizeWorkspaceRoot(resolve(value.trim()));
 }
 
-function projectsMatchingContext(
-  application: ReturnType<typeof createFactoryApplication>,
+async function projectsMatchingContext(
+  backend: FactoryBackend,
   {
     gitOriginUrl,
     workspaceRoot,
   }: { gitOriginUrl?: string; workspaceRoot?: string },
 ) {
-  return application.listProjects().filter((project) => {
+  return (await backend.listProjects()).filter((project) => {
     if (
       gitOriginUrl !== undefined &&
       (project.gitOriginUrl === undefined ||
@@ -508,9 +564,158 @@ function contextSelectorDescription({
   ].join(" and ");
 }
 
+function createLocalBackend(application: FactoryApplication): FactoryBackend {
+  return {
+    addProjectTrackerLink: async (input) =>
+      application.addProjectTrackerLink(input),
+    addTaskTrackerLink: async (input) => application.addTaskTrackerLink(input),
+    archiveSubtask: async (subtaskId, archiveState) =>
+      application.archiveSubtask(subtaskId, archiveState),
+    archiveTask: async (taskId, archiveState) =>
+      application.archiveTask(taskId, archiveState),
+    createProject: async (input) => application.createProject(input),
+    createSubtask: async (input) => application.createSubtask(input),
+    createTask: async (input) => application.createTask(input),
+    getAttentionProjection: async () => application.getAttentionProjection(),
+    getPortfolioStatus: async () => application.getPortfolioStatus(),
+    getProjectBriefData: async (projectId) => {
+      const project = application
+        .listProjects()
+        .find(({ id }) => id === projectId);
+      if (!project) throw new Error(`Project ${projectId} does not exist.`);
+      const hierarchy = application.getProjectHierarchy(projectId);
+      const reports = Object.fromEntries(
+        hierarchy.tasks.flatMap((task) =>
+          task.subtasks.map((subtask) => [
+            subtask.id,
+            application.getSubtaskReportHistory(subtask.id),
+          ]),
+        ),
+      );
+      return {
+        hierarchy,
+        project,
+        projectDetail: application.getProjectDetail(projectId),
+        reports,
+        taskDetails: hierarchy.tasks.map((task) =>
+          application.getTaskDetail(task.id),
+        ),
+        taskStatuses: hierarchy.tasks.map((task) =>
+          application.getTaskStatus(task.id),
+        ),
+      } satisfies FactoryRemoteBriefData;
+    },
+    getProjectContext: async ({ branchName, projectId }) => {
+      const hierarchy = application.getProjectHierarchy(projectId);
+      const projectDetail = application.getProjectDetail(projectId);
+      let tasks = hierarchy.tasks.map((task) => ({
+        ...application.getTaskDetail(task.id),
+        subtasks: task.subtasks,
+      }));
+      if (branchName) {
+        tasks = tasks.filter((task) => task.branchName === branchName);
+        if (tasks.length === 0) {
+          throw new Error(
+            `No Factory Task in Project ${projectId} matches branch ${branchName}.`,
+          );
+        }
+        if (tasks.length > 1) {
+          throw new Error(
+            `Branch ${branchName} matches multiple Factory Tasks in Project ${projectId}: ${tasks
+              .map((task) => task.id)
+              .join(", ")}.`,
+          );
+        }
+      }
+      return {
+        id: hierarchy.id,
+        name: hierarchy.name,
+        ...(hierarchy.gitOriginUrl
+          ? { gitOriginUrl: hierarchy.gitOriginUrl }
+          : {}),
+        ...(hierarchy.workspaceRoot
+          ? { workspaceRoot: hierarchy.workspaceRoot }
+          : {}),
+        trackerLinks: projectDetail.trackerLinks,
+        tasks,
+      };
+    },
+    getProjectDetail: async (projectId) =>
+      application.getProjectDetail(projectId),
+    getProjectStatus: async (projectId) =>
+      application.getProjectStatus(projectId),
+    getSubtaskDetail: async (subtaskId) =>
+      application.getSubtaskDetail(subtaskId),
+    getSubtaskReportHistory: async (subtaskId) =>
+      application.getSubtaskReportHistory(subtaskId),
+    getSubtaskVerificationHistory: async (subtaskId) =>
+      application.getSubtaskVerificationHistory(subtaskId),
+    getTaskDetail: async (taskId) => application.getTaskDetail(taskId),
+    getTaskStatus: async (taskId) => application.getTaskStatus(taskId),
+    listProjects: async () => application.listProjects(),
+    removeProject: async (projectId) => application.removeProject(projectId),
+    reorderSubtasks: async (input) => application.reorderSubtasks(input),
+    reorderTasks: async (input) => application.reorderTasks(input),
+    reportSubtaskStatus: async (input) =>
+      application.reportSubtaskStatus(input),
+    restoreSubtask: async (subtaskId) => application.restoreSubtask(subtaskId),
+    restoreTask: async (taskId) => application.restoreTask(taskId),
+    resumeTaskRollup: async (taskId) => application.resumeTaskRollup(taskId),
+    setTaskWorkState: async (input) => application.setTaskWorkState(input),
+    updateProject: async (input) => application.updateProject(input),
+    updateSubtask: async (input) => application.updateSubtask(input),
+    updateTask: async (input) => application.updateTask(input),
+  };
+}
+
 async function main(args: string[]): Promise<void> {
   const parsed = parseArgs(args);
   const [resource, action] = parsed.command;
+  const factoryUrl = Bun.env.FACTORY_URL?.trim();
+  const hasExplicitDatabase = parsed.flags.has("database");
+  const localOnly =
+    (resource === "database" && (action === "backup" || action === "check")) ||
+    resource === "credential";
+
+  if (localOnly && factoryUrl && !hasExplicitDatabase) {
+    throw new Error(
+      "This command is local-only; pass --database explicitly when FACTORY_URL is set.",
+    );
+  }
+
+  if (localOnly && resource === "credential") {
+    const databasePath = parsed.flags.get("database") ?? "factory.sqlite";
+    const store = createMachineCredentialStore({ databasePath });
+    try {
+      if (action === "create") {
+        const projectIds = listFlag(parsed.flags, "project-ids");
+        if (projectIds.length === 0) {
+          throw new Error(
+            "Missing required --project-ids; provide one or more IDs separated by |.",
+          );
+        }
+        output({
+          credential: store.create({
+            machineId: requiredFlag(parsed.flags, "machine-id"),
+            projectIds,
+          }),
+        });
+        return;
+      }
+      if (action === "list") {
+        output({ credentials: store.list() });
+        return;
+      }
+      if (action === "revoke") {
+        const machineId = requiredFlag(parsed.flags, "machine-id");
+        store.revoke(machineId);
+        output({ revoked: { machineId } });
+        return;
+      }
+    } finally {
+      store.close();
+    }
+  }
 
   if (resource === "database" && action === "backup") {
     output({
@@ -532,23 +737,112 @@ async function main(args: string[]): Promise<void> {
     return;
   }
 
+  if (factoryUrl && hasExplicitDatabase) {
+    throw new Error(
+      "Ambiguous Factory mode: FACTORY_URL and --database name both a remote service and a local database; name only one.",
+    );
+  }
+
   const databasePath = parsed.flags.get("database") ?? "factory.sqlite";
-  const application = createFactoryApplication({ databasePath });
+  const remoteClient = factoryUrl
+    ? createRemoteFactoryClient({
+        FACTORY_ACCESS_TOKEN_FILE: Bun.env.FACTORY_ACCESS_TOKEN_FILE,
+        FACTORY_URL: factoryUrl,
+      })
+    : undefined;
+  if (remoteClient && resource !== "doctor") await remoteClient.ensureReady();
+
+  const localApplication = remoteClient
+    ? undefined
+    : createFactoryApplication({ databasePath });
+  const application: FactoryBackend =
+    remoteClient ?? createLocalBackend(localApplication!);
   const configuredT3Timeout = Bun.env.T3_TIMEOUT_MS?.trim();
-  const t3Coordinator = createT3Coordinator({
-    application,
-    reader: createT3ActivityReader({
-      baseUrl: Bun.env.T3_BASE_URL,
-      timeoutMs:
-        configuredT3Timeout === undefined
-          ? undefined
-          : Number(configuredT3Timeout),
-      token: resolveT3AccessToken({
-        T3_ACCESS_TOKEN: Bun.env.T3_ACCESS_TOKEN,
-        T3_ACCESS_TOKEN_FILE: Bun.env.T3_ACCESS_TOKEN_FILE,
-      }),
-    }),
-  });
+  const t3Coordinator = remoteClient
+    ? {
+        autoLinkThread: (input: {
+          branchName: string;
+          projectId: string;
+          taskId?: string;
+          subtaskId?: string;
+        }) => remoteClient.sessionAutoLink(input),
+        linkThread: (input: {
+          projectId: string;
+          taskId?: string;
+          subtaskId?: string;
+          threadId: string;
+        }) => remoteClient.sessionLink(input),
+        status: (projectId?: string) => remoteClient.projectT3Status(projectId),
+        threadDetail: (threadId: string, turnLimit: number) =>
+          remoteClient.sessionDetail(threadId, turnLimit),
+        unlinkThread: (threadId: string, associationId?: string) =>
+          remoteClient.sessionUnlink(threadId, associationId),
+      }
+    : createT3Coordinator({
+        application: localApplication!,
+        reader: createT3ActivityReader({
+          baseUrl: Bun.env.T3_BASE_URL,
+          timeoutMs:
+            configuredT3Timeout === undefined
+              ? undefined
+              : Number(configuredT3Timeout),
+          token: resolveT3AccessToken({
+            T3_ACCESS_TOKEN: Bun.env.T3_ACCESS_TOKEN,
+            T3_ACCESS_TOKEN_FILE: Bun.env.T3_ACCESS_TOKEN_FILE,
+          }),
+        }),
+      });
+
+  if (resource === "doctor") {
+    const version = remoteClient
+      ? await remoteClient.version()
+      : {
+          apiVersion: FACTORY_API_VERSION,
+          revision: "local",
+          schemaVersion: 1 as const,
+        };
+    const identity =
+      remoteClient && version.apiVersion === FACTORY_API_VERSION
+        ? await remoteClient.whoami()
+        : null;
+    const doctor = {
+      ...(remoteClient
+        ? { url: remoteClient.url }
+        : { databasePath: resolve(databasePath) }),
+      apiCompatibility: {
+        compatible: version.apiVersion === FACTORY_API_VERSION,
+        expected: FACTORY_API_VERSION,
+        actual: version.apiVersion,
+      },
+      identity,
+      mode: remoteClient ? ("remote" as const) : ("local" as const),
+      ok: version.apiVersion === FACTORY_API_VERSION,
+      server: { apiVersion: version.apiVersion, revision: version.revision },
+    };
+    if (parsed.flags.get("json") === "true") {
+      output({ doctor });
+    } else {
+      const address = remoteClient ? remoteClient.url : resolve(databasePath);
+      console.log(
+        [
+          `mode: ${doctor.mode}`,
+          `${remoteClient ? "url" : "databasePath"}: ${address}`,
+          `server: API ${doctor.server.apiVersion}, revision ${doctor.server.revision}`,
+          `api compatibility: ${doctor.apiCompatibility.compatible ? "ok" : "incompatible"}`,
+          ...(identity?.machine
+            ? [
+                `identity: ${identity.machine.machineId} (${identity.machine.projectIds.join(", ")})`,
+              ]
+            : identity?.human
+              ? [`identity: human ${identity.human.name}`]
+              : []),
+          `ok: ${doctor.ok}`,
+        ].join("\n"),
+      );
+    }
+    if (!doctor.ok) process.exitCode = 1;
+    return;
+  }
 
   if (resource === "project" && action === "remove") {
     if (parsed.flags.get("confirm") !== "true") {
@@ -557,13 +851,13 @@ async function main(args: string[]): Promise<void> {
       );
     }
     const projectId = requiredFlag(parsed.flags, "project-id");
-    application.removeProject(projectId);
+    await application.removeProject(projectId);
     output({ removed: { projectId } });
     return;
   }
 
   if (resource === "project" && action === "create") {
-    const project = application.createProject({
+    const project = await application.createProject({
       gitOriginUrl:
         parsed.flags.get("git-origin-url") ?? parsed.flags.get("git-url"),
       name: requiredFlag(parsed.flags, "name"),
@@ -589,8 +883,8 @@ async function main(args: string[]): Promise<void> {
         "Provide at least one of --git-origin-url, --t3-project-id, or --workspace-root.",
       );
     }
-    const existing = application.getProjectDetail(projectId);
-    const project = application.updateProject({
+    const existing = await application.getProjectDetail(projectId);
+    const project = await application.updateProject({
       gitOriginUrl: gitOriginUrl ?? existing.gitOriginUrl ?? null,
       projectId,
       ...(t3ProjectId === undefined ? {} : { t3ProjectId }),
@@ -603,8 +897,8 @@ async function main(args: string[]): Promise<void> {
   if (resource === "project" && action === "list") {
     const gitOriginUrl = gitOriginFlag(parsed.flags);
     const projects = gitOriginUrl
-      ? projectsMatchingGitOrigin(application, gitOriginUrl)
-      : application.listProjects();
+      ? await projectsMatchingGitOrigin(application, gitOriginUrl)
+      : await application.listProjects();
     output({ projects: projects.map(projectSummary) });
     return;
   }
@@ -618,7 +912,7 @@ async function main(args: string[]): Promise<void> {
       );
     }
 
-    const projects = projectsMatchingContext(application, {
+    const projects = await projectsMatchingContext(application, {
       gitOriginUrl,
       workspaceRoot,
     });
@@ -639,8 +933,6 @@ async function main(args: string[]): Promise<void> {
 
     const project = projects[0];
     if (!project) throw new Error("Factory Project resolution failed.");
-    const hierarchy = application.getProjectHierarchy(project.id);
-    const projectDetail = application.getProjectDetail(project.id);
     const branchFlag =
       parsed.flags.get("branch-name") ?? parsed.flags.get("branch");
     const branchName = branchFlag?.trim();
@@ -648,39 +940,11 @@ async function main(args: string[]): Promise<void> {
       throw new Error("--branch-name must not be empty.");
     }
 
-    let tasks = hierarchy.tasks.map((task) => ({
-      ...application.getTaskDetail(task.id),
-      subtasks: task.subtasks,
-    }));
-    if (branchName) {
-      tasks = tasks.filter((task) => task.branchName === branchName);
-      if (tasks.length === 0) {
-        throw new Error(
-          `No Factory Task in Project ${project.id} matches branch ${branchName}.`,
-        );
-      }
-      if (tasks.length > 1) {
-        throw new Error(
-          `Branch ${branchName} matches multiple Factory Tasks in Project ${project.id}: ${tasks
-            .map((task) => task.id)
-            .join(", ")}.`,
-        );
-      }
-    }
-
     output({
-      context: {
-        id: hierarchy.id,
-        name: hierarchy.name,
-        ...(hierarchy.gitOriginUrl
-          ? { gitOriginUrl: hierarchy.gitOriginUrl }
-          : {}),
-        ...(hierarchy.workspaceRoot
-          ? { workspaceRoot: hierarchy.workspaceRoot }
-          : {}),
-        trackerLinks: projectDetail.trackerLinks,
-        tasks,
-      },
+      context: await application.getProjectContext({
+        ...(branchName === undefined ? {} : { branchName }),
+        projectId: project.id,
+      }),
     });
     return;
   }
@@ -694,7 +958,7 @@ async function main(args: string[]): Promise<void> {
       );
     }
 
-    const projects = projectsMatchingContext(application, {
+    const projects = await projectsMatchingContext(application, {
       gitOriginUrl,
       workspaceRoot,
     });
@@ -715,8 +979,8 @@ async function main(args: string[]): Promise<void> {
 
     const project = projects[0];
     if (!project) throw new Error("Factory Project resolution failed.");
-    const hierarchy = application.getProjectHierarchy(project.id);
-    const projectDetail = application.getProjectDetail(project.id);
+    const briefData = await application.getProjectBriefData(project.id);
+    const { hierarchy, projectDetail } = briefData;
     const branchFlag = parsed.flags.get("branch-name");
     const branchName = branchFlag?.trim();
     if (branchFlag !== undefined && !branchName) {
@@ -726,14 +990,12 @@ async function main(args: string[]): Promise<void> {
     const taskId = parsed.flags.has("task-id")
       ? requiredFlag(parsed.flags, "task-id")
       : undefined;
-    let selectedTask:
-      | ReturnType<ReturnType<typeof createFactoryApplication>["getTaskDetail"]>
-      | undefined;
+    let selectedTask: TaskDetail | undefined;
     let candidateTaskIds: string[] = [];
     let candidateTaskSimpleIds: string[] = [];
     let branchResolutionNote: string | undefined;
     if (taskId) {
-      const taskDetail = application.getTaskDetail(taskId);
+      const taskDetail = await application.getTaskDetail(taskId);
       if (taskDetail.projectId !== project.id) {
         throw new Error(
           `Factory Task ${taskId} does not belong to Project ${project.id}.`,
@@ -748,7 +1010,9 @@ async function main(args: string[]): Promise<void> {
       if (branchMatches.length === 1) {
         const matchingTask = branchMatches[0];
         if (!matchingTask) throw new Error("Factory Task resolution failed.");
-        selectedTask = application.getTaskDetail(matchingTask.id);
+        selectedTask =
+          briefData.taskDetails.find((task) => task.id === matchingTask.id) ??
+          (await application.getTaskDetail(matchingTask.id));
       } else if (branchMatches.length === 0) {
         branchResolutionNote = `Branch ${branchName} matches no Task.`;
       } else {
@@ -760,11 +1024,19 @@ async function main(args: string[]): Promise<void> {
 
     const maxCharacters = briefMaxCharacters(parsed.flags);
     const rendered = renderBrief(
-      makeBriefInput({
-        application,
+      await makeBriefInput({
+        backend: application,
+        briefData,
         branchResolutionNote,
         checkoutPath: resolve(process.cwd()),
-        databasePath: resolve(databasePath),
+        ...(remoteClient
+          ? {
+              remote: {
+                accessTokenFile: Bun.env.FACTORY_ACCESS_TOKEN_FILE!.trim(),
+                url: remoteClient.url,
+              },
+            }
+          : { databasePath: resolve(databasePath) }),
         hierarchy,
         maxCharacters,
         project,
@@ -795,7 +1067,7 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "project" && action === "status") {
     output({
-      status: application.getProjectStatus(
+      status: await application.getProjectStatus(
         requiredFlag(parsed.flags, "project-id"),
       ),
     });
@@ -803,7 +1075,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "project" && action === "portfolio") {
-    output({ portfolio: application.getPortfolioStatus() });
+    output({ portfolio: await application.getPortfolioStatus() });
     return;
   }
 
@@ -813,26 +1085,26 @@ async function main(args: string[]): Promise<void> {
     const matchingProjectIds =
       gitOriginUrl || workspaceRoot
         ? new Set(
-            projectsMatchingContext(application, {
-              gitOriginUrl,
-              workspaceRoot,
-            }).map((project) => project.id),
+            (
+              await projectsMatchingContext(application, {
+                gitOriginUrl,
+                workspaceRoot,
+              })
+            ).map((project) => project.id),
           )
         : undefined;
     output({
-      attention: application
-        .getAttentionProjection()
-        .filter(
-          (item) =>
-            matchingProjectIds === undefined ||
-            matchingProjectIds.has(item.projectId),
-        ),
+      attention: (await application.getAttentionProjection()).filter(
+        (item) =>
+          matchingProjectIds === undefined ||
+          matchingProjectIds.has(item.projectId),
+      ),
     });
     return;
   }
 
   if (resource === "project" && action === "link") {
-    const link = application.addProjectTrackerLink({
+    const link = await application.addProjectTrackerLink({
       projectId: requiredFlag(parsed.flags, "project-id"),
       stableId: requiredFlag(parsed.flags, "stable-id"),
       system: trackerSystem(parsed.flags),
@@ -864,7 +1136,7 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "session" && action === "link") {
     output({
-      link: t3Coordinator.linkThread({
+      link: await t3Coordinator.linkThread({
         ...(parsed.flags.get("subtask-id") === undefined
           ? {}
           : { subtaskId: parsed.flags.get("subtask-id") }),
@@ -896,7 +1168,7 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "session" && action === "unlink") {
     output({
-      link: t3Coordinator.unlinkThread(
+      link: await t3Coordinator.unlinkThread(
         requiredFlag(parsed.flags, "thread-id"),
         parsed.flags.get("association-id"),
       ),
@@ -905,7 +1177,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "task" && action === "create") {
-    const task = application.createTask({
+    const task = await application.createTask({
       acceptanceCriteria: listFlag(parsed.flags, "acceptance-criteria"),
       branchName: parsed.flags.get("branch-name") ?? parsed.flags.get("branch"),
       dependencies: listFlag(parsed.flags, "dependencies"),
@@ -924,26 +1196,28 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "task" && action === "detail") {
     output({
-      task: application.getTaskDetail(requiredFlag(parsed.flags, "task-id")),
+      task: await application.getTaskDetail(
+        requiredFlag(parsed.flags, "task-id"),
+      ),
     });
     return;
   }
 
   if (resource === "task" && action === "resume-rollup") {
     const taskId = requiredFlag(parsed.flags, "task-id");
-    application.resumeTaskRollup(taskId);
-    output({ status: application.getTaskStatus(taskId) });
+    await application.resumeTaskRollup(taskId);
+    output({ status: await application.getTaskStatus(taskId) });
     return;
   }
 
   if (resource === "task" && action === "state") {
     const taskId = requiredFlag(parsed.flags, "task-id");
-    application.setTaskWorkState({
+    await application.setTaskWorkState({
       reason: parsed.flags.get("reason"),
       taskId,
       workState: editableTaskStateFlag(parsed.flags),
     });
-    output({ status: application.getTaskStatus(taskId) });
+    output({ status: await application.getTaskStatus(taskId) });
     return;
   }
 
@@ -951,7 +1225,7 @@ async function main(args: string[]): Promise<void> {
     const projectId = requiredFlag(parsed.flags, "project-id");
     const workState = workStateFlag(parsed.flags);
     const taskIds = orderedIdsFlag(parsed.flags, "task-ids");
-    application.reorderTasks({
+    await application.reorderTasks({
       orderedTaskIds: taskIds,
       projectId,
       workState,
@@ -983,14 +1257,14 @@ async function main(args: string[]): Promise<void> {
     }
     const taskId = requiredFlag(parsed.flags, "task-id");
     if (acceptanceCriteria !== undefined) {
-      const status = application.getTaskStatus(taskId);
+      const status = await application.getTaskStatus(taskId);
       if (status.taskState !== "planned") {
         throw new Error(
           "Acceptance criteria may only be changed during the planning phase while the Task is planned.",
         );
       }
     }
-    const task = application.updateTask({
+    const task = await application.updateTask({
       acceptanceCriteria,
       branchName,
       name: title,
@@ -1004,15 +1278,20 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "task" && action === "status") {
     output({
-      status: application.getTaskStatus(requiredFlag(parsed.flags, "task-id")),
+      status: await application.getTaskStatus(
+        requiredFlag(parsed.flags, "task-id"),
+      ),
     });
     return;
   }
 
   if (resource === "task" && action === "github-status") {
-    const task = application.getTaskDetail(
-      requiredFlag(parsed.flags, "task-id"),
-    );
+    const taskId = requiredFlag(parsed.flags, "task-id");
+    if (remoteClient) {
+      output({ status: await remoteClient.taskGithubStatus(taskId) });
+      return;
+    }
+    const task = await application.getTaskDetail(taskId);
     output({ status: await readGitHubStatus(task.pullRequestUrl) });
     return;
   }
@@ -1020,20 +1299,20 @@ async function main(args: string[]): Promise<void> {
   if (resource === "task" && action === "archive") {
     const taskId = requiredFlag(parsed.flags, "task-id");
     const archiveState = archiveStateFlag(parsed.flags);
-    application.archiveTask(taskId, archiveState);
+    await application.archiveTask(taskId, archiveState);
     output({ task: { archiveState, taskId } });
     return;
   }
 
   if (resource === "task" && action === "restore") {
     const taskId = requiredFlag(parsed.flags, "task-id");
-    application.restoreTask(taskId);
+    await application.restoreTask(taskId);
     output({ task: { archiveState: null, taskId } });
     return;
   }
 
   if (resource === "task" && action === "link") {
-    const link = application.addTaskTrackerLink({
+    const link = await application.addTaskTrackerLink({
       stableId: requiredFlag(parsed.flags, "stable-id"),
       system: trackerSystem(parsed.flags),
       taskId: requiredFlag(parsed.flags, "task-id"),
@@ -1045,7 +1324,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "subtask" && action === "create") {
-    const subtask = application.createSubtask({
+    const subtask = await application.createSubtask({
       description: parsed.flags.get("description")?.trim() || undefined,
       name: requiredFlag(parsed.flags, "name"),
       pullRequestUrl:
@@ -1072,7 +1351,7 @@ async function main(args: string[]): Promise<void> {
         "Provide at least one of --title, --description, --evidence, or --pull-request-url.",
       );
     }
-    const subtask = application.updateSubtask({
+    const subtask = await application.updateSubtask({
       description,
       evidence,
       name: title,
@@ -1084,11 +1363,19 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "subtask" && action === "report") {
-    const report = application.reportSubtaskStatus({
+    const report = await application.reportSubtaskStatus({
       evidence: parsed.flags.get("evidence"),
       reportedState: reportedStateFlag(parsed.flags),
       reporter: requiredFlag(parsed.flags, "reporter"),
       reason: parsed.flags.get("reason"),
+      ...(parsed.flags.get("session-thread-id") === undefined
+        ? {}
+        : {
+            sessionRef: {
+              externalThreadId: requiredFlag(parsed.flags, "session-thread-id"),
+              provider: "t3" as const,
+            },
+          }),
       subtaskId: requiredFlag(parsed.flags, "subtask-id"),
     });
     output({ report });
@@ -1099,7 +1386,7 @@ async function main(args: string[]): Promise<void> {
     const taskId = requiredFlag(parsed.flags, "task-id");
     const workState = workStateFlag(parsed.flags);
     const subtaskIds = orderedIdsFlag(parsed.flags, "subtask-ids");
-    application.reorderSubtasks({
+    await application.reorderSubtasks({
       orderedSubtaskIds: subtaskIds,
       taskId,
       workState,
@@ -1111,28 +1398,31 @@ async function main(args: string[]): Promise<void> {
   if (resource === "subtask" && action === "archive") {
     const subtaskId = requiredFlag(parsed.flags, "subtask-id");
     const archiveState = archiveStateFlag(parsed.flags);
-    application.archiveSubtask(subtaskId, archiveState);
+    await application.archiveSubtask(subtaskId, archiveState);
     output({ subtask: { archiveState, subtaskId } });
     return;
   }
 
   if (resource === "subtask" && action === "restore") {
     const subtaskId = requiredFlag(parsed.flags, "subtask-id");
-    application.restoreSubtask(subtaskId);
+    await application.restoreSubtask(subtaskId);
     output({ subtask: { archiveState: null, subtaskId } });
     return;
   }
 
   if (resource === "subtask" && action === "status") {
     const taskId = requiredFlag(parsed.flags, "task-id");
-    output({ status: application.getTaskStatus(taskId) });
+    output({ status: await application.getTaskStatus(taskId) });
     return;
   }
 
   if (resource === "subtask" && action === "github-status") {
-    const subtask = application.getSubtaskDetail(
-      requiredFlag(parsed.flags, "subtask-id"),
-    );
+    const subtaskId = requiredFlag(parsed.flags, "subtask-id");
+    if (remoteClient) {
+      output({ status: await remoteClient.subtaskGithubStatus(subtaskId) });
+      return;
+    }
+    const subtask = await application.getSubtaskDetail(subtaskId);
     output({ status: await readGitHubStatus(subtask.pullRequestUrl) });
     return;
   }
@@ -1141,8 +1431,9 @@ async function main(args: string[]): Promise<void> {
     const subtaskId = requiredFlag(parsed.flags, "subtask-id");
     output({
       history: {
-        reports: application.getSubtaskReportHistory(subtaskId),
-        verifications: application.getSubtaskVerificationHistory(subtaskId),
+        reports: await application.getSubtaskReportHistory(subtaskId),
+        verifications:
+          await application.getSubtaskVerificationHistory(subtaskId),
       },
     });
     return;
@@ -1156,7 +1447,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   throw new Error(
-    "Usage: database backup|check, project create|update|list|context|brief|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|state|resume-rollup|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify",
+    "Usage: doctor, credential create|list|revoke, database backup|check, project create|update|list|context|brief|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|state|resume-rollup|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify",
   );
 }
 

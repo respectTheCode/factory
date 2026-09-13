@@ -305,6 +305,17 @@ function createRouter(
   };
 
   return trpc.router({
+    session: trpc.router({
+      whoami: scopedProcedure().query(({ ctx }) => ({
+        human: ctx.human ? { name: ctx.human.name } : null,
+        machine: ctx.machine
+          ? {
+              machineId: ctx.machine.machineId,
+              projectIds: ctx.machine.projectIds,
+            }
+          : null,
+      })),
+    }),
     projects: trpc.router({
       create: humanProcedure()
         .input(
@@ -414,6 +425,83 @@ function createRouter(
             throw new Error(`Project ${input.projectId} does not exist.`);
           }
           return detail;
+        }),
+      context: scopedProcedure(fieldProjectId("projectId"))
+        .input(
+          z.object({
+            branchName: z.string().trim().min(1).optional(),
+            projectId: z.string().min(1),
+          }),
+        )
+        .query(({ input }) => {
+          const hierarchy = application.getProjectHierarchy(input.projectId);
+          const projectDetail = application.getProjectDetail(input.projectId);
+          let tasks = hierarchy.tasks.map((task) => ({
+            ...application.getTaskDetail(task.id),
+            subtasks: task.subtasks,
+          }));
+          if (input.branchName) {
+            tasks = tasks.filter(
+              (task) => task.branchName === input.branchName,
+            );
+            if (tasks.length === 0) {
+              throw new Error(
+                `No Factory Task in Project ${input.projectId} matches branch ${input.branchName}.`,
+              );
+            }
+            if (tasks.length > 1) {
+              throw new Error(
+                `Branch ${input.branchName} matches multiple Factory Tasks in Project ${input.projectId}: ${tasks
+                  .map((task) => task.id)
+                  .join(", ")}.`,
+              );
+            }
+          }
+          return {
+            id: hierarchy.id,
+            name: hierarchy.name,
+            ...(hierarchy.gitOriginUrl
+              ? { gitOriginUrl: hierarchy.gitOriginUrl }
+              : {}),
+            ...(hierarchy.workspaceRoot
+              ? { workspaceRoot: hierarchy.workspaceRoot }
+              : {}),
+            trackerLinks: projectDetail.trackerLinks,
+            tasks,
+          };
+        }),
+      brief: scopedProcedure(fieldProjectId("projectId"))
+        .input(z.object({ projectId: z.string().min(1) }))
+        .query(({ input }) => {
+          const project = application
+            .listProjects()
+            .find((candidate) => candidate.id === input.projectId);
+          if (!project) {
+            throw new Error(`Project ${input.projectId} does not exist.`);
+          }
+          const hierarchy = application.getProjectHierarchy(input.projectId);
+          const taskDetails = hierarchy.tasks.map((task) =>
+            application.getTaskDetail(task.id),
+          );
+          const taskStatuses = hierarchy.tasks.map((task) =>
+            application.getTaskStatus(task.id),
+          );
+          const reports = Object.fromEntries(
+            hierarchy.tasks.flatMap((task) =>
+              task.subtasks.map((subtask) => [
+                subtask.id,
+                application.getSubtaskReportHistory(subtask.id),
+              ]),
+            ),
+          );
+          return {
+            hierarchy,
+            project,
+            projectDetail: application.getProjectDetail(input.projectId),
+            reports,
+            taskDetails,
+            taskStatuses,
+          };
         }),
       updates: scopedProcedure(fieldProjectId("projectId"))
         .input(z.object({ projectId: z.string().min(1) }))
@@ -727,6 +815,15 @@ function createRouter(
         .query(({ input }) =>
           application.getSubtaskReportHistory(input.subtaskId),
         ),
+      detail: scopedProcedure((input) => {
+        const subtaskId = (input as { subtaskId?: unknown } | undefined)
+          ?.subtaskId;
+        return typeof subtaskId === "string"
+          ? application.getProjectIdForSubtask(subtaskId)
+          : undefined;
+      })
+        .input(z.object({ subtaskId: z.string().min(1) }))
+        .query(({ input }) => application.getSubtaskDetail(input.subtaskId)),
       verifications: scopedProcedure((input) => {
         const subtaskId = (input as { subtaskId?: unknown } | undefined)
           ?.subtaskId;

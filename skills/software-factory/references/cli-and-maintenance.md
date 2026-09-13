@@ -128,6 +128,18 @@ from its process environment; credentials are not stored in SQLite or emitted in
 missing token, denied private-repository access, or unavailable GitHub service is reported as an
 explicit status instead of being treated as passing.
 
+Remote mode uses `FACTORY_URL` and `FACTORY_ACCESS_TOKEN_FILE` and omits `--database`.
+Credential administration is local-only and runs on the service host with the service's
+database:
+
+```bash
+bun run src/cli.ts doctor --json
+bun run src/cli.ts credential create --machine-id mac-studio --project-ids "PROJECT_ID|OTHER_ID" \
+  --json --database "$FACTORY_DB"   # prints the token once; store it in the machine's 0600 file
+bun run src/cli.ts credential list --json --database "$FACTORY_DB"
+bun run src/cli.ts credential revoke --machine-id mac-studio --json --database "$FACTORY_DB"
+```
+
 Agents may change acceptance criteria only during the planning phase. Run `task status` first and
 make the edit only when the Task state is `planned`, before implementation begins. The CLI rejects
 criteria edits once the Task is active, blocked, awaiting verification, completed, or archived.

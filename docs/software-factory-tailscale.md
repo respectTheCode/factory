@@ -116,6 +116,36 @@ reports and planning edits are not yet authenticated; anyone who can reach the p
 them until the T-37 remote API lands. Verification is the exception: it requires the human
 session described next.
 
+## Remote agent access over the LAN
+
+Agent machines on the same local network call the service by IP with a per-machine credential.
+Reads, reports and planning edits require either a signed-in human session or a machine
+credential; unauthenticated callers are denied everything. Machine credentials are scoped to
+Projects and can never verify reports, create or delete Projects, or delete Tasks and Subtasks.
+
+Create a credential on the service host with the service's database. The token is printed once;
+store it on the agent machine in a `0600` file and never in the repository or a handoff:
+
+```bash
+bun run src/cli.ts credential create --machine-id mac-studio --project-ids "PROJECT_ID" \
+  --json --database "$FACTORY_DB"
+bun run src/cli.ts credential list --json --database "$FACTORY_DB"
+bun run src/cli.ts credential revoke --machine-id mac-studio --json --database "$FACTORY_DB"
+```
+
+On the agent machine:
+
+```bash
+export FACTORY_URL="http://<factory-lan-ip>:3000"
+export FACTORY_ACCESS_TOKEN_FILE="$HOME/.config/factory/access-token"
+bun run src/cli.ts doctor
+```
+
+The CLI checks `GET /version` before its first call and refuses an incompatible API. Plain
+`http://` is accepted only for loopback and private LAN addresses because the bearer token
+travels in the clear; the LAN boundary is the security boundary. The HTTP API lives at `/api`
+and shares the router, context and origin checks with the dashboard's WebSocket.
+
 ## Enable human verification
 
 Verifying a status report requires a signed-in human session. The server reads
