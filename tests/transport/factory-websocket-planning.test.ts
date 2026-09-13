@@ -14,6 +14,17 @@ type RawTRPCResponse = {
   };
 };
 
+function createWebSocket(
+  url: string | URL,
+  headers: Record<string, string> = {},
+): WebSocket {
+  const BunWebSocket = WebSocket as unknown as new (
+    url: string | URL,
+    options?: { headers: Record<string, string> },
+  ) => WebSocket;
+  return new BunWebSocket(url, { headers });
+}
+
 function sendRawTRPCRequest(
   socket: WebSocket,
   request: Record<string, unknown> & { id: number },
@@ -50,6 +61,18 @@ function sendRawTRPCRequest(
 function responseData(response: RawTRPCResponse): Record<string, unknown> {
   expect(response.result?.type).toBe("data");
   return response.result?.data as Record<string, unknown>;
+}
+
+async function login(server: { url: URL }): Promise<string> {
+  const response = await fetch(new URL("/session/login", server.url), {
+    body: JSON.stringify({ secret: "test-operator-secret" }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  expect(response.status).toBe(200);
+  const setCookie = response.headers.get("set-cookie");
+  if (!setCookie) throw new Error("Expected a session cookie.");
+  return setCookie.split(";", 1)[0] ?? "";
 }
 
 describe("Factory planning WebSocket transport", () => {
@@ -483,8 +506,14 @@ describe("Factory planning WebSocket transport", () => {
       join(tmpdir(), "software-factory-verification-transport-"),
     );
     const databasePath = join(temporaryDirectory, "factory.sqlite");
-    const server = createFactoryServer({ port: 0, databasePath });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const server = createFactoryServer({
+      databasePath,
+      operator: { name: "kevin", secret: "test-operator-secret" },
+      port: 0,
+    });
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await login(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -555,7 +584,6 @@ describe("Factory planning WebSocket transport", () => {
           input: {
             decision: "accepted",
             reportId: report.id,
-            verifier: "kevin",
           },
           path: "subtasks.verify",
         },
@@ -690,8 +718,14 @@ describe("Factory planning WebSocket transport", () => {
       join(tmpdir(), "software-factory-history-transport-"),
     );
     const databasePath = join(temporaryDirectory, "factory.sqlite");
-    const server = createFactoryServer({ port: 0, databasePath });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const server = createFactoryServer({
+      databasePath,
+      operator: { name: "kevin", secret: "test-operator-secret" },
+      port: 0,
+    });
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await login(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -777,7 +811,6 @@ describe("Factory planning WebSocket transport", () => {
           input: {
             decision: "accepted",
             reportId: secondReport.id,
-            verifier: "kevin",
           },
           path: "subtasks.verify",
         },

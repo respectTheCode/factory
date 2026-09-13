@@ -77,6 +77,50 @@ describe("Factory server configuration", () => {
     }
   });
 
+  test("loads the operator and allowed origins from production settings", () => {
+    const directory = mkdtempSync(join(tmpdir(), "factory-operator-config-"));
+    const secretFile = join(directory, "operator-secret");
+
+    try {
+      writeFileSync(secretFile, "operator-secret\n", { mode: 0o600 });
+
+      expect(
+        getFactoryServerOptions({
+          FACTORY_ALLOWED_ORIGINS:
+            "https://factory.example, https://admin.example ",
+          FACTORY_OPERATOR_NAME: " Kevin ",
+          FACTORY_OPERATOR_SECRET_FILE: secretFile,
+        }),
+      ).toMatchObject({
+        allowedOrigins: ["https://factory.example", "https://admin.example"],
+        operator: { name: "Kevin", secret: "operator-secret" },
+      });
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  test("rejects a half-configured or unreadable operator instead of disabling verification", () => {
+    expect(() =>
+      getFactoryServerOptions({ FACTORY_OPERATOR_NAME: "Kevin" }),
+    ).toThrow("must be set together");
+    expect(() =>
+      getFactoryServerOptions({
+        FACTORY_OPERATOR_NAME: "Kevin",
+        FACTORY_OPERATOR_SECRET_FILE: "relative/operator-secret",
+      }),
+    ).toThrow("absolute path");
+    expect(() =>
+      getFactoryServerOptions({
+        FACTORY_OPERATOR_NAME: "Kevin",
+        FACTORY_OPERATOR_SECRET_FILE: join(
+          tmpdir(),
+          "factory-missing-operator-secret",
+        ),
+      }),
+    ).toThrow("readable non-empty file");
+  });
+
   test.each([
     "file:///tmp/t3",
     "http://user:password@127.0.0.1:3773",

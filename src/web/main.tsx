@@ -206,6 +206,11 @@ type SubtaskHistory = {
   }>;
 };
 
+type HumanSessionResponse = {
+  human: { name: string } | null;
+  error?: string;
+};
+
 type LiveWorkState = (typeof liveWorkStatusOrder)[number];
 type TaskEditableWorkState = (typeof taskStatusOrder)[number];
 
@@ -471,9 +476,17 @@ function Dashboard() {
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
   const [busy, setBusy] = useState(false);
+  const [human, setHuman] = useState<{ name: string } | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [sessionSecret, setSessionSecret] = useState("");
+  const [sessionBusy, setSessionBusy] = useState(false);
+  const [webSocketGeneration, setWebSocketGeneration] = useState(0);
   const trpc = useRef<TRPCClient | null>(null);
   const subscriptionCleanup = useRef<(() => void) | null>(null);
   const t3RefreshGeneration = useRef(0);
+  const webSocketGenerationRef = useRef(webSocketGeneration);
+  webSocketGenerationRef.current = webSocketGeneration;
 
   useEffect(() => {
     const dismissOpenMenus = (event: PointerEvent) => {
@@ -495,8 +508,39 @@ function Dashboard() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    void fetch("/session", { credentials: "same-origin" })
+      .then(async (response) => {
+        const result = (await response.json()) as HumanSessionResponse;
+        if (!response.ok) {
+          throw new Error(
+            result.error ?? "Session status could not be loaded.",
+          );
+        }
+        if (!active) return;
+        setHuman(result.human);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setSessionError(
+          error instanceof Error
+            ? error.message
+            : "Session status could not be loaded.",
+        );
+      })
+      .finally(() => {
+        if (active) setSessionLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const generation = webSocketGeneration;
     const client = createWSClient({
       onClose: () => {
+        if (webSocketGenerationRef.current !== generation) return;
         t3RefreshGeneration.current += 1;
         subscriptionCleanup.current?.();
         subscriptionCleanup.current = null;
@@ -544,7 +588,7 @@ function Dashboard() {
       subscriptionCleanup.current = null;
       void client.close();
     };
-  }, [connection]);
+  }, [connection, webSocketGeneration]);
 
   const refreshGitHubStatuses = async (detail: ProjectDetail) => {
     const client = trpc.current;
@@ -862,7 +906,6 @@ function Dashboard() {
         decision,
         ...(reason ? { reason } : {}),
         reportId,
-        verifier: "kevin",
       }),
     );
   };
@@ -1224,6 +1267,60 @@ function Dashboard() {
     });
   };
 
+  const signIn = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!sessionSecret || sessionBusy) return;
+    setSessionBusy(true);
+    setSessionError(null);
+    try {
+      const response = await fetch("/session/login", {
+        body: JSON.stringify({ secret: sessionSecret }),
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const result = (await response.json()) as HumanSessionResponse;
+      if (!response.ok || !result.human) {
+        setSessionError(result.error ?? "Sign in failed.");
+        return;
+      }
+      setHuman(result.human);
+      setSessionSecret("");
+      setWebSocketGeneration((current) => current + 1);
+    } catch (error: unknown) {
+      setSessionError(
+        error instanceof Error ? error.message : "Sign in failed.",
+      );
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  const signOut = async () => {
+    if (sessionBusy) return;
+    setSessionBusy(true);
+    setSessionError(null);
+    try {
+      const response = await fetch("/session/logout", {
+        credentials: "same-origin",
+        method: "POST",
+      });
+      if (!response.ok) {
+        const result = (await response.json()) as HumanSessionResponse;
+        setSessionError(result.error ?? "Sign out failed.");
+        return;
+      }
+      setHuman(null);
+      setWebSocketGeneration((current) => current + 1);
+    } catch (error: unknown) {
+      setSessionError(
+        error instanceof Error ? error.message : "Sign out failed.",
+      );
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
   return (
     <main>
       <header>
@@ -1244,7 +1341,46 @@ function Dashboard() {
             </div>
           </div>
         </a>
-        <ConnectionIndicator snapshot={snapshot} />
+        <div className="header-status">
+          {sessionLoading ? (
+            <span className="status-twin">Checking session…</span>
+          ) : human ? (
+            <div className="session-controls">
+              <span className="status-twin">Signed in as {human.name}</span>
+              <button
+                className="secondary"
+                disabled={sessionBusy}
+                onClick={() => void signOut()}
+                type="button"
+              >
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <form className="session-form" onSubmit={signIn}>
+              <label>
+                <span className="visually-hidden">Operator secret</span>
+                <input
+                  aria-label="Operator secret"
+                  disabled={sessionBusy}
+                  onChange={(event) => setSessionSecret(event.target.value)}
+                  placeholder="Operator secret"
+                  type="password"
+                  value={sessionSecret}
+                />
+              </label>
+              <button disabled={sessionBusy || !sessionSecret} type="submit">
+                Sign in
+              </button>
+              {sessionError && (
+                <span className="session-error" role="alert">
+                  {sessionError}
+                </span>
+              )}
+            </form>
+          )}
+          <ConnectionIndicator snapshot={snapshot} />
+        </div>
       </header>
 
       {view.screen === "home" && (
@@ -2848,7 +2984,8 @@ function Dashboard() {
                                                     </button>
                                                     {subtaskStatus?.reportId &&
                                                       subtaskStatus.verificationState ===
-                                                        "awaiting_verification" && (
+                                                        "awaiting_verification" &&
+                                                      (human ? (
                                                         <VerificationActions
                                                           disabled={
                                                             !snapshot.canMutate ||
@@ -2866,7 +3003,11 @@ function Dashboard() {
                                                             )
                                                           }
                                                         />
-                                                      )}
+                                                      ) : (
+                                                        <span className="verify-hint">
+                                                          Sign in to verify
+                                                        </span>
+                                                      ))}
                                                     <button
                                                       aria-label={`Delete subtask “${subtask.name}”`}
                                                       className="icon-button danger"

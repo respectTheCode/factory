@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 
 import { getWSConnectionHandler } from "@trpc/server/adapters/ws";
-import { initTRPC } from "@trpc/server";
+import { initTRPC, TRPCError } from "@trpc/server";
 import { observable } from "@trpc/server/observable";
 import { z } from "zod";
 
@@ -23,6 +23,15 @@ import {
   type T3ActivityReader,
 } from "./t3";
 import { resolveT3AccessToken } from "./t3-credential";
+import {
+  createHumanSessionStore,
+  getHumanSessionToken,
+  resolveFactoryOperator,
+  secretsMatch,
+  HUMAN_SESSION_COOKIE,
+  type FactoryOperator,
+  type HumanIdentity,
+} from "./human-session";
 
 type ConnectionEvent = "close" | "error" | "message";
 type ConnectionListener = (...args: unknown[]) => void;
@@ -33,11 +42,15 @@ type SocketData = {
 };
 
 export type FactoryServer = {
-  stop: () => void;
+  stop: () => Promise<void>;
   url: URL;
 };
 
-const trpc = initTRPC.create();
+type FactoryContext = {
+  human: HumanIdentity | null;
+};
+
+const trpc = initTRPC.context<FactoryContext>().create();
 
 const workStateSchema = z.enum([
   "backlog",
@@ -141,6 +154,7 @@ function createRouter(
   application: ReturnType<typeof createFactoryApplication>,
   githubStatusReader: GitHubStatusReader,
   t3Coordinator: ReturnType<typeof createT3Coordinator>,
+  humanSessionConfigured: boolean,
 ) {
   const projectUpdates = new ProjectUpdateBus(application);
 
@@ -476,14 +490,29 @@ function createRouter(
             decision: z.enum(["accepted", "rejected", "deferred"]),
             reportId: z.string().min(1),
             reason: z.string().trim().min(1).optional(),
-            verifier: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
+          if (!humanSessionConfigured) {
+            throw new TRPCError({
+              code: "UNAUTHORIZED",
+              message:
+                "Human session not configured; verification is unavailable.",
+            });
+          }
+          if (!ctx.human) {
+            throw new TRPCError({
+              code: "UNAUTHORIZED",
+              message: "A human session is required to verify status reports.",
+            });
+          }
           const projectId = application.getStatusReportProjectId(
             input.reportId,
           );
-          application.verifyStatusReport(input);
+          application.verifyStatusReport({
+            ...input,
+            verifier: ctx.human.name,
+          });
           return withDashboard(
             { ok: true },
             dashboardAfterPublish(application, projectUpdates, projectId),
@@ -677,7 +706,9 @@ export type FactoryServerOptions = {
   databasePath: string;
   githubToken?: string;
   hostname: string;
+  operator?: FactoryOperator;
   port: number;
+  allowedOrigins?: string[];
   t3AccessToken?: string;
   t3BaseUrl?: string;
   t3TimeoutMs?: number;
@@ -721,6 +752,11 @@ export function getFactoryServerOptions(
     ? normalizeT3BaseUrl(configuredT3BaseUrl)
     : undefined;
   const t3AccessToken = resolveT3AccessToken(environment);
+  const operator = resolveFactoryOperator(environment);
+  const allowedOrigins = (environment.FACTORY_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 
   return {
     databasePath: environment.FACTORY_DB ?? "factory.sqlite",
@@ -728,7 +764,9 @@ export function getFactoryServerOptions(
       ? { githubToken: environment.GITHUB_TOKEN ?? environment.GH_TOKEN }
       : {}),
     hostname: environment.FACTORY_HOST ?? "127.0.0.1",
+    ...(operator ? { operator } : {}),
     port,
+    ...(allowedOrigins.length > 0 ? { allowedOrigins } : {}),
     ...(t3AccessToken ? { t3AccessToken } : {}),
     ...(t3BaseUrl ? { t3BaseUrl } : {}),
     ...(t3TimeoutMs === undefined ? {} : { t3TimeoutMs }),
@@ -736,27 +774,36 @@ export function getFactoryServerOptions(
 }
 
 export function createFactoryServer({
+  allowedOrigins = [],
   databasePath = "factory.sqlite",
   githubStatusReader,
   githubToken,
   hostname = "127.0.0.1",
+  operator,
   port,
   t3AccessToken: _t3AccessToken,
   t3BaseUrl: _t3BaseUrl,
   t3TimeoutMs: _t3TimeoutMs,
   t3ActivityReader,
 }: {
+  allowedOrigins?: string[];
   databasePath?: string;
   githubStatusReader?: GitHubStatusReader;
   githubToken?: string;
   hostname?: string;
+  operator?: FactoryOperator;
   port: number;
   t3AccessToken?: string;
   t3BaseUrl?: string;
   t3TimeoutMs?: number;
   t3ActivityReader?: T3ActivityReader;
 }): FactoryServer {
+  const configuredOperator =
+    operator && operator.name.trim() && operator.secret
+      ? { ...operator, name: operator.name.trim() }
+      : undefined;
   const application = createFactoryApplication({ databasePath });
+  const humanSessions = createHumanSessionStore({ databasePath });
   const t3Coordinator = createT3Coordinator({
     application,
     reader:
@@ -771,20 +818,111 @@ export function createFactoryServer({
     application,
     githubStatusReader ?? createGitHubStatusReader({ token: githubToken }),
     t3Coordinator,
+    configuredOperator !== undefined,
   );
   const onConnection = getWSConnectionHandler({
-    createContext: () => ({}),
+    createContext: ({ req }) => ({
+      human: configuredOperator
+        ? humanSessions.get(getHumanSessionToken(req.headers.cookie))
+        : null,
+    }),
     router,
     wss: undefined as never,
   });
+  const loginFailures = new Map<string, number[]>();
+
+  if (!configuredOperator) {
+    console.warn(
+      "Factory human verification disabled: human session not configured.",
+    );
+  }
 
   const server = Bun.serve<SocketData>({
     hostname,
     port,
-    fetch(request, bunServer) {
+    async fetch(request, bunServer) {
       const url = new URL(request.url);
 
+      if (url.pathname === "/session/login" && request.method === "POST") {
+        if (!originAllowed(request, allowedOrigins)) {
+          return new Response("Forbidden", { status: 403 });
+        }
+
+        const clientAddress = getClientAddress(bunServer, request);
+        const now = Date.now();
+        const recentFailures = (loginFailures.get(clientAddress) ?? []).filter(
+          (timestamp) => timestamp > now - 60_000,
+        );
+        if (recentFailures.length >= 5) {
+          loginFailures.set(clientAddress, recentFailures);
+          return jsonResponse(
+            { error: "Too many login attempts. Try again later." },
+            { status: 429 },
+          );
+        }
+
+        let secret: unknown;
+        try {
+          const body = (await request.json()) as { secret?: unknown };
+          secret = body?.secret;
+        } catch {
+          secret = undefined;
+        }
+
+        if (
+          !configuredOperator ||
+          typeof secret !== "string" ||
+          !secretsMatch(secret, configuredOperator.secret)
+        ) {
+          recentFailures.push(now);
+          loginFailures.set(clientAddress, recentFailures);
+          return jsonResponse(
+            { error: "Invalid credentials." },
+            { status: 401 },
+          );
+        }
+
+        loginFailures.delete(clientAddress);
+        const token = humanSessions.create(configuredOperator.name);
+        return jsonResponse(
+          { human: { name: configuredOperator.name } },
+          {
+            headers: {
+              "Set-Cookie": sessionCookie(token, request),
+            },
+          },
+        );
+      }
+
+      if (url.pathname === "/session/logout" && request.method === "POST") {
+        if (!originAllowed(request, allowedOrigins)) {
+          return new Response("Forbidden", { status: 403 });
+        }
+        humanSessions.delete(
+          getHumanSessionToken(request.headers.get("cookie") ?? undefined),
+        );
+        return jsonResponse(
+          { ok: true },
+          { headers: { "Set-Cookie": sessionCookie("", request, true) } },
+        );
+      }
+
+      if (url.pathname === "/session" && request.method === "GET") {
+        return jsonResponse({
+          human: configuredOperator
+            ? humanSessions.get(
+                getHumanSessionToken(
+                  request.headers.get("cookie") ?? undefined,
+                ),
+              )
+            : null,
+        });
+      }
+
       if (url.pathname === "/trpc") {
+        if (!originAllowed(request, allowedOrigins)) {
+          return new Response("Forbidden", { status: 403 });
+        }
         const upgraded = bunServer.upgrade(request, {
           data: { listeners: new Map(), request },
         });
@@ -807,7 +945,7 @@ export function createFactoryServer({
       open(socket) {
         const url = new URL(socket.data.request.url);
         const request = {
-          headers: {},
+          headers: toNodeHeaders(socket.data.request.headers),
           url: `${url.pathname}${url.search}`,
         } as never;
 
@@ -822,7 +960,108 @@ export function createFactoryServer({
     },
   });
 
-  return server;
+  let stopPromise: Promise<void> | undefined;
+  return {
+    stop() {
+      if (!stopPromise) {
+        stopPromise = server.stop().finally(() => humanSessions.close());
+      }
+      return stopPromise;
+    },
+    url: server.url,
+  };
+}
+
+function jsonResponse(
+  body: unknown,
+  options: { headers?: Record<string, string>; status?: number } = {},
+): Response {
+  const headers = new Headers(options.headers);
+  headers.set("Content-Type", "application/json");
+  headers.set("Cache-Control", "no-store");
+  return new Response(JSON.stringify(body), {
+    headers,
+    status: options.status ?? 200,
+  });
+}
+
+function sessionCookie(token: string, request: Request, clear = false): string {
+  const secure = requestIsSecure(request) ? " Secure;" : "";
+  return `${HUMAN_SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/;${secure}${clear ? " Max-Age=0;" : ""}`;
+}
+
+function requestIsSecure(request: Request): boolean {
+  const forwardedProto = request.headers
+    .get("x-forwarded-proto")
+    ?.split(",", 1)[0]
+    ?.trim()
+    .toLowerCase();
+  return (
+    forwardedProto === "https" || new URL(request.url).protocol === "https:"
+  );
+}
+
+function originAllowed(request: Request, allowedOrigins: string[]): boolean {
+  const origin = request.headers.get("origin");
+  // A missing Origin is allowed for non-browser clients such as the future CLI;
+  // a supplied cookie still authenticates the human session.
+  if (!origin) return true;
+
+  const normalizedOrigin = normalizeOrigin(origin);
+  if (!normalizedOrigin) return false;
+  if (normalizedOrigin === requestOrigin(request)) return true;
+  return allowedOrigins.some(
+    (allowedOrigin) => normalizeOrigin(allowedOrigin) === normalizedOrigin,
+  );
+}
+
+function requestOrigin(request: Request): string {
+  const url = new URL(request.url);
+  const forwardedProto = request.headers
+    .get("x-forwarded-proto")
+    ?.split(",", 1)[0]
+    ?.trim()
+    .toLowerCase();
+  const protocol =
+    forwardedProto === "http" || forwardedProto === "https"
+      ? forwardedProto
+      : url.protocol.slice(0, -1);
+  const forwardedHost = request.headers
+    .get("x-forwarded-host")
+    ?.split(",", 1)[0]
+    ?.trim();
+  const host = forwardedHost || url.host;
+  try {
+    return new URL(`${protocol}://${host}`).origin;
+  } catch {
+    return url.origin;
+  }
+}
+
+function normalizeOrigin(origin: string): string | null {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function getClientAddress(
+  server: Bun.Server<SocketData>,
+  request: Request,
+): string {
+  return server.requestIP(request)?.address ?? "unknown";
+}
+
+function toNodeHeaders(headers: Headers): Record<string, string> {
+  return Object.fromEntries(
+    Array.from(headers.entries(), ([name, value]) => [
+      name.toLowerCase(),
+      value,
+    ]),
+  );
 }
 
 function getStaticFile(pathname: string): string | null {

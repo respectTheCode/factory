@@ -28,4 +28,18 @@ else
 fi
 
 unset FACTORY_GITHUB_TOKEN
+
+# Human verification requires an operator secret file. The server refuses a
+# half-configured operator, so only export the pair when the file exists.
+FACTORY_OPERATOR_SECRET_PATH="$(cd -- "$(dirname -- "$0")/.." && pwd)/secrets/operator-secret"
+if [[ -s "${FACTORY_OPERATOR_SECRET_PATH}" ]]; then
+  export FACTORY_OPERATOR_NAME="${FACTORY_OPERATOR_NAME:-kevin}"
+  export FACTORY_OPERATOR_SECRET_FILE="${FACTORY_OPERATOR_SECRET_PATH}"
+else
+  echo "Factory: operator secret ${FACTORY_OPERATOR_SECRET_PATH} is missing; human verification is disabled." >&2
+  unset FACTORY_OPERATOR_NAME
+  unset FACTORY_OPERATOR_SECRET_FILE
+fi
+unset FACTORY_OPERATOR_SECRET_PATH
+
 exec "${FACTORY_BUN_PATH}" "${FACTORY_SERVER_PATH}"

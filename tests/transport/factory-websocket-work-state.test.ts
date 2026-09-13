@@ -16,6 +16,17 @@ type RawTRPCResponse = {
   };
 };
 
+function createWebSocket(
+  url: string | URL,
+  headers: Record<string, string> = {},
+): WebSocket {
+  const BunWebSocket = WebSocket as unknown as new (
+    url: string | URL,
+    options?: { headers: Record<string, string> },
+  ) => WebSocket;
+  return new BunWebSocket(url, { headers });
+}
+
 function sendRawTRPCRequest(
   socket: WebSocket,
   request: Record<string, unknown> & { id: number },
@@ -103,8 +114,24 @@ test("resumes subtask tracking through the PWA transport without accepting repor
 });
 
 async function openServerSocket(databasePath: string) {
-  const server = createFactoryServer({ port: 0, databasePath });
-  const socket = new WebSocket(new URL("/trpc", server.url));
+  const server = createFactoryServer({
+    databasePath,
+    operator: { name: "kevin", secret: "test-operator-secret" },
+    port: 0,
+  });
+  const loginResponse = await fetch(new URL("/session/login", server.url), {
+    body: JSON.stringify({ secret: "test-operator-secret" }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!loginResponse.ok) {
+    throw new Error(`Test operator login failed: ${loginResponse.status}`);
+  }
+  const setCookie = loginResponse.headers.get("set-cookie");
+  if (!setCookie) throw new Error("Expected a session cookie.");
+  const socket = createWebSocket(new URL("/trpc", server.url), {
+    Cookie: setCookie.split(";", 1)[0] ?? "",
+  });
   await new Promise<void>((resolve, reject) => {
     socket.addEventListener("open", () => resolve(), { once: true });
     socket.addEventListener(
@@ -442,7 +469,6 @@ describe("Factory work-state WebSocket transport", () => {
             decision: "deferred",
             reason: "The acceptance evidence needs one more browser check",
             reportId: completeReport.id,
-            verifier: "kevin",
           },
           path: "subtasks.verify",
         },
@@ -456,7 +482,6 @@ describe("Factory work-state WebSocket transport", () => {
               input: {
                 decision: "rejected",
                 reportId: completeReport.id,
-                verifier: "kevin",
               },
               path: "subtasks.verify",
             },
@@ -472,7 +497,6 @@ describe("Factory work-state WebSocket transport", () => {
               input: {
                 decision: "deferred",
                 reportId: completeReport.id,
-                verifier: "kevin",
               },
               path: "subtasks.verify",
             },

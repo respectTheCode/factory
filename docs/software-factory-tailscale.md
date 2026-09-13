@@ -111,8 +111,42 @@ lsof -nP -iTCP:3000 -sTCP:LISTEN
 curl http://<lan-address>:3000/
 ```
 
-Use this only on a trusted network and keep the macOS firewall/network boundary in place. The
-server has no separate authentication layer; anyone who can reach the port can use its API.
+Use this only on a trusted network and keep the macOS firewall/network boundary in place. Reads,
+reports and planning edits are not yet authenticated; anyone who can reach the port can use
+them until the T-37 remote API lands. Verification is the exception: it requires the human
+session described next.
+
+## Enable human verification
+
+Verifying a status report requires a signed-in human session. The server reads
+`FACTORY_OPERATOR_NAME` and `FACTORY_OPERATOR_SECRET_FILE` (an absolute path to a file holding
+only the operator secret). Setting one without the other, or pointing at a missing or empty file,
+stops the server at startup. With neither set, the server starts with verification disabled and
+logs one warning; the dashboard then shows "Sign in to verify" and no sign-in succeeds.
+
+The deployed LaunchAgent launcher exports the pair automatically when
+`~/Library/Application Support/Factory/secrets/operator-secret` exists, using the operator name
+`kevin` unless `FACTORY_OPERATOR_NAME` is set in the plist environment. Provision the secret
+without echoing it:
+
+```bash
+install -d -m 0700 "$HOME/Library/Application Support/Factory/secrets"
+umask 077
+head -c 32 /dev/urandom | base64 > "$HOME/Library/Application Support/Factory/secrets/operator-secret"
+bun run service:deploy
+```
+
+Sign in from the dashboard header with that secret. The browser receives an `HttpOnly`,
+`SameSite=Strict` cookie (`Secure` behind HTTPS) that stays valid for thirty days and survives
+service restarts; sign out from the header to revoke it. Five failed attempts from one address
+within a minute pause sign-in for that address. The verifier recorded on each verification is the
+configured operator name, never a value the browser supplies.
+
+Browser requests to `/session/login`, `/session/logout` and the `/trpc` WebSocket must carry an
+`Origin` that matches the server's own origin or one listed in `FACTORY_ALLOWED_ORIGINS`
+(comma-separated). The server honors `X-Forwarded-Proto` and `X-Forwarded-Host` when deriving its
+own origin, so place it only behind a proxy you control (Tailscale Serve here). Requests without
+an `Origin`, such as the CLI, pass the check and are authenticated by cookie only.
 
 ## Configure private HTTPS access
 
