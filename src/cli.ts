@@ -30,6 +30,7 @@ import { resolveT3AccessToken } from "./t3-credential";
 import { createMachineCredentialStore } from "./machine-credential";
 import {
   createRemoteFactoryClient,
+  FACTORY_REQUEST_KEY_PATTERN,
   type FactoryRemoteBriefData,
   type FactoryRemoteClient,
 } from "./remote-client";
@@ -213,6 +214,36 @@ function editableTaskStateFlag(
     );
   }
   return value as Exclude<WorkState, "completed">;
+}
+
+function expectedRevisionFlag(flags: Map<string, string>): number | undefined {
+  const configured = flags.get("expected-revision");
+  if (configured === undefined) return undefined;
+  const value = Number(configured);
+  if (!/^\d+$/.test(configured) || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error("--expected-revision must be a positive integer.");
+  }
+  return value;
+}
+
+function requestKeyFlag(
+  flags: Map<string, string>,
+  remote: boolean,
+): string | undefined {
+  if (!remote) return undefined;
+  const configured = flags.get("request-key");
+  if (configured !== undefined && !configured.trim()) {
+    throw new Error(
+      "--request-key must be 8-128 characters matching [A-Za-z0-9._-].",
+    );
+  }
+  const requestKey = configured?.trim() ?? crypto.randomUUID();
+  if (!FACTORY_REQUEST_KEY_PATTERN.test(requestKey)) {
+    throw new Error(
+      "--request-key must be 8-128 characters matching [A-Za-z0-9._-].",
+    );
+  }
+  return requestKey;
 }
 
 function archiveStateFlag(flags: Map<string, string>): ArchiveState {
@@ -765,12 +796,14 @@ async function main(args: string[]): Promise<void> {
           projectId: string;
           taskId?: string;
           subtaskId?: string;
+          requestKey?: string;
         }) => remoteClient.sessionAutoLink(input),
         linkThread: (input: {
           projectId: string;
           taskId?: string;
           subtaskId?: string;
           threadId: string;
+          requestKey?: string;
         }) => remoteClient.sessionLink(input),
         status: (projectId?: string) => remoteClient.projectT3Status(projectId),
         threadDetail: (threadId: string, turnLimit: number) =>
@@ -1135,6 +1168,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "session" && action === "link") {
+    const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
     output({
       link: await t3Coordinator.linkThread({
         ...(parsed.flags.get("subtask-id") === undefined
@@ -1145,12 +1179,14 @@ async function main(args: string[]): Promise<void> {
           : { taskId: parsed.flags.get("task-id") }),
         projectId: requiredFlag(parsed.flags, "project-id"),
         threadId: requiredFlag(parsed.flags, "thread-id"),
+        ...(requestKey === undefined ? {} : { requestKey }),
       }),
     });
     return;
   }
 
   if (resource === "session" && action === "auto-link") {
+    const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
     output({
       link: await t3Coordinator.autoLinkThread({
         branchName: requiredFlag(parsed.flags, "branch-name"),
@@ -1161,6 +1197,7 @@ async function main(args: string[]): Promise<void> {
           ? {}
           : { taskId: parsed.flags.get("task-id") }),
         projectId: requiredFlag(parsed.flags, "project-id"),
+        ...(requestKey === undefined ? {} : { requestKey }),
       }),
     });
     return;
@@ -1177,6 +1214,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "task" && action === "create") {
+    const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
     const task = await application.createTask({
       acceptanceCriteria: listFlag(parsed.flags, "acceptance-criteria"),
       branchName: parsed.flags.get("branch-name") ?? parsed.flags.get("branch"),
@@ -1189,6 +1227,7 @@ async function main(args: string[]): Promise<void> {
       priority: priorityFlag(parsed.flags),
       projectId: requiredFlag(parsed.flags, "project-id"),
       repositoryLinks: listFlag(parsed.flags, "repository-links"),
+      ...(requestKey === undefined ? {} : { requestKey }),
     });
     output({ task });
     return;
@@ -1212,10 +1251,12 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "task" && action === "state") {
     const taskId = requiredFlag(parsed.flags, "task-id");
+    const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
     await application.setTaskWorkState({
       reason: parsed.flags.get("reason"),
       taskId,
       workState: editableTaskStateFlag(parsed.flags),
+      ...(requestKey === undefined ? {} : { requestKey }),
     });
     output({ status: await application.getTaskStatus(taskId) });
     return;
@@ -1256,6 +1297,8 @@ async function main(args: string[]): Promise<void> {
       );
     }
     const taskId = requiredFlag(parsed.flags, "task-id");
+    const expectedRevision = expectedRevisionFlag(parsed.flags);
+    const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
     if (acceptanceCriteria !== undefined) {
       const status = await application.getTaskStatus(taskId);
       if (status.taskState !== "planned") {
@@ -1271,6 +1314,8 @@ async function main(args: string[]): Promise<void> {
       objective: description,
       pullRequestUrl,
       taskId,
+      ...(expectedRevision === undefined ? {} : { expectedRevision }),
+      ...(requestKey === undefined ? {} : { requestKey }),
     });
     output({ task });
     return;
@@ -1324,12 +1369,14 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "subtask" && action === "create") {
+    const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
     const subtask = await application.createSubtask({
       description: parsed.flags.get("description")?.trim() || undefined,
       name: requiredFlag(parsed.flags, "name"),
       pullRequestUrl:
         parsed.flags.get("pull-request-url") ?? parsed.flags.get("pr"),
       taskId: requiredFlag(parsed.flags, "task-id"),
+      ...(requestKey === undefined ? {} : { requestKey }),
     });
     output({ subtask });
     return;
@@ -1351,18 +1398,23 @@ async function main(args: string[]): Promise<void> {
         "Provide at least one of --title, --description, --evidence, or --pull-request-url.",
       );
     }
+    const expectedRevision = expectedRevisionFlag(parsed.flags);
+    const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
     const subtask = await application.updateSubtask({
       description,
       evidence,
       name: title,
       pullRequestUrl,
       subtaskId: requiredFlag(parsed.flags, "subtask-id"),
+      ...(expectedRevision === undefined ? {} : { expectedRevision }),
+      ...(requestKey === undefined ? {} : { requestKey }),
     });
     output({ subtask });
     return;
   }
 
   if (resource === "subtask" && action === "report") {
+    const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
     const report = await application.reportSubtaskStatus({
       evidence: parsed.flags.get("evidence"),
       reportedState: reportedStateFlag(parsed.flags),
@@ -1377,8 +1429,11 @@ async function main(args: string[]): Promise<void> {
             },
           }),
       subtaskId: requiredFlag(parsed.flags, "subtask-id"),
+      ...(requestKey === undefined ? {} : { requestKey }),
     });
-    output({ report });
+    output({
+      report: requestKey === undefined ? report : { ...report, requestKey },
+    });
     return;
   }
 

@@ -8,6 +8,7 @@ import { z } from "zod";
 
 import {
   createFactoryApplication,
+  FactoryConflictError,
   type DashboardSnapshot,
   type PortfolioStatus,
   type ProjectHierarchy,
@@ -40,6 +41,7 @@ import {
   resolveMachineToken,
   type MachineCredentialIdentity,
 } from "./machine-credential";
+import { canonicalPayloadDigest, createIdempotencyStore } from "./idempotency";
 
 type ConnectionEvent = "close" | "error" | "message";
 type ConnectionListener = (...args: unknown[]) => void;
@@ -76,6 +78,9 @@ const editableTaskStateSchema = z.enum([
   "awaiting_verification",
   "blocked",
 ]);
+const requestKeySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9._-]{8,128}$/, "Invalid request key.");
 
 class ProjectUpdateBus {
   private readonly listeners = new Map<
@@ -189,6 +194,37 @@ function scopedProcedure(resolveProjectId?: ProjectIdResolver) {
   });
 }
 
+function createMutationMutex() {
+  let tail = Promise.resolve();
+  return {
+    run<T>(operation: () => T | PromiseLike<T>): Promise<T> {
+      const current = tail.then(operation, operation);
+      tail = current.then(
+        () => undefined,
+        () => undefined,
+      );
+      return current;
+    },
+  };
+}
+
+function idempotencyScope(ctx: FactoryContext): string {
+  if (ctx.machine) return ctx.machine.id;
+  if (ctx.human) return `human:${ctx.human.name}`;
+  throw new Error("Idempotency requires an authenticated caller.");
+}
+
+function withoutRequestKey(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return input;
+  }
+  const { requestKey: _requestKey, ...payload } = input as Record<
+    string,
+    unknown
+  >;
+  return payload;
+}
+
 function fieldProjectId(field: string): ProjectIdResolver {
   return (input) => {
     const value = (input as Record<string, unknown> | null | undefined)?.[
@@ -271,8 +307,59 @@ function createRouter(
   githubStatusReader: GitHubStatusReader,
   t3Coordinator: ReturnType<typeof createT3Coordinator>,
   humanSessionConfigured: boolean,
+  idempotencyStore: ReturnType<typeof createIdempotencyStore>,
 ) {
   const projectUpdates = new ProjectUpdateBus(application);
+  const mutationMutex = createMutationMutex();
+  const serializedMutation = trpc.middleware(async ({ next }) =>
+    mutationMutex.run(async () => {
+      const result = await next();
+      if (!result.ok && result.error.cause instanceof FactoryConflictError) {
+        return {
+          ...result,
+          error: new TRPCError({
+            code: "CONFLICT",
+            message: result.error.cause.message,
+          }),
+        };
+      }
+      return result;
+    }),
+  );
+  const idempotentMutation = trpc.middleware(async ({ ctx, input, next }) => {
+    const requestKey = (input as { requestKey?: unknown } | null | undefined)
+      ?.requestKey;
+    if (typeof requestKey !== "string") return next();
+
+    const scope = idempotencyScope(ctx);
+    const payloadDigest = canonicalPayloadDigest(withoutRequestKey(input));
+    idempotencyStore.purgeExpired();
+    const existing = idempotencyStore.get(scope, requestKey);
+    if (existing) {
+      if (existing.payloadDigest !== payloadDigest) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "request key reused with a different payload",
+        });
+      }
+      return {
+        data: JSON.parse(existing.response),
+        marker: "middlewareMarker",
+        ok: true,
+      } as never;
+    }
+
+    const result = await next();
+    if (!result.ok) return result;
+    idempotencyStore.put({
+      createdAt: new Date().toISOString(),
+      payloadDigest,
+      requestKey,
+      response: JSON.stringify(result.data),
+      scope,
+    });
+    return result;
+  });
 
   const githubStatus = async (
     pullRequestUrl: string | undefined,
@@ -326,6 +413,7 @@ function createRouter(
             workspaceRoot: z.string().trim().min(1).optional(),
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) =>
           withContextDashboard(
             ctx,
@@ -342,6 +430,7 @@ function createRouter(
             workspaceRoot: z.string().trim().min(1).nullable().optional(),
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const project = application.updateProject(input);
           return withContextDashboard(
@@ -357,6 +446,7 @@ function createRouter(
             projectId: z.string().min(1),
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           application.removeProject(input.projectId);
           projectUpdates.publishAll();
@@ -376,6 +466,7 @@ function createRouter(
             url: z.string().url(),
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const link = application.addProjectTrackerLink(input);
           return withContextDashboard(
@@ -552,8 +643,11 @@ function createRouter(
             subtaskId: z.string().min(1).optional(),
             taskId: z.string().min(1).optional(),
             threadId: z.string().min(1),
+            requestKey: requestKeySchema.optional(),
           }),
         )
+        .use(serializedMutation)
+        .use(idempotentMutation)
         .mutation(({ ctx, input }) => {
           const result = t3Coordinator.linkThread(input);
           return withContextDashboard(
@@ -569,8 +663,11 @@ function createRouter(
             projectId: z.string().min(1),
             taskId: z.string().min(1).optional(),
             subtaskId: z.string().min(1).optional(),
+            requestKey: requestKeySchema.optional(),
           }),
         )
+        .use(serializedMutation)
+        .use(idempotentMutation)
         .mutation(async ({ ctx, input }) => {
           const result = await t3Coordinator.autoLinkThread(input);
           const dashboard =
@@ -593,6 +690,7 @@ function createRouter(
             threadId: z.string().min(1),
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const result = t3Coordinator.unlinkThread(
             input.threadId,
@@ -621,9 +719,12 @@ function createRouter(
             description: z.string().optional(),
             name: z.string().min(1),
             pullRequestUrl: z.string().nullable().optional(),
+            requestKey: requestKeySchema.optional(),
             taskId: z.string().min(1),
           }),
         )
+        .use(serializedMutation)
+        .use(idempotentMutation)
         .mutation(({ ctx, input }) => {
           const subtask = application.createSubtask(input);
           const projectId = application.getProjectIdForTask(input.taskId);
@@ -644,11 +745,15 @@ function createRouter(
           z.object({
             description: z.string().nullable().optional(),
             evidence: z.string().nullable().optional(),
+            expectedRevision: z.number().int().min(1).optional(),
             name: z.string().trim().min(1).optional(),
             pullRequestUrl: z.string().nullable().optional(),
+            requestKey: requestKeySchema.optional(),
             subtaskId: z.string().min(1),
           }),
         )
+        .use(serializedMutation)
+        .use(idempotentMutation)
         .mutation(({ ctx, input }) => {
           const projectId = application.getProjectIdForSubtask(input.subtaskId);
           const subtask = application.updateSubtask(input);
@@ -665,6 +770,7 @@ function createRouter(
             subtaskId: z.string().min(1),
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const projectId = application.getProjectIdForSubtask(input.subtaskId);
           application.removeSubtask(input.subtaskId);
@@ -693,6 +799,7 @@ function createRouter(
             ]),
             reason: z.string().trim().min(1).optional(),
             reporter: z.string().min(1),
+            requestKey: requestKeySchema.optional(),
             sessionRef: z
               .object({
                 externalThreadId: z.string().min(1),
@@ -702,6 +809,8 @@ function createRouter(
             subtaskId: z.string().min(1),
           }),
         )
+        .use(serializedMutation)
+        .use(idempotentMutation)
         .mutation(({ ctx, input }) => {
           const projectId = application.getProjectIdForSubtask(input.subtaskId);
           const report = application.reportSubtaskStatus({
@@ -727,6 +836,7 @@ function createRouter(
             subtaskId: z.string().min(1),
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const projectId = application.getProjectIdForSubtask(input.subtaskId);
           application.archiveSubtask(input.subtaskId, input.archiveState);
@@ -747,6 +857,7 @@ function createRouter(
           : undefined;
       })
         .input(z.object({ subtaskId: z.string().min(1) }))
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const projectId = application.getProjectIdForSubtask(input.subtaskId);
           application.restoreSubtask(input.subtaskId);
@@ -769,6 +880,7 @@ function createRouter(
             workState: workStateSchema,
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const result = application.reorderSubtasks(input);
           const projectId = application.getProjectIdForTask(input.taskId);
@@ -790,6 +902,7 @@ function createRouter(
             reason: z.string().trim().min(1).optional(),
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const projectId = application.getStatusReportProjectId(
             input.reportId,
@@ -862,9 +975,12 @@ function createRouter(
             pullRequestUrl: z.string().nullable().optional(),
             priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
             projectId: z.string().min(1),
+            requestKey: requestKeySchema.optional(),
             repositoryLinks: z.array(z.string().url()).default([]),
           }),
         )
+        .use(serializedMutation)
+        .use(idempotentMutation)
         .mutation(({ ctx, input }) => {
           const task = application.createTask(input);
           return withContextDashboard(
@@ -880,6 +996,7 @@ function createRouter(
             taskId: z.string().min(1),
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const projectId = application.getProjectIdForTask(input.taskId);
           application.removeTask(input.taskId);
@@ -925,12 +1042,16 @@ function createRouter(
           z.object({
             acceptanceCriteria: z.array(z.string()).optional(),
             branchName: z.string().trim().min(1).nullable().optional(),
+            expectedRevision: z.number().int().min(1).optional(),
             name: z.string().trim().min(1).optional(),
             objective: z.string().nullable().optional(),
             pullRequestUrl: z.string().nullable().optional(),
+            requestKey: requestKeySchema.optional(),
             taskId: z.string().min(1),
           }),
         )
+        .use(serializedMutation)
+        .use(idempotentMutation)
         .mutation(({ ctx, input }) => {
           const task = application.updateTask(input);
           return withContextDashboard(
@@ -951,6 +1072,7 @@ function createRouter(
             taskId: z.string().min(1),
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const projectId = application.getProjectIdForTask(input.taskId);
           application.archiveTask(input.taskId, input.archiveState);
@@ -970,6 +1092,7 @@ function createRouter(
           : undefined;
       })
         .input(z.object({ taskId: z.string().min(1) }))
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const projectId = application.getProjectIdForTask(input.taskId);
           application.restoreTask(input.taskId);
@@ -987,6 +1110,7 @@ function createRouter(
             workState: workStateSchema,
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const result = application.reorderTasks(input);
           return withContextDashboardItems(
@@ -1002,6 +1126,7 @@ function createRouter(
           : undefined;
       })
         .input(z.object({ taskId: z.string().min(1) }))
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const result = application.resumeTaskRollup(input.taskId);
           return withContextDashboard(
@@ -1025,8 +1150,11 @@ function createRouter(
             reason: z.string().trim().min(1).optional(),
             taskId: z.string().min(1),
             workState: editableTaskStateSchema,
+            requestKey: requestKeySchema.optional(),
           }),
         )
+        .use(serializedMutation)
+        .use(idempotentMutation)
         .mutation(({ ctx, input }) => {
           const result = application.setTaskWorkState(input);
           return withContextDashboard(
@@ -1054,6 +1182,7 @@ function createRouter(
             url: z.string().url(),
           }),
         )
+        .use(serializedMutation)
         .mutation(({ ctx, input }) => {
           const link = application.addTaskTrackerLink(input);
           const projectId = application.getProjectIdForTask(input.taskId);
@@ -1169,9 +1298,13 @@ export function createFactoryServer({
     operator && operator.name.trim() && operator.secret
       ? { ...operator, name: operator.name.trim() }
       : undefined;
-  const application = createFactoryApplication({ databasePath });
+  const application = createFactoryApplication({
+    databasePath,
+    refreshBeforeOperations: false,
+  });
   const humanSessions = createHumanSessionStore({ databasePath });
   const machineCredentials = createMachineCredentialStore({ databasePath });
+  const idempotencyStore = createIdempotencyStore({ databasePath });
   const t3Coordinator = createT3Coordinator({
     application,
     reader:
@@ -1187,6 +1320,7 @@ export function createFactoryServer({
     githubStatusReader ?? createGitHubStatusReader({ token: githubToken }),
     t3Coordinator,
     configuredOperator !== undefined,
+    idempotencyStore,
   );
   const resolveContext = (
     headers: Headers | Record<string, string | string[] | undefined>,
@@ -1369,6 +1503,7 @@ export function createFactoryServer({
         stopPromise = server.stop(true).finally(() => {
           humanSessions.close();
           machineCredentials.close();
+          idempotencyStore.close();
         });
       }
       return stopPromise;

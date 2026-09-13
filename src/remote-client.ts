@@ -28,6 +28,13 @@ import type { FactoryRouter } from "./server";
 
 export const MAX_FACTORY_ACCESS_TOKEN_BYTES = 16 * 1024;
 export const FACTORY_REMOTE_TIMEOUT_MS = 10_000;
+export const FACTORY_REQUEST_KEY_PATTERN = /^[A-Za-z0-9._-]{8,128}$/;
+
+export type FactoryRequestKeyInput = {
+  requestKey?: string;
+};
+
+type WithRequestKey<T> = T & FactoryRequestKeyInput;
 
 export type FactoryVersion = {
   apiVersion: number;
@@ -98,35 +105,41 @@ export type FactoryRemoteClient = {
   ) => Promise<TrackerLink>;
   projectT3Status: (projectId?: string) => Promise<unknown>;
   sessionDetail: (threadId: string, turnLimit: number) => Promise<unknown>;
-  sessionLink: (input: {
-    projectId: string;
-    taskId?: string;
-    subtaskId?: string;
-    threadId: string;
-  }) => Promise<unknown>;
-  sessionAutoLink: (input: {
-    branchName: string;
-    projectId: string;
-    taskId?: string;
-    subtaskId?: string;
-  }) => Promise<unknown>;
+  sessionLink: (
+    input: {
+      projectId: string;
+      taskId?: string;
+      subtaskId?: string;
+      threadId: string;
+    } & FactoryRequestKeyInput,
+  ) => Promise<unknown>;
+  sessionAutoLink: (
+    input: {
+      branchName: string;
+      projectId: string;
+      taskId?: string;
+      subtaskId?: string;
+    } & FactoryRequestKeyInput,
+  ) => Promise<unknown>;
   sessionUnlink: (threadId: string, associationId?: string) => Promise<unknown>;
   createTask: (
-    input: Parameters<FactoryApplication["createTask"]>[0],
+    input: WithRequestKey<Parameters<FactoryApplication["createTask"]>[0]>,
   ) => Promise<Task>;
   getTaskDetail: (taskId: string) => Promise<TaskDetail>;
   getTaskStatus: (taskId: string) => Promise<TaskStatus>;
-  setTaskWorkState: (input: {
-    reason?: string;
-    taskId: string;
-    workState: Exclude<WorkState, "completed">;
-  }) => Promise<Task>;
+  setTaskWorkState: (
+    input: {
+      reason?: string;
+      taskId: string;
+      workState: Exclude<WorkState, "completed">;
+    } & FactoryRequestKeyInput,
+  ) => Promise<Task>;
   resumeTaskRollup: (taskId: string) => Promise<Task>;
   reorderTasks: (
     input: Parameters<FactoryApplication["reorderTasks"]>[0],
   ) => Promise<Task[]>;
   updateTask: (
-    input: Parameters<FactoryApplication["updateTask"]>[0],
+    input: WithRequestKey<Parameters<FactoryApplication["updateTask"]>[0]>,
   ) => Promise<Task>;
   archiveTask: (
     taskId: string,
@@ -137,16 +150,18 @@ export type FactoryRemoteClient = {
     input: Parameters<FactoryApplication["addTaskTrackerLink"]>[0],
   ) => Promise<TrackerLink>;
   createSubtask: (
-    input: Parameters<FactoryApplication["createSubtask"]>[0],
+    input: WithRequestKey<Parameters<FactoryApplication["createSubtask"]>[0]>,
   ) => Promise<Subtask>;
   getSubtaskDetail: (
     subtaskId: string,
   ) => Promise<ReturnType<FactoryApplication["getSubtaskDetail"]>>;
   updateSubtask: (
-    input: Parameters<FactoryApplication["updateSubtask"]>[0],
+    input: WithRequestKey<Parameters<FactoryApplication["updateSubtask"]>[0]>,
   ) => Promise<Subtask>;
   reportSubtaskStatus: (
-    input: Parameters<FactoryApplication["reportSubtaskStatus"]>[0],
+    input: WithRequestKey<
+      Parameters<FactoryApplication["reportSubtaskStatus"]>[0]
+    >,
   ) => Promise<StatusReport>;
   reorderSubtasks: (
     input: Parameters<FactoryApplication["reorderSubtasks"]>[0],
@@ -248,6 +263,31 @@ export function createRemoteFactoryClient(
     }
   }
 
+  async function invokeMutation<T>(
+    operation: () => Promise<T>,
+    requestKey: string | undefined,
+  ): Promise<T> {
+    await ensureReady();
+    const backoffs = [250, 1_000];
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (
+          requestKey !== undefined &&
+          attempt < backoffs.length &&
+          isRetryableTransportFailure(error)
+        ) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, backoffs[attempt] ?? 1_000),
+          );
+          continue;
+        }
+        throw normalizeRemoteError(error, serviceUrl);
+      }
+    }
+  }
+
   const unwrapDashboard = <T>(value: T & { dashboard?: unknown }): T => {
     const { dashboard: _dashboard, ...withoutDashboard } = value as T & {
       dashboard?: unknown;
@@ -305,12 +345,15 @@ export function createRemoteFactoryClient(
     sessionDetail: (threadId, turnLimit) =>
       invoke(() => client.t3.threadDetail.query({ threadId, turnLimit })),
     sessionLink: (input) =>
-      invoke(async () =>
-        unwrapDashboard(await client.t3.linkThread.mutate(input)),
+      invokeMutation(
+        async () => unwrapDashboard(await client.t3.linkThread.mutate(input)),
+        input.requestKey,
       ),
     sessionAutoLink: (input) =>
-      invoke(async () =>
-        unwrapDashboard(await client.t3.autoLinkThread.mutate(input)),
+      invokeMutation(
+        async () =>
+          unwrapDashboard(await client.t3.autoLinkThread.mutate(input)),
+        input.requestKey,
       ),
     sessionUnlink: (threadId, associationId) =>
       invoke(async () =>
@@ -322,18 +365,24 @@ export function createRemoteFactoryClient(
         ),
       ),
     createTask: (input) =>
-      invoke(async () =>
-        coerce<Task>(unwrapDashboard(await client.tasks.create.mutate(input))),
+      invokeMutation(
+        async () =>
+          coerce<Task>(
+            unwrapDashboard(await client.tasks.create.mutate(input)),
+          ),
+        input.requestKey,
       ),
     getTaskDetail: (taskId) =>
       invoke(() => client.tasks.detail.query({ taskId })),
     getTaskStatus: (taskId) =>
       invoke(() => client.tasks.status.query({ taskId })),
     setTaskWorkState: (input) =>
-      invoke(async () =>
-        coerce<Task>(
-          unwrapDashboard(await client.tasks.setState.mutate(input)),
-        ),
+      invokeMutation(
+        async () =>
+          coerce<Task>(
+            unwrapDashboard(await client.tasks.setState.mutate(input)),
+          ),
+        input.requestKey,
       ),
     resumeTaskRollup: (taskId) =>
       invoke(async () =>
@@ -346,8 +395,12 @@ export function createRemoteFactoryClient(
         coerce<Task[]>((await client.tasks.reorder.mutate(input)).items),
       ),
     updateTask: (input) =>
-      invoke(async () =>
-        coerce<Task>(unwrapDashboard(await client.tasks.update.mutate(input))),
+      invokeMutation(
+        async () =>
+          coerce<Task>(
+            unwrapDashboard(await client.tasks.update.mutate(input)),
+          ),
+        input.requestKey,
       ),
     archiveTask: (taskId, archiveState) =>
       invoke(async () => {
@@ -362,24 +415,30 @@ export function createRemoteFactoryClient(
         unwrapDashboard(await client.tasks.link.mutate(input)),
       ),
     createSubtask: (input) =>
-      invoke(async () =>
-        coerce<Subtask>(
-          unwrapDashboard(await client.subtasks.create.mutate(input)),
-        ),
+      invokeMutation(
+        async () =>
+          coerce<Subtask>(
+            unwrapDashboard(await client.subtasks.create.mutate(input)),
+          ),
+        input.requestKey,
       ),
     getSubtaskDetail: (subtaskId) =>
       invoke(() => client.subtasks.detail.query({ subtaskId })),
     updateSubtask: (input) =>
-      invoke(async () =>
-        coerce<Subtask>(
-          unwrapDashboard(await client.subtasks.update.mutate(input)),
-        ),
+      invokeMutation(
+        async () =>
+          coerce<Subtask>(
+            unwrapDashboard(await client.subtasks.update.mutate(input)),
+          ),
+        input.requestKey,
       ),
     reportSubtaskStatus: (input) =>
-      invoke(async () =>
-        coerce<StatusReport>(
-          unwrapDashboard(await client.subtasks.report.mutate(input)),
-        ),
+      invokeMutation(
+        async () =>
+          coerce<StatusReport>(
+            unwrapDashboard(await client.subtasks.report.mutate(input)),
+          ),
+        input.requestKey,
       ),
     reorderSubtasks: (input) =>
       invoke(async () =>
@@ -575,6 +634,21 @@ function normalizeRemoteError(error: unknown, url: string): Error {
     return error;
   }
   return unavailableError(url, error);
+}
+
+function isRetryableTransportFailure(error: unknown): boolean {
+  if (isTRPCClientError(error)) {
+    const response = error.meta?.response as Response | undefined;
+    if (response) {
+      return [502, 503, 504].includes(response.status);
+    }
+    return error.cause !== undefined;
+  }
+
+  if (!(error instanceof Error)) return false;
+  return /(?:timed out|timeout|fetch failed|connection (?:refused|reset)|econnrefused|econnreset|etimedout|network|socket)/i.test(
+    error.message,
+  );
 }
 
 function unavailableError(url: string, cause: unknown): Error {

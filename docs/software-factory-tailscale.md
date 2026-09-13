@@ -32,21 +32,18 @@ To roll back, repoint the `current` symlink to the prior release and restart the
 
 ## Test checkout changes on port 3001
 
-Keep the user service on port 3000 and start the mutable checkout separately:
-
-```bash
-bun run dev
-```
-
-This serves the checkout on `http://127.0.0.1:3001` and uses the same durable Factory database,
-whose adapter refreshes before each read and write. For data-isolated testing, override the
-database as well:
+Keep the user service on port 3000 and start the mutable checkout separately against its own
+database. The production server is the only writer of the production database; a second server
+process sharing that file is a two-writer hazard and is no longer supported:
 
 ```bash
 FACTORY_DB=factory-dev.sqlite bun run dev
 ```
 
-Deploy again only after the checkout has passed its intended checks.
+This serves the checkout on `http://127.0.0.1:3001`. Local CLI mode (`--database`) against the
+production file is for offline administration with the service stopped; running agents use
+remote mode against the service. Deploy again only after the checkout has passed its intended
+checks.
 
 ## Enable private GitHub PR and Actions reads
 

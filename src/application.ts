@@ -33,6 +33,7 @@ export type FactoryIdGenerator = () => string;
 export type FactoryApplicationOptions = {
   clock: FactoryClock;
   idGenerator: FactoryIdGenerator;
+  refreshBeforeOperations?: boolean;
   refresh?: () => FactoryState | undefined;
   state?: FactoryState;
   persist?: (state: FactoryState) => void;
@@ -75,6 +76,7 @@ export type Task = {
   stateReason?: string;
   sortOrder?: number;
   archiveState?: ArchiveState;
+  revision: number;
   createdAt: Date;
 };
 
@@ -88,8 +90,28 @@ export type Subtask = {
   pullRequestUrl?: string;
   sortOrder?: number;
   archiveState?: ArchiveState;
+  revision: number;
   createdAt: Date;
 };
+
+export class FactoryConflictError extends Error {
+  readonly currentRevision: number;
+  readonly expectedRevision: number;
+
+  constructor(
+    recordType: "Task" | "Subtask",
+    recordId: string,
+    currentRevision: number,
+    expectedRevision: number,
+  ) {
+    super(
+      `${recordType} ${recordId} has current revision ${currentRevision}; expected revision ${expectedRevision}.`,
+    );
+    this.name = "FactoryConflictError";
+    this.currentRevision = currentRevision;
+    this.expectedRevision = expectedRevision;
+  }
+}
 
 export type ArchiveState = "released" | "wont_do";
 
@@ -282,10 +304,15 @@ export type TrackerLink = {
 
 type TrackerLinkFields = Omit<TrackerLink, "id" | "projectId" | "taskId">;
 
+// Schema-v1 snapshots may omit the additive revision field; hydration makes it
+// required on the runtime Task and Subtask records.
+type PersistedTask = Omit<Task, "revision"> & { revision?: number };
+type PersistedSubtask = Omit<Subtask, "revision"> & { revision?: number };
+
 export type FactoryState = {
   projects: Project[];
-  tasks: Task[];
-  subtasks: Subtask[];
+  tasks: PersistedTask[];
+  subtasks: PersistedSubtask[];
   statusReports: StatusReport[];
   verifications: Verification[];
   trackerLinks?: TrackerLink[];
@@ -299,6 +326,11 @@ export type FactoryState = {
     nextSubtask: number;
     nextTask: number;
   };
+};
+
+type HydratedFactoryState = Omit<FactoryState, "tasks" | "subtasks"> & {
+  tasks: Task[];
+  subtasks: Subtask[];
 };
 
 export type ProjectT3Activity = {
@@ -349,9 +381,21 @@ type LegacyTargetedRun = Run & {
   subtaskId?: string;
 };
 
-function normalizeSimpleIdState(state: FactoryState): FactoryState {
-  const tasks = backfillSimpleIds(state.tasks, TASK_SIMPLE_ID_PREFIX);
-  const subtasks = backfillSimpleIds(state.subtasks, SUBTASK_SIMPLE_ID_PREFIX);
+function normalizeSimpleIdState(state: FactoryState): HydratedFactoryState {
+  const tasks: Task[] = backfillSimpleIds(
+    state.tasks,
+    TASK_SIMPLE_ID_PREFIX,
+  ).map((task) => ({
+    ...task,
+    revision: normalizeRevision(task.revision),
+  }));
+  const subtasks: Subtask[] = backfillSimpleIds(
+    state.subtasks,
+    SUBTASK_SIMPLE_ID_PREFIX,
+  ).map((subtask) => ({
+    ...subtask,
+    revision: normalizeRevision(subtask.revision),
+  }));
   return {
     ...state,
     tasks,
@@ -367,6 +411,27 @@ function normalizeSimpleIdState(state: FactoryState): FactoryState {
       ),
     },
   };
+}
+
+function normalizeRevision(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1
+    ? value
+    : 1;
+}
+
+function recordRevisionFingerprint(record: Task | Subtask): string {
+  const { revision: _revision, ...withoutRevision } = record;
+  return JSON.stringify(withoutRevision);
+}
+
+function bumpRevisionIfChanged(
+  record: Task | Subtask,
+  previousFingerprint: string,
+  force = false,
+): void {
+  if (force || recordRevisionFingerprint(record) !== previousFingerprint) {
+    record.revision = normalizeRevision(record.revision) + 1;
+  }
 }
 
 function requiredSimpleId(
@@ -543,6 +608,7 @@ export type TaskDetail = {
   stateReason?: string;
   sortOrder?: number;
   archiveState?: ArchiveState;
+  revision: number;
   trackerLinks: TrackerLink[];
 };
 
@@ -573,6 +639,7 @@ export class FactoryApplication {
   private readonly idGenerator: FactoryIdGenerator;
   private readonly persist?: (state: FactoryState) => void;
   private readonly refresh?: () => FactoryState | undefined;
+  private readonly refreshBeforeOperations: boolean;
   private readonly projects: Project[];
   private readonly tasks: Task[];
   private readonly subtasks: Subtask[];
@@ -592,6 +659,7 @@ export class FactoryApplication {
     clock,
     idGenerator,
     persist,
+    refreshBeforeOperations = true,
     refresh,
     state,
   }: FactoryApplicationOptions) {
@@ -599,6 +667,7 @@ export class FactoryApplication {
     this.clock = clock;
     this.idGenerator = idGenerator;
     this.persist = persist;
+    this.refreshBeforeOperations = refreshBeforeOperations;
     this.refresh = refresh;
     this.projects = normalizedState?.projects ?? [];
     this.tasks = normalizedState?.tasks ?? [];
@@ -818,6 +887,12 @@ export class FactoryApplication {
     this.refreshFromPersistence();
     const subtask = this.requireSubtask(subtaskId);
     const resolvedSubtaskId = subtask.id;
+    const task = this.tasks.find(
+      (candidate) => candidate.id === subtask.taskId,
+    );
+    const previousTaskFingerprint = task
+      ? recordRevisionFingerprint(task)
+      : undefined;
 
     const reportIds = new Set(
       this.statusReports
@@ -844,6 +919,9 @@ export class FactoryApplication {
       );
     }
     this.reconcileAutomaticTaskRollup(subtask.taskId);
+    if (task && previousTaskFingerprint !== undefined) {
+      bumpRevisionIfChanged(task, previousTaskFingerprint);
+    }
     this.save();
   }
 
@@ -908,6 +986,7 @@ export class FactoryApplication {
       workState,
       ...(normalizedReason ? { stateReason: normalizedReason } : {}),
       sortOrder: this.nextTaskSortOrder(projectId, workState),
+      revision: 1,
       createdAt: this.clock(),
     };
 
@@ -926,6 +1005,7 @@ export class FactoryApplication {
     stateReason,
     taskId,
     workState,
+    expectedRevision,
   }: {
     acceptanceCriteria?: string[];
     branchName?: string | null;
@@ -935,9 +1015,23 @@ export class FactoryApplication {
     stateReason?: string | null;
     taskId: string;
     workState?: WorkState;
+    expectedRevision?: number;
   }): Task {
     this.refreshFromPersistence();
     const task = this.requireTask(taskId);
+    const currentRevision = normalizeRevision(task.revision);
+    if (
+      expectedRevision !== undefined &&
+      currentRevision !== expectedRevision
+    ) {
+      throw new FactoryConflictError(
+        "Task",
+        task.id,
+        currentRevision,
+        expectedRevision,
+      );
+    }
+    const previousFingerprint = recordRevisionFingerprint(task);
 
     if (name !== undefined) {
       const trimmedName = name.trim();
@@ -1014,29 +1108,39 @@ export class FactoryApplication {
         `Task ${currentState} requires a reason.`,
       );
     }
+    bumpRevisionIfChanged(task, previousFingerprint);
     this.save();
     return task;
   }
 
   setTaskWorkState({
+    expectedRevision,
     reason,
     taskId,
     workState,
   }: {
+    expectedRevision?: number;
     reason?: string;
     taskId: string;
     workState: WorkState;
   }): Task {
-    return this.updateTask({ stateReason: reason, taskId, workState });
+    return this.updateTask({
+      expectedRevision,
+      stateReason: reason,
+      taskId,
+      workState,
+    });
   }
 
   resumeTaskRollup(taskId: string): Task {
     this.refreshFromPersistence();
     const task = this.requireTask(taskId);
+    const previousFingerprint = recordRevisionFingerprint(task);
     if (task.archiveState)
       throw new Error("Restore the Task before changing its work state.");
     const rollup = this.getTaskRollup(task.id);
     this.setTaskRollupState(task, rollup.state, rollup.reason);
+    bumpRevisionIfChanged(task, previousFingerprint);
     this.save();
     return task;
   }
@@ -1053,7 +1157,9 @@ export class FactoryApplication {
     taskId: string;
   }): Subtask {
     this.refreshFromPersistence();
-    const resolvedTaskId = this.requireTask(taskId).id;
+    const parentTask = this.requireTask(taskId);
+    const previousTaskFingerprint = recordRevisionFingerprint(parentTask);
+    const resolvedTaskId = parentTask.id;
 
     const normalizedPullRequestUrl = normalizePullRequestUrl(pullRequestUrl);
     const subtask = {
@@ -1066,12 +1172,14 @@ export class FactoryApplication {
         ? { pullRequestUrl: normalizedPullRequestUrl }
         : {}),
       sortOrder: this.nextSubtaskSortOrder(resolvedTaskId, "planned"),
+      revision: 1,
       createdAt: this.clock(),
     };
 
     this.nextSubtaskSimpleId += 1;
     this.subtasks.push(subtask);
     this.reconcileAutomaticTaskRollup(resolvedTaskId);
+    bumpRevisionIfChanged(parentTask, previousTaskFingerprint);
     this.save();
     return subtask;
   }
@@ -1082,15 +1190,30 @@ export class FactoryApplication {
     name,
     pullRequestUrl,
     subtaskId,
+    expectedRevision,
   }: {
     description?: string | null;
     evidence?: string | null;
     name?: string;
     pullRequestUrl?: string | null;
     subtaskId: string;
+    expectedRevision?: number;
   }): Subtask {
     this.refreshFromPersistence();
     const subtask = this.requireSubtask(subtaskId);
+    const currentRevision = normalizeRevision(subtask.revision);
+    if (
+      expectedRevision !== undefined &&
+      currentRevision !== expectedRevision
+    ) {
+      throw new FactoryConflictError(
+        "Subtask",
+        subtask.id,
+        currentRevision,
+        expectedRevision,
+      );
+    }
+    const previousFingerprint = recordRevisionFingerprint(subtask);
 
     if (name !== undefined) {
       const trimmedName = name.trim();
@@ -1117,6 +1240,7 @@ export class FactoryApplication {
         delete subtask.pullRequestUrl;
       }
     }
+    bumpRevisionIfChanged(subtask, previousFingerprint);
     this.save();
     return subtask;
   }
@@ -1124,35 +1248,61 @@ export class FactoryApplication {
   archiveTask(taskId: string, archiveState: ArchiveState): void {
     this.refreshFromPersistence();
     const task = this.requireTask(taskId);
+    const previousFingerprint = recordRevisionFingerprint(task);
 
     task.archiveState = archiveState;
+    bumpRevisionIfChanged(task, previousFingerprint);
     this.save();
   }
 
   restoreTask(taskId: string): void {
     this.refreshFromPersistence();
     const task = this.requireTask(taskId);
+    const previousFingerprint = recordRevisionFingerprint(task);
 
     delete task.archiveState;
     this.reconcileAutomaticTaskRollup(task.id);
+    bumpRevisionIfChanged(task, previousFingerprint);
     this.save();
   }
 
   archiveSubtask(subtaskId: string, archiveState: ArchiveState): void {
     this.refreshFromPersistence();
     const subtask = this.requireSubtask(subtaskId);
+    const previousSubtaskFingerprint = recordRevisionFingerprint(subtask);
+    const task = this.tasks.find(
+      (candidate) => candidate.id === subtask.taskId,
+    );
+    const previousTaskFingerprint = task
+      ? recordRevisionFingerprint(task)
+      : undefined;
 
     subtask.archiveState = archiveState;
     this.reconcileAutomaticTaskRollup(subtask.taskId);
+    bumpRevisionIfChanged(subtask, previousSubtaskFingerprint);
+    if (task && previousTaskFingerprint !== undefined) {
+      bumpRevisionIfChanged(task, previousTaskFingerprint);
+    }
     this.save();
   }
 
   restoreSubtask(subtaskId: string): void {
     this.refreshFromPersistence();
     const subtask = this.requireSubtask(subtaskId);
+    const previousSubtaskFingerprint = recordRevisionFingerprint(subtask);
+    const task = this.tasks.find(
+      (candidate) => candidate.id === subtask.taskId,
+    );
+    const previousTaskFingerprint = task
+      ? recordRevisionFingerprint(task)
+      : undefined;
 
     delete subtask.archiveState;
     this.reconcileAutomaticTaskRollup(subtask.taskId);
+    bumpRevisionIfChanged(subtask, previousSubtaskFingerprint);
+    if (task && previousTaskFingerprint !== undefined) {
+      bumpRevisionIfChanged(task, previousTaskFingerprint);
+    }
     this.save();
   }
 
@@ -1175,6 +1325,13 @@ export class FactoryApplication {
   }): StatusReport {
     this.refreshFromPersistence();
     const subtask = this.requireSubtask(subtaskId);
+    const task = this.tasks.find(
+      (candidate) => candidate.id === subtask.taskId,
+    );
+    const previousSubtaskFingerprint = recordRevisionFingerprint(subtask);
+    const previousTaskFingerprint = task
+      ? recordRevisionFingerprint(task)
+      : undefined;
 
     const normalizedReason =
       reportedState === "blocked" || reportedState === "complete"
@@ -1206,6 +1363,14 @@ export class FactoryApplication {
     const nextState = this.getSubtaskEffectiveWorkState(subtask);
     this.moveSubtaskToStateIfChanged(subtask, previousState);
     this.promoteParentTask(subtask.taskId, { nextState, previousState });
+    bumpRevisionIfChanged(
+      subtask,
+      previousSubtaskFingerprint,
+      nextState !== previousState,
+    );
+    if (task && previousTaskFingerprint !== undefined) {
+      bumpRevisionIfChanged(task, previousTaskFingerprint);
+    }
     this.save();
     return report;
   }
@@ -1235,6 +1400,13 @@ export class FactoryApplication {
     if (!subtask) {
       throw new Error(`Subtask ${report.subtaskId} does not exist.`);
     }
+    const task = this.tasks.find(
+      (candidate) => candidate.id === subtask.taskId,
+    );
+    const previousSubtaskFingerprint = recordRevisionFingerprint(subtask);
+    const previousTaskFingerprint = task
+      ? recordRevisionFingerprint(task)
+      : undefined;
     const previousState = this.getSubtaskEffectiveWorkState(subtask);
     const normalizedReason =
       decision === "rejected" || decision === "deferred"
@@ -1255,6 +1427,14 @@ export class FactoryApplication {
     const nextState = this.getSubtaskEffectiveWorkState(subtask);
     this.moveSubtaskToStateIfChanged(subtask, previousState);
     this.promoteParentTask(subtask.taskId, { nextState, previousState });
+    bumpRevisionIfChanged(
+      subtask,
+      previousSubtaskFingerprint,
+      nextState !== previousState,
+    );
+    if (task && previousTaskFingerprint !== undefined) {
+      bumpRevisionIfChanged(task, previousTaskFingerprint);
+    }
     this.save();
   }
 
@@ -2357,6 +2537,7 @@ export class FactoryApplication {
       ...(taskStateReason ? { stateReason: taskStateReason } : {}),
       ...(task.sortOrder !== undefined ? { sortOrder: task.sortOrder } : {}),
       ...(task.archiveState ? { archiveState: task.archiveState } : {}),
+      revision: normalizeRevision(task.revision),
       trackerLinks: this.trackerLinks.filter((link) => link.taskId === task.id),
     };
   }
@@ -2366,6 +2547,7 @@ export class FactoryApplication {
     simpleId: string;
     name: string;
     taskId: string;
+    revision: number;
     description?: string;
     evidence?: string;
     pullRequestUrl?: string;
@@ -2377,6 +2559,7 @@ export class FactoryApplication {
       simpleId: requiredSimpleId(subtask, "Subtask"),
       name: subtask.name,
       taskId: subtask.taskId,
+      revision: normalizeRevision(subtask.revision),
       ...(subtask.description !== undefined
         ? { description: subtask.description }
         : {}),
@@ -2425,10 +2608,19 @@ export class FactoryApplication {
       "Task",
       "project",
     );
+    const previousFingerprints = new Map(
+      group.map((task) => [task.id, recordRevisionFingerprint(task)]),
+    );
     resolvedTaskIds.forEach((taskId, index) => {
       const task = this.tasks.find((candidate) => candidate.id === taskId);
       if (task) task.sortOrder = index;
     });
+    for (const task of group) {
+      const previousFingerprint = previousFingerprints.get(task.id);
+      if (previousFingerprint !== undefined) {
+        bumpRevisionIfChanged(task, previousFingerprint);
+      }
+    }
     this.save();
     return group.sort((left, right) => this.compareTasks(left, right));
   }
@@ -2469,12 +2661,21 @@ export class FactoryApplication {
       "Subtask",
       "task",
     );
+    const previousFingerprints = new Map(
+      group.map((subtask) => [subtask.id, recordRevisionFingerprint(subtask)]),
+    );
     resolvedSubtaskIds.forEach((subtaskId, index) => {
       const subtask = this.subtasks.find(
         (candidate) => candidate.id === subtaskId,
       );
       if (subtask) subtask.sortOrder = index;
     });
+    for (const subtask of group) {
+      const previousFingerprint = previousFingerprints.get(subtask.id);
+      if (previousFingerprint !== undefined) {
+        bumpRevisionIfChanged(subtask, previousFingerprint);
+      }
+    }
     this.save();
     return group.sort((left, right) => this.compareSubtasks(left, right));
   }
@@ -3051,6 +3252,7 @@ export class FactoryApplication {
   }
 
   private refreshFromPersistence(): void {
+    if (!this.refreshBeforeOperations) return;
     const state = this.refresh?.();
     if (!state) return;
     const normalizedState = normalizeSimpleIdState(state);
@@ -3132,8 +3334,10 @@ export class FactoryApplication {
 
 export function createFactoryApplication({
   databasePath,
+  refreshBeforeOperations = true,
 }: {
   databasePath: string;
+  refreshBeforeOperations?: boolean;
 }): FactoryApplication {
   const database = new Database(databasePath);
   database.exec(`
@@ -3153,6 +3357,7 @@ export function createFactoryApplication({
   return new FactoryApplication({
     clock: () => new Date(),
     idGenerator: () => crypto.randomUUID(),
+    refreshBeforeOperations,
     persist(nextState) {
       database
         .query(
