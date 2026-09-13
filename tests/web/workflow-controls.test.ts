@@ -12,6 +12,14 @@ const stylesheet = readFileSync(
 );
 
 describe("PWA workflow controls", () => {
+  test("applies canonical mutation snapshots instead of refetching the project", () => {
+    expect(source).toContain("const applyDashboardSnapshot");
+    expect(source).toContain("client.projects.snapshot.query");
+    expect(source).toContain("applyDashboardSnapshot(result.dashboard)");
+    expect(source).toContain("onData: (dashboard)");
+    expect(source).not.toContain("await refreshProject(projectDetail.id)");
+  });
+
   test("uses live state and ordering mutations from accessible controls", () => {
     expect(source).toContain("tasks.setState.mutate");
     expect(source).toContain("tasks.reorder.mutate");

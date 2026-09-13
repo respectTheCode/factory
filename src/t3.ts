@@ -176,7 +176,10 @@ export type T3ActivityReaderOptions = {
 export const DEFAULT_T3_BASE_URL = "http://127.0.0.1:3773";
 export const DEFAULT_T3_TIMEOUT_MS = 6_000;
 export const DEFAULT_T3_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
-export const DEFAULT_T3_SERVER_VERSION = "0.0.38";
+// T3 uses the 0.0 minor line for breaking adapter changes, so keep this exact
+// version pin and advance it only after the current descriptor and payload
+// shapes have been exercised against the new server.
+export const DEFAULT_T3_SERVER_VERSION = "0.0.40";
 export const MAX_T3_THREAD_TURN_LIMIT = 10;
 
 const DESCRIPTOR_PATH = "/.well-known/t3/environment";

@@ -501,6 +501,68 @@ export type ProjectHierarchy = {
   }>;
 };
 
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  gitOriginUrl?: string;
+  t3ProjectId?: string;
+  workspaceRoot?: string;
+};
+
+export type PortfolioStatus = {
+  totalTasks: number;
+  counts: ProjectWorkCounts;
+  projects: Array<{
+    projectId: string;
+    projectName: string;
+    totalTasks: number;
+    counts: ProjectWorkCounts;
+  }>;
+};
+
+export type TaskDetail = {
+  id: string;
+  simpleId: string;
+  name: string;
+  projectId: string;
+  branchName?: string;
+  pullRequestUrl?: string;
+  objective?: string;
+  acceptanceCriteria: string[];
+  priority?: "low" | "medium" | "high" | "urgent";
+  owner?: string;
+  dependencies: string[];
+  repositoryLinks: string[];
+  workState?: WorkState;
+  workStateSource?: "manual" | "rollup";
+  stateReason?: string;
+  sortOrder?: number;
+  archiveState?: ArchiveState;
+  trackerLinks: TrackerLink[];
+};
+
+export type ProjectMetadata = {
+  id: string;
+  name: string;
+  gitOriginUrl?: string;
+  t3ProjectId?: string;
+  workspaceRoot?: string;
+  trackerLinks: TrackerLink[];
+};
+
+export type ProjectDetail = ProjectHierarchy & {
+  trackerLinks: TrackerLink[];
+};
+
+export type DashboardSnapshot = {
+  projects: ProjectSummary[];
+  portfolioStatus: PortfolioStatus;
+  attention: AttentionItem[];
+  projectDetail?: ProjectDetail;
+  taskDetails: TaskDetail[];
+  taskStatuses: TaskStatus[];
+};
+
 export class FactoryApplication {
   private readonly clock: FactoryClock;
   private readonly idGenerator: FactoryIdGenerator;
@@ -1187,6 +1249,10 @@ export class FactoryApplication {
 
   getTaskStatus(taskId: string): TaskStatus {
     this.refreshFromPersistence();
+    return this.getTaskStatusFromCurrentState(taskId);
+  }
+
+  private getTaskStatusFromCurrentState(taskId: string): TaskStatus {
     const task = this.requireTask(taskId);
 
     const subtasks: TaskStatus["subtasks"] = this.subtasks
@@ -1283,6 +1349,15 @@ export class FactoryApplication {
     counts: ProjectWorkCounts;
   } {
     this.refreshFromPersistence();
+    return this.getProjectStatusFromCurrentState(projectId);
+  }
+
+  private getProjectStatusFromCurrentState(projectId: string): {
+    projectId: string;
+    projectName: string;
+    totalTasks: number;
+    counts: ProjectWorkCounts;
+  } {
     const project = this.projects.find(
       (candidate) => candidate.id === projectId,
     );
@@ -1293,7 +1368,7 @@ export class FactoryApplication {
     const counts = emptyProjectWorkCounts();
     const tasks = this.tasks.filter((task) => task.projectId === projectId);
     for (const task of tasks) {
-      counts[this.getTaskWorkState(task.id)] += 1;
+      counts[this.getTaskStatusFromCurrentState(task.id).taskState] += 1;
     }
 
     return {
@@ -1304,20 +1379,15 @@ export class FactoryApplication {
     };
   }
 
-  getPortfolioStatus(): {
-    totalTasks: number;
-    counts: ProjectWorkCounts;
-    projects: Array<{
-      projectId: string;
-      projectName: string;
-      totalTasks: number;
-      counts: ProjectWorkCounts;
-    }>;
-  } {
+  getPortfolioStatus(): PortfolioStatus {
     this.refreshFromPersistence();
+    return this.getPortfolioStatusFromCurrentState();
+  }
+
+  private getPortfolioStatusFromCurrentState(): PortfolioStatus {
     const counts = emptyProjectWorkCounts();
     const projects = this.projects.map((project) => {
-      const status = this.getProjectStatus(project.id);
+      const status = this.getProjectStatusFromCurrentState(project.id);
       for (const state of Object.keys(counts) as ProjectWorkState[]) {
         counts[state] += status.counts[state];
       }
@@ -1336,6 +1406,10 @@ export class FactoryApplication {
 
   getAttentionProjection(): AttentionItem[] {
     this.refreshFromPersistence();
+    return this.getAttentionProjectionFromCurrentState();
+  }
+
+  private getAttentionProjectionFromCurrentState(): AttentionItem[] {
     const stateOrder: Record<AttentionItem["state"], number> = {
       blocked: 0,
       awaiting_verification: 1,
@@ -1346,7 +1420,7 @@ export class FactoryApplication {
 
     return this.tasks
       .flatMap((task) => {
-        const state = this.getTaskStatus(task.id).taskState;
+        const state = this.getTaskStatusFromCurrentState(task.id).taskState;
         if (
           state === "completed" ||
           state === "released" ||
@@ -1390,6 +1464,16 @@ export class FactoryApplication {
     );
   }
 
+  getStatusReportProjectId(reportId: string): string {
+    this.refreshFromPersistence();
+    const report = this.statusReports.find(
+      (candidate) => candidate.id === reportId,
+    );
+    if (!report) throw new Error(`Status Report ${reportId} does not exist.`);
+    const subtask = this.requireSubtask(report.subtaskId);
+    return this.requireTask(subtask.taskId).projectId;
+  }
+
   getSubtaskVerificationHistory(subtaskId: string): Verification[] {
     this.refreshFromPersistence();
     const resolvedSubtaskId = this.requireSubtask(subtaskId).id;
@@ -1406,6 +1490,12 @@ export class FactoryApplication {
 
   getProjectHierarchy(projectId: string): ProjectHierarchy {
     this.refreshFromPersistence();
+    return this.getProjectHierarchyFromCurrentState(projectId);
+  }
+
+  private getProjectHierarchyFromCurrentState(
+    projectId: string,
+  ): ProjectHierarchy {
     const project = this.projects.find(
       (candidate) => candidate.id === projectId,
     );
@@ -1477,14 +1567,42 @@ export class FactoryApplication {
     };
   }
 
-  listProjects(): Array<{
-    id: string;
-    name: string;
-    gitOriginUrl?: string;
-    t3ProjectId?: string;
-    workspaceRoot?: string;
-  }> {
+  getDashboardSnapshot(projectId?: string): DashboardSnapshot {
     this.refreshFromPersistence();
+
+    const projectDetail =
+      projectId === undefined
+        ? undefined
+        : {
+            ...this.getProjectHierarchyFromCurrentState(projectId),
+            trackerLinks:
+              this.getProjectDetailFromCurrentState(projectId).trackerLinks,
+          };
+
+    return {
+      attention: this.getAttentionProjectionFromCurrentState(),
+      ...(projectDetail ? { projectDetail } : {}),
+      portfolioStatus: this.getPortfolioStatusFromCurrentState(),
+      projects: this.listProjectsFromCurrentState(),
+      taskDetails: projectDetail
+        ? projectDetail.tasks.map((task) =>
+            this.getTaskDetailFromCurrentState(task.id),
+          )
+        : [],
+      taskStatuses: projectDetail
+        ? projectDetail.tasks.map((task) =>
+            this.getTaskStatusFromCurrentState(task.id),
+          )
+        : [],
+    };
+  }
+
+  listProjects(): ProjectSummary[] {
+    this.refreshFromPersistence();
+    return this.listProjectsFromCurrentState();
+  }
+
+  private listProjectsFromCurrentState(): ProjectSummary[] {
     return this.projects.map((project) => ({
       id: project.id,
       name: project.name,
@@ -2158,15 +2276,12 @@ export class FactoryApplication {
     return trackerLink;
   }
 
-  getProjectDetail(projectId: string): {
-    id: string;
-    name: string;
-    gitOriginUrl?: string;
-    t3ProjectId?: string;
-    workspaceRoot?: string;
-    trackerLinks: TrackerLink[];
-  } {
+  getProjectDetail(projectId: string): ProjectMetadata {
     this.refreshFromPersistence();
+    return this.getProjectDetailFromCurrentState(projectId);
+  }
+
+  private getProjectDetailFromCurrentState(projectId: string): ProjectMetadata {
     const project = this.projects.find(
       (candidate) => candidate.id === projectId,
     );
@@ -2186,27 +2301,12 @@ export class FactoryApplication {
     };
   }
 
-  getTaskDetail(taskId: string): {
-    id: string;
-    simpleId: string;
-    name: string;
-    projectId: string;
-    branchName?: string;
-    pullRequestUrl?: string;
-    objective?: string;
-    acceptanceCriteria: string[];
-    priority?: "low" | "medium" | "high" | "urgent";
-    owner?: string;
-    dependencies: string[];
-    repositoryLinks: string[];
-    workState?: WorkState;
-    workStateSource?: "manual" | "rollup";
-    stateReason?: string;
-    sortOrder?: number;
-    archiveState?: ArchiveState;
-    trackerLinks: TrackerLink[];
-  } {
+  getTaskDetail(taskId: string): TaskDetail {
     this.refreshFromPersistence();
+    return this.getTaskDetailFromCurrentState(taskId);
+  }
+
+  private getTaskDetailFromCurrentState(taskId: string): TaskDetail {
     const task = this.requireTask(taskId);
     const currentWorkState = this.getEffectiveTaskWorkState(task);
     const taskStateReason = this.getTaskStateReason(task, currentWorkState);

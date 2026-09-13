@@ -172,6 +172,22 @@ function shellResponse(): Response {
 }
 
 describe("T3 read-only activity transport", () => {
+  test("accepts the current supported T3 0.0.40 descriptor", async () => {
+    const reader = createT3ActivityReader({
+      baseUrl: BASE_URL,
+      fetcher: async (input) =>
+        String(input).includes("/.well-known")
+          ? descriptorResponse("0.0.40")
+          : shellResponse(),
+      token: FIXTURE_TOKEN,
+    });
+
+    await expect(reader.readShell()).resolves.toMatchObject({
+      ok: true,
+      status: "ok",
+    });
+  });
+
   test("reads a shell and a bounded thread using only allowlisted GETs", async () => {
     const requests: Array<{ headers: Headers; method: string; url: string }> =
       [];

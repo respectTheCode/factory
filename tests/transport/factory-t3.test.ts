@@ -543,4 +543,62 @@ describe("Factory T3 tRPC integration", () => {
       rmSync(directory, { force: true, recursive: true });
     }
   });
+
+  test("matches a T3 Project by the Factory workspace root without a stored T3 id", async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "software-factory-t3-workspace-match-"),
+    );
+    const t3 = reader();
+    const server = createFactoryServer({
+      databasePath: join(directory, "factory.sqlite"),
+      port: 0,
+      t3ActivityReader: t3,
+    });
+    const socket = new WebSocket(new URL("/trpc", server.url));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener(
+          "error",
+          () => reject(new Error("WebSocket connection failed")),
+          { once: true },
+        );
+      });
+
+      const project = data(
+        await request(socket, {
+          id: 30,
+          method: "mutation",
+          params: {
+            input: {
+              name: "Factory",
+              workspaceRoot: "/work/factory",
+            },
+            path: "projects.create",
+          },
+        }),
+      );
+      const activity = data(
+        await request(socket, {
+          id: 31,
+          method: "query",
+          params: {
+            input: { projectId: project.id },
+            path: "t3.projectActivity",
+          },
+        }),
+      );
+
+      expect(activity).toMatchObject({
+        connection: { state: "connected" },
+        projectName: "Factory",
+        status: "ok",
+        threads: [{ externalProjectId: "t3-project-factory" }],
+      });
+    } finally {
+      socket.close();
+      server.stop();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
 });

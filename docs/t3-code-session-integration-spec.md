@@ -68,7 +68,7 @@ Reports, and Verification.
 
 ## T3 transport
 
-Factory uses only these T3 0.0.38 reads:
+Factory uses only these T3 0.0.40 reads:
 
 - `GET /.well-known/t3/environment` for compatibility and capability discovery.
 - `GET /api/orchestration/shell` for project and thread shells.
@@ -365,7 +365,7 @@ not sent by default.
 
 ## Acceptance criteria
 
-1. With a valid read-only credential, Factory reads the live T3 0.0.38 shell and a bounded thread
+1. With a valid read-only credential, Factory reads the live T3 0.0.40 shell and a bounded thread
    snapshot over loopback without using T3 mutation endpoints.
 2. With missing, expired, unauthorized, unreachable, timed-out, or malformed T3 responses, Factory
    returns the correct explicit state and core Project/Task reads remain available.

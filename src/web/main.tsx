@@ -2,6 +2,7 @@ import { createTRPCProxyClient, createWSClient, wsLink } from "@trpc/client";
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
+import type { DashboardSnapshot } from "../application";
 import type { FactoryRouter } from "../server";
 import type { GitHubStatusSnapshot } from "../github";
 import type {
@@ -23,7 +24,6 @@ import {
   projectView,
   type DashboardView,
 } from "./navigation";
-import { createProjectAndRefresh } from "./project-actions";
 import {
   filterAttention,
   filterArchivedTasks,
@@ -582,44 +582,38 @@ function Dashboard() {
     setGithubStatuses(Object.fromEntries(entries));
   };
 
+  const applyDashboardSnapshot = (dashboard: DashboardSnapshot) => {
+    setProjects(dashboard.projects);
+    setPortfolioStatus(dashboard.portfolioStatus);
+    setAttention(dashboard.attention);
+    if (dashboard.projectDetail) {
+      const detail = dashboard.projectDetail as ProjectDetail;
+      setProjectDetail(detail);
+      setTaskDetails(
+        Object.fromEntries(
+          dashboard.taskDetails.map((task) => [task.id, task as TaskDetail]),
+        ),
+      );
+      setTaskStatuses(
+        Object.fromEntries(
+          dashboard.taskStatuses.map((status) => [
+            status.taskId,
+            status as TaskStatus,
+          ]),
+        ),
+      );
+      void refreshGitHubStatuses(detail);
+    }
+  };
+
   const refreshProject = async (projectId: string) => {
     const client = trpc.current;
     if (!client) return;
-    const [detail, nextPortfolio, nextAttention] = await Promise.all([
-      client.projects.detail.query({ projectId }) as Promise<ProjectDetail>,
-      client.projects.portfolio.query(),
-      client.projects.attention.query(),
-    ]);
-    setPortfolioStatus(nextPortfolio);
-    setAttention(nextAttention);
-    const [details, statuses] = await Promise.all([
-      Promise.all(
-        detail.tasks.map(
-          async (task) =>
-            [
-              task.id,
-              (await client.tasks.detail.query({
-                taskId: task.id,
-              })) as TaskDetail,
-            ] as const,
-        ),
-      ),
-      Promise.all(
-        detail.tasks.map(
-          async (task) =>
-            [
-              task.id,
-              (await client.tasks.status.query({
-                taskId: task.id,
-              })) as TaskStatus,
-            ] as const,
-        ),
-      ),
-    ]);
-    setProjectDetail(detail);
-    setTaskDetails(Object.fromEntries(details));
-    setTaskStatuses(Object.fromEntries(statuses));
-    void refreshGitHubStatuses(detail);
+    const dashboard = (await client.projects.snapshot.query({
+      projectId,
+    })) as DashboardSnapshot;
+    if (trpc.current !== client) return;
+    applyDashboardSnapshot(dashboard);
   };
 
   const refreshT3Project = async (projectId: string) => {
@@ -716,14 +710,14 @@ function Dashboard() {
     if (!client || !projectId || !snapshot.canMutate || busy) return;
     setBusy(true);
     try {
-      await client.t3.linkThread.mutate({
+      const result = await client.t3.linkThread.mutate({
         projectId,
         threadId,
         ...(target.kind === "task"
           ? { taskId: target.id }
           : { subtaskId: target.id }),
       });
-      await refreshProject(projectId);
+      applyDashboardSnapshot(result.dashboard);
       await refreshT3Project(projectId);
     } finally {
       setBusy(false);
@@ -736,11 +730,11 @@ function Dashboard() {
     if (!client || !projectId || !snapshot.canMutate || busy) return;
     setBusy(true);
     try {
-      await client.t3.unlinkThread.mutate({
+      const result = await client.t3.unlinkThread.mutate({
         threadId,
         ...(associationId === undefined ? {} : { associationId }),
       });
-      await refreshProject(projectId);
+      applyDashboardSnapshot(result.dashboard);
       await refreshT3Project(projectId);
     } finally {
       setBusy(false);
@@ -786,12 +780,14 @@ function Dashboard() {
     setView(nextView);
   };
 
-  const mutateAndRefresh = async (action: () => Promise<unknown>) => {
+  const mutateAndRefresh = async (
+    action: () => Promise<{ dashboard: DashboardSnapshot }>,
+  ) => {
     if (!snapshot.canMutate || !projectDetail) return;
     setBusy(true);
     try {
-      await action();
-      await refreshProject(projectDetail.id);
+      const result = await action();
+      applyDashboardSnapshot(result.dashboard);
     } finally {
       setBusy(false);
     }
@@ -1037,8 +1033,14 @@ function Dashboard() {
     const subscription = trpc.current?.projects.updates.subscribe(
       { projectId },
       {
-        onData: () => {
-          void refreshProject(projectId);
+        onData: (dashboard) => {
+          if (!dashboard.projectDetail) {
+            applyDashboardSnapshot(dashboard);
+            if (projectDetail?.id === projectId) openHome();
+            return;
+          }
+          if (dashboard.projectDetail.id !== projectId) return;
+          applyDashboardSnapshot(dashboard);
           void refreshT3Project(projectId);
         },
       },
@@ -1124,7 +1126,7 @@ function Dashboard() {
     event.preventDefault();
     if (!taskName.trim() || !projectDetail || !trpc.current) return;
     await mutateAndRefresh(async () => {
-      await trpc.current!.tasks.create.mutate({
+      const result = await trpc.current!.tasks.create.mutate({
         acceptanceCriteria: lines(taskAcceptanceCriteria),
         branchName: taskBranchName.trim() || undefined,
         dependencies: lines(taskDependencies),
@@ -1143,6 +1145,7 @@ function Dashboard() {
       setTaskOwner("");
       setTaskDependencies("");
       setTaskRepositoryLinks("");
+      return result;
     });
   };
 
@@ -1172,13 +1175,14 @@ function Dashboard() {
     const edit = taskEdits[taskId];
     if (!edit?.title.trim() || !trpc.current) return;
     await mutateAndRefresh(async () => {
-      await trpc.current!.tasks.update.mutate({
+      const result = await trpc.current!.tasks.update.mutate({
         acceptanceCriteria: lines(edit.acceptanceCriteria),
         name: edit.title.trim(),
         objective: edit.description.trim() || null,
         taskId,
       });
       cancelTaskEdit(taskId);
+      return result;
     });
   };
 
@@ -1209,13 +1213,14 @@ function Dashboard() {
     const edit = subtaskEdits[subtaskId];
     if (!edit?.title.trim() || !trpc.current) return;
     await mutateAndRefresh(async () => {
-      await trpc.current!.subtasks.update.mutate({
+      const result = await trpc.current!.subtasks.update.mutate({
         description: edit.description.trim() || null,
         evidence: edit.evidence.trim() || null,
         name: edit.title.trim(),
         subtaskId,
       });
       cancelSubtaskEdit(subtaskId);
+      return result;
     });
   };
 
@@ -1401,33 +1406,27 @@ function Dashboard() {
                 event.preventDefault();
                 if (!projectName.trim() || !trpc.current || !snapshot.canMutate)
                   return;
-                void createProjectAndRefresh({
-                  actions: {
-                    createProject: (input) =>
-                      trpc.current!.projects.create.mutate(input),
-                    listProjects: () => trpc.current!.projects.list.query(),
-                  },
-                  name: projectName.trim(),
-                }).then((nextProjects) => {
-                  setProjects(nextProjects);
-                  setProjectName("");
-                  void trpc.current?.projects.portfolio
-                    .query()
-                    .then(setPortfolioStatus);
-                });
+                setBusy(true);
+                void trpc.current.projects.create
+                  .mutate({ name: projectName.trim() })
+                  .then((result) => {
+                    applyDashboardSnapshot(result.dashboard);
+                    setProjectName("");
+                  })
+                  .finally(() => setBusy(false));
               }}
             >
               <label>
                 <span className="visually-hidden">Project name</span>
                 <input
-                  disabled={!snapshot.canMutate}
+                  disabled={!snapshot.canMutate || busy}
                   onChange={(event) => setProjectName(event.target.value)}
                   placeholder="New project name"
                   value={projectName}
                 />
               </label>
               <button
-                disabled={!snapshot.canMutate || !projectName.trim()}
+                disabled={!snapshot.canMutate || busy || !projectName.trim()}
                 type="submit"
               >
                 New project
@@ -1519,7 +1518,7 @@ function Dashboard() {
                 )
                   return;
                 void mutateAndRefresh(async () => {
-                  await trpc.current!.projects.link.mutate({
+                  const result = await trpc.current!.projects.link.mutate({
                     ...projectTrackerInput,
                     projectId: projectDetail.id,
                     stableId: projectTrackerInput.stableId.trim(),
@@ -1532,6 +1531,7 @@ function Dashboard() {
                     title: "",
                     url: "",
                   });
+                  return result;
                 });
               }}
             >
@@ -2227,14 +2227,15 @@ function Dashboard() {
                                     )
                                       return;
                                     void mutateAndRefresh(async () => {
-                                      await trpc.current!.tasks.link.mutate({
-                                        ...linkInput,
-                                        stableId: linkInput.stableId.trim(),
-                                        title:
-                                          linkInput.title.trim() || undefined,
-                                        taskId: task.id,
-                                        url: linkInput.url.trim(),
-                                      });
+                                      const result =
+                                        await trpc.current!.tasks.link.mutate({
+                                          ...linkInput,
+                                          stableId: linkInput.stableId.trim(),
+                                          title:
+                                            linkInput.title.trim() || undefined,
+                                          taskId: task.id,
+                                          url: linkInput.url.trim(),
+                                        });
                                       setProjectLinkInputs((current) => ({
                                         ...current,
                                         [task.id]: {
@@ -2244,6 +2245,7 @@ function Dashboard() {
                                           url: "",
                                         },
                                       }));
+                                      return result;
                                     });
                                   }}
                                 >
@@ -2972,16 +2974,17 @@ function Dashboard() {
                                         subtaskNames[task.id]?.trim();
                                       if (!name || !trpc.current) return;
                                       void mutateAndRefresh(async () => {
-                                        await trpc.current!.subtasks.create.mutate(
-                                          {
-                                            description:
-                                              subtaskDescriptions[
-                                                task.id
-                                              ]?.trim() || undefined,
-                                            name,
-                                            taskId: task.id,
-                                          },
-                                        );
+                                        const result =
+                                          await trpc.current!.subtasks.create.mutate(
+                                            {
+                                              description:
+                                                subtaskDescriptions[
+                                                  task.id
+                                                ]?.trim() || undefined,
+                                              name,
+                                              taskId: task.id,
+                                            },
+                                          );
                                         setSubtaskNames((current) => ({
                                           ...current,
                                           [task.id]: "",
@@ -2990,6 +2993,7 @@ function Dashboard() {
                                           ...current,
                                           [task.id]: "",
                                         }));
+                                        return result;
                                       });
                                     }}
                                   >

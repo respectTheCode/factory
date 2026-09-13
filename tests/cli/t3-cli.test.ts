@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
+import { DEFAULT_T3_SERVER_VERSION } from "../../src/t3";
+
 const fixtureStart = Date.now();
 
 function timestamp(offset = 0): string {
@@ -121,7 +123,7 @@ describe("T3 CLI integration", () => {
           path: url.pathname,
         });
         if (url.pathname === "/.well-known/t3/environment") {
-          return Response.json({ serverVersion: "0.0.38" });
+          return Response.json({ serverVersion: DEFAULT_T3_SERVER_VERSION });
         }
         if (url.pathname === "/api/orchestration/shell") {
           const payload = shellPayload();

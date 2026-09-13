@@ -156,6 +156,21 @@ describe("Factory work-state WebSocket transport", () => {
         },
       });
       expect(stateResponse.result?.type).toBe("data");
+      expect(responseData(stateResponse)).toMatchObject({
+        id: task.id,
+        workState: "active",
+        dashboard: {
+          projectDetail: {
+            id: project.id,
+            tasks: [
+              expect.objectContaining({ id: task.id, workState: "active" }),
+            ],
+          },
+          taskStatuses: [
+            expect.objectContaining({ taskId: task.id, taskState: "active" }),
+          ],
+        },
+      });
 
       const statusResponse = await sendRawTRPCRequest(socket, {
         id: 4,
@@ -464,7 +479,15 @@ describe("Factory work-state WebSocket transport", () => {
           }),
         ),
       ).toContain("reason");
-      expect(responseData(verificationResponse)).toEqual({ ok: true });
+      expect(responseData(verificationResponse)).toMatchObject({
+        ok: true,
+        dashboard: {
+          projectDetail: {
+            tasks: [expect.objectContaining({ workState: "blocked" })],
+          },
+          taskStatuses: [expect.objectContaining({ taskState: "blocked" })],
+        },
+      });
 
       const verifications = responseData(
         await sendRawTRPCRequest(socket, {

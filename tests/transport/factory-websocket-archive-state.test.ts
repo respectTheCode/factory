@@ -335,7 +335,14 @@ describe("Factory archive state WebSocket transport", () => {
         },
       });
       expect(removedTask.result?.type).toBe("data");
-      expect(responseData(removedTask)).toEqual({ taskId: task.id });
+      expect(responseData(removedTask)).toMatchObject({
+        taskId: task.id,
+        dashboard: {
+          projectDetail: {
+            tasks: [expect.not.objectContaining({ id: task.id })],
+          },
+        },
+      });
 
       const removedSubtask = await sendRawTRPCRequest(socket, {
         id: 37,
@@ -346,8 +353,13 @@ describe("Factory archive state WebSocket transport", () => {
         },
       });
       expect(removedSubtask.result?.type).toBe("data");
-      expect(responseData(removedSubtask)).toEqual({
+      expect(responseData(removedSubtask)).toMatchObject({
         subtaskId: subtask.id,
+        dashboard: {
+          projectDetail: {
+            tasks: [expect.objectContaining({ subtasks: [] })],
+          },
+        },
       });
 
       const remainingHierarchy = responseData(

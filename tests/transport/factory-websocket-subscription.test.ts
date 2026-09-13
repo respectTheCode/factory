@@ -114,15 +114,36 @@ describe("Factory subscription WebSocket transport", () => {
         (message) =>
           message.result?.type === "data" &&
           (
-            message.result.data as { tasks?: Array<{ name: string }> }
-          )?.tasks?.some(
+            message.result.data as {
+              projectDetail?: { tasks?: Array<{ name: string }> };
+            }
+          )?.projectDetail?.tasks?.some(
             (task) => task.name === "Publish the refreshed site",
           ) === true,
       );
 
-      await sendMutation(socket, 3, "tasks.create", {
+      const mutation = await sendMutation(socket, 3, "tasks.create", {
         name: "Publish the refreshed site",
         projectId: project.id,
+      });
+
+      expect(mutation).toMatchObject({
+        id: 3,
+        result: {
+          type: "data",
+          data: {
+            dashboard: {
+              projectDetail: {
+                id: project.id,
+                tasks: [
+                  expect.objectContaining({
+                    name: "Publish the refreshed site",
+                  }),
+                ],
+              },
+            },
+          },
+        },
       });
 
       await expect(update).resolves.toMatchObject({
@@ -130,13 +151,94 @@ describe("Factory subscription WebSocket transport", () => {
         result: {
           type: "data",
           data: {
-            id: project.id,
-            name: "Website refresh",
-            tasks: [
-              expect.objectContaining({ name: "Publish the refreshed site" }),
+            projectDetail: {
+              id: project.id,
+              name: "Website refresh",
+              tasks: [
+                expect.objectContaining({
+                  name: "Publish the refreshed site",
+                }),
+              ],
+            },
+            taskStatuses: [
+              expect.objectContaining({ taskSimpleId: expect.any(String) }),
             ],
           },
         },
+      });
+    } finally {
+      socket.send(
+        JSON.stringify({ id: 2, method: "subscription.stop", params: {} }),
+      );
+      socket.close();
+      server.stop();
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test("publishes global state when the subscribed project is removed", async () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "software-factory-project-removal-subscription-"),
+    );
+    const databasePath = join(temporaryDirectory, "factory.sqlite");
+    const server = createFactoryServer({ port: 0, databasePath });
+    const socket = new WebSocket(new URL("/trpc", server.url));
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener(
+          "error",
+          () => reject(new Error("WebSocket connection failed")),
+          { once: true },
+        );
+      });
+
+      const projectResponse = await sendMutation(socket, 1, "projects.create", {
+        name: "Temporary project",
+      });
+      const project = projectResponse.result?.data as { id: string };
+      const subscriptionStarted = waitForMessage(socket, 2);
+      socket.send(
+        JSON.stringify({
+          id: 2,
+          method: "subscription",
+          params: {
+            input: { projectId: project.id },
+            path: "projects.updates",
+          },
+        }),
+      );
+      await expect(subscriptionStarted).resolves.toMatchObject({
+        id: 2,
+        result: { type: "started" },
+      });
+
+      const update = waitForMessage(
+        socket,
+        2,
+        (message) =>
+          message.result?.type === "data" &&
+          !(message.result.data as { projectDetail?: unknown })
+            ?.projectDetail &&
+          (message.result.data as { projects?: unknown[] })?.projects
+            ?.length === 0,
+      );
+      const removal = await sendMutation(socket, 3, "projects.remove", {
+        confirm: true,
+        projectId: project.id,
+      });
+
+      expect(removal).toMatchObject({
+        id: 3,
+        result: {
+          type: "data",
+          data: { dashboard: { projects: [] }, projectId: project.id },
+        },
+      });
+      await expect(update).resolves.toMatchObject({
+        id: 2,
+        result: { type: "data", data: { projects: [] } },
       });
     } finally {
       socket.send(
