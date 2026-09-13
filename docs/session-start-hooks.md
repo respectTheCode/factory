@@ -30,6 +30,15 @@ Changing the Factory group changes Codex's hook hash. After reinstalling the
 hook, rerun `bun run scripts/trust-codex-session-hook.ts` so Codex trusts the
 new definition.
 
+On agent machines the hook runs the compiled `factory` binary instead of a
+checkout. It sources `~/.config/factory/env` when present, then uses
+`FACTORY_CLI` or a `factory` found on `PATH`; only when neither exists does it
+fall back to `bun run src/cli.ts` in the checkout. `scripts/install-agent-client.sh`
+installs the hook and merges both client configurations through
+`factory hooks install`, then records the Codex trust hash through
+`factory hooks trust-codex` when the Codex CLI is present. Run that trust
+command again after any change to the hook definition.
+
 The hook uses these environment overrides:
 
 - `FACTORY_CHECKOUT` — Factory checkout containing `src/cli.ts`; by default it

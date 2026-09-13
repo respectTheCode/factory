@@ -130,12 +130,18 @@ bun run src/cli.ts credential list --json --database "$FACTORY_DB"
 bun run src/cli.ts credential revoke --machine-id mac-studio --json --database "$FACTORY_DB"
 ```
 
-On the agent machine:
+On the agent machine, install the compiled client from the target tarball built by
+`bun run build:client` on the Factory host (`dist/client/factory-<os>-<arch>.tar.gz`). The
+installer needs no checkout and no Bun. It installs `~/.local/bin/factory`, writes
+`~/.config/factory/env` and the `0600` token file, installs the skill for Claude and Codex,
+merges the SessionStart hooks, trusts the Codex hook when the Codex CLI is present, and ends
+with `factory doctor`:
 
 ```bash
-export FACTORY_URL="http://<factory-lan-ip>:3000"
-export FACTORY_ACCESS_TOKEN_FILE="$HOME/.config/factory/access-token"
-bun run src/cli.ts doctor
+tar -xzf factory-darwin-arm64.tar.gz
+sh scripts/install-agent-client.sh --url "http://<factory-lan-ip>:3000" \
+  --token-file /path/to/token --machine-id mac-studio
+factory doctor
 ```
 
 The CLI checks `GET /version` before its first call and refuses an incompatible API. Plain

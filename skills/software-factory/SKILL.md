@@ -173,9 +173,11 @@ that its work completed.
 
 ## Local installation
 
-The maintained source is the complete `skills/software-factory/` directory in the Factory checkout. Install the
-entrypoint and `references/` for both local agents at `~/.codex/skills/software-factory/` and
-`~/.claude/skills/software-factory/`, then compare every installed file with its source. Factory
+The maintained source is the complete `skills/software-factory/` directory in the Factory checkout. On agent
+machines `scripts/install-agent-client.sh` installs it together with the compiled `factory` binary; on the
+Factory host install the entrypoint and `references/` for both local agents at
+`~/.codex/skills/software-factory/` and `~/.claude/skills/software-factory/`, then compare every
+installed file with its source. Factory
 service deployment does not install agent skills. New sessions must discover the installed
 skill; an existing session's already-loaded instructions are not proof of adoption. Remote
 agents need their own supported client and installation; these local paths do not configure them.
