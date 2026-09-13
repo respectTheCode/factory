@@ -15,7 +15,7 @@ Kevin authorized implementation on 2026-09-13. Work is delivered as two releases
 
 The 2026-09-13 review found that the original single cutover changed the client protocol and the host at the same time. The plan now proves the protocol before moving the host.
 
-- **Release A: remote protocol on the existing Mac.** Server-enforced human session, authenticated remote CLI, attribution, and idempotent writes ship to the current LaunchAgent service. All three machines point at the Mac over Tailscale. No hosting change.
+- **Release A: remote protocol on the existing Mac.** Server-enforced human session, authenticated remote CLI, attribution, and idempotent writes ship to the current LaunchAgent service. All three machines point at the Mac by local network IP. No hosting change.
 - **Release B: hosting move to Dokploy.** Linux packaging, backups, isolated pilot, and cutover against a client contract that Release A already proved. Multi-source T3 support lands in whichever release the ST-157 topology decision allows.
 
 ## Verified starting point
@@ -28,7 +28,7 @@ The server has no authenticated caller context. The WebSocket context is empty, 
 
 Status Reports carry only a free-text `reporter`. Projects have one workspace root, one Git origin and one T3 Project ID. T3 has one configured endpoint and session identity is provider plus external thread ID. The project brief embeds the local database path and the SessionStart hook resolves a Factory checkout to find `src/cli.ts`, so every agent machine currently needs a full checkout and Bun just to report.
 
-The checkout has existing uncommitted application, T3, UI and instruction work (T-30's canonical mutation and subscription behavior, T-32's instruction changes) and no Git remote. T-30 and T-32 await human verification. T-37 depends on T-30; the current CLI cannot record Task dependencies after creation, so the dependency is recorded here and in the objective. The home-lab Dokploy inventory dates from June 22; live server identity, routing, capacity and backups must be verified during ST-157.
+The T-30/T-32 work was committed as the baseline on 2026-09-13 and pushed with the T-37 branch to the canonical remote `git@github.com:respectTheCode/factory.git` (`origin`). T-30 and T-32 await human verification. T-37 depends on T-30; the current CLI cannot record Task dependencies after creation, so the dependency is recorded here and in the objective. The home-lab Dokploy inventory dates from June 22; live server identity, routing, capacity and backups must be verified during ST-157.
 
 Source references: [CLI](../../src/cli.ts), [persistence and domain](../../src/application.ts), [server](../../src/server.ts), [T3 coordinator](../../src/t3-coordinator.ts), [brief](../../src/brief.ts), [hooks](../session-start-hooks.md), [private access](../software-factory-tailscale.md), [requirements](../software-factory-requirements.md).
 
@@ -61,14 +61,15 @@ Enforce roles in every API route, including the existing WebSocket verification 
 
 Use normalized Git origin as the portable repository identity. Register explicit machine-scoped workspace mappings for repositories without a remote, and select Factory's canonical Git remote during inventory rather than inventing one. Paths on separate machines must not contradict an otherwise valid repository match.
 
-T3 Code is a per-machine desktop application on loopback, and the reader requires HTTPS for any non-loopback host. Central polling from the server therefore means each agent machine exposes its T3 endpoint over Tailscale Serve with a read token. ST-157 decides between two topologies and records the decision here:
-
-- **Central pull (default).** One registered read source per installation, polled centrally through private HTTPS. Chosen if exposing three read-only T3 endpoints on the tailnet is acceptable.
-- **Push relay (fallback).** The CLI machine forwards observations to the server through its machine credential. Chosen if per-machine exposure is rejected. This changes ingestion and requires a documented design revision before ST-160.
+Decision (Kevin, 2026-09-13): all agent machines share one local network with the Factory host, and they address each other by local IP. T3 Code is a per-machine desktop application on loopback; each machine binds its T3 endpoint to its LAN address so the Factory server polls it centrally over plain HTTP on the private network. The T3 reader currently rejects plain HTTP for any non-loopback host; ST-160 relaxes that for private (RFC 1918) addresses only, never for public hosts. The push relay alternative is not pursued.
 
 Either way, record `sourceId`, machine, endpoint configuration and secret reference. Namespace thread IDs, Project IDs, evidence deduplication, source sequences, refresh boundaries and reconciliation by source. Migrate existing records to one legacy source without losing associations. A refresh or outage on one source must not age out another source's sessions. If the new machines share a T3 backend, register that backend once while retaining machine attribution.
 
 Automatic association uses the originating machine/source and an explicit session identity when available. Branch alone must not select between two running sessions on different machines. Missing or ambiguous matches remain unlinked. Source failures preserve core reporting and display the last successful observation time.
+
+### Network model
+
+Agent machines use `FACTORY_URL=http://<factory-lan-ip>:3000` with a bearer machine credential over the trusted local network. Bearer tokens travel in the clear on that LAN, so the LAN boundary is the security boundary; a public or hostile network must not be given a machine credential. The session cookie is `Secure` only behind HTTPS, so LAN HTTP sign-in works and the phone keeps using the private HTTPS route. The remote client accepts plain HTTP only for loopback and private addresses and refuses it for public hosts.
 
 ### Client distribution
 
@@ -80,7 +81,7 @@ The server currently has no Dockerfile, no health, readiness or version endpoint
 
 Build a Linux image with pinned Bun and immutable revision metadata, prebuilt web assets and a non-root runtime. Include health/readiness and version endpoints, graceful shutdown, a configurable bind host, and a persistent data directory with validated permissions. Readiness requires a compatible usable database; missing optional T3 or GitHub connectivity is degraded integration status, not core downtime. Production startup must reject an unexpectedly missing database instead of silently initializing an empty service.
 
-Dokploy uses a single replica and stop-first updates on verified local storage. Bind the private proxy path deliberately and verify rendered runtime ports. Serve HTTPS privately through Tailscale, with WebSocket upgrades at `/trpc`; do not inherit a public Cloudflare route. Keep pilot and development databases, credentials and URLs distinct from production, and label the pilot visibly.
+Dokploy uses a single replica and stop-first updates on verified local storage. Bind the private proxy path deliberately and verify rendered runtime ports. Agent machines reach the service by LAN IP over HTTP; the phone reaches it through a private HTTPS route (Tailscale) with WebSocket upgrades at `/trpc`; do not inherit a public Cloudflare route. Keep pilot and development databases, credentials and URLs distinct from production, and label the pilot visibly.
 
 Proposed recovery targets: at most one hour of lost data (RPO), restoration within one hour (RTO); hourly consistent backups, seven days of hourly retention, thirty daily backups, and a pre-deployment backup. Confirm storage capacity and destination in ST-157. Backups must leave the Dokploy host and failures must be visible through an explicitly configured operational mechanism. Test restore into an isolated service and compare durable IDs, report and verification histories and integrity. Credentials need a separate recovery procedure.
 
@@ -90,7 +91,7 @@ Rollback after new production writes must preserve those writes. Prefer a compat
 
 | Subtask | Release | Outcome | Prerequisites | Required proof |
 | --- | --- | --- | --- | --- |
-| ST-157 | A | Baseline, architecture and live inventory | None | Committed and pushed baseline including T-30/T-32 work; machine/OS list, T3 topology decision, host identity, private route, Git destination, role matrix, recovery targets |
+| ST-157 | A | Baseline, architecture and live inventory | None | Committed and pushed baseline including T-30/T-32 work (done); machine/OS list and LAN IPs, host identity, private route, role matrix, recovery targets. Git destination and T3 topology (LAN central pull) decided |
 | ST-166 | A | Server-enforced human session | ST-157 baseline | Authenticated browser session, origin check on upgrade, verify route rejects unauthenticated and machine callers; deployed to the current Mac service |
 | ST-158 | A | Authenticated remote API and CLI | ST-166 | Equivalent core behavior through CLI/web; attribution fields; denial, revocation, scope and compatibility tests |
 | ST-159 | A | Serialized writes and safe retries | ST-158 contract | Idempotency receipts across restart, stale revision rejection, lost-response retry; no duplicate reports or lost records; mutation latency measured |
