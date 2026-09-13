@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { GitHubStatusReader } from "../../src/github";
 import { createFactoryServer } from "../../src/server";
+import { createWebSocket, loginTestOperator } from "./helpers";
 
 type RawResponse = {
   id: number;
@@ -76,9 +77,12 @@ describe("Factory GitHub status WebSocket transport", () => {
     const server = createFactoryServer({
       databasePath: join(temporaryDirectory, "factory.sqlite"),
       githubStatusReader: reader,
+      operator: { name: "test-operator", secret: "test-operator-secret" },
       port: 0,
     });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await loginTestOperator(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -172,9 +176,12 @@ describe("Factory GitHub status WebSocket transport", () => {
           throw new Error("should not be called");
         },
       },
+      operator: { name: "test-operator", secret: "test-operator-secret" },
       port: 0,
     });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await loginTestOperator(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {

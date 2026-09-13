@@ -1,22 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
-import { createFactoryServer } from "../../src/server";
+import { createTestServer, openAuthenticatedSocket } from "./helpers";
 
 describe("Factory WebSocket transport", () => {
   test("upgrades /trpc and serves a projects.list query", async () => {
-    const server = createFactoryServer({ databasePath: ":memory:", port: 0 });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const server = createTestServer({ databasePath: ":memory:", port: 0 });
+    const socket = await openAuthenticatedSocket(server);
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        socket.addEventListener("open", () => resolve(), { once: true });
-        socket.addEventListener(
-          "error",
-          () => reject(new Error("WebSocket connection failed")),
-          { once: true },
-        );
-      });
-
       const responsePromise = new Promise<unknown>((resolve, reject) => {
         socket.addEventListener(
           "message",

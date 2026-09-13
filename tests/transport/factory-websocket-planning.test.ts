@@ -81,8 +81,14 @@ describe("Factory planning WebSocket transport", () => {
       join(tmpdir(), "software-factory-editing-transport-"),
     );
     const databasePath = join(temporaryDirectory, "factory.sqlite");
-    const server = createFactoryServer({ port: 0, databasePath });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const server = createFactoryServer({
+      databasePath,
+      operator: { name: "kevin", secret: "test-operator-secret" },
+      port: 0,
+    });
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await login(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -229,8 +235,14 @@ describe("Factory planning WebSocket transport", () => {
       join(tmpdir(), "software-factory-planning-transport-"),
     );
     const databasePath = join(temporaryDirectory, "factory.sqlite");
-    const server = createFactoryServer({ port: 0, databasePath });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const server = createFactoryServer({
+      databasePath,
+      operator: { name: "kevin", secret: "test-operator-secret" },
+      port: 0,
+    });
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await login(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -319,8 +331,14 @@ describe("Factory planning WebSocket transport", () => {
       join(tmpdir(), "software-factory-task-metadata-transport-"),
     );
     const databasePath = join(temporaryDirectory, "factory.sqlite");
-    const server = createFactoryServer({ port: 0, databasePath });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const server = createFactoryServer({
+      databasePath,
+      operator: { name: "kevin", secret: "test-operator-secret" },
+      port: 0,
+    });
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await login(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -404,8 +422,14 @@ describe("Factory planning WebSocket transport", () => {
       join(tmpdir(), "software-factory-status-transport-"),
     );
     const databasePath = join(temporaryDirectory, "factory.sqlite");
-    const server = createFactoryServer({ port: 0, databasePath });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const server = createFactoryServer({
+      databasePath,
+      operator: { name: "kevin", secret: "test-operator-secret" },
+      port: 0,
+    });
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await login(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -627,8 +651,14 @@ describe("Factory planning WebSocket transport", () => {
       join(tmpdir(), "software-factory-tracker-transport-"),
     );
     const databasePath = join(temporaryDirectory, "factory.sqlite");
-    const server = createFactoryServer({ port: 0, databasePath });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const server = createFactoryServer({
+      databasePath,
+      operator: { name: "kevin", secret: "test-operator-secret" },
+      port: 0,
+    });
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await login(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {

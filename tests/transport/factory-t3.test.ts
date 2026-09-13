@@ -10,6 +10,7 @@ import type {
   T3ThreadObservation,
 } from "../../src/t3";
 import { createFactoryServer } from "../../src/server";
+import { createWebSocket, loginTestOperator } from "./helpers";
 
 type RawResponse = {
   id: number;
@@ -182,10 +183,13 @@ describe("Factory T3 tRPC integration", () => {
     const t3 = reader(fixtureStart - 48 * 60 * 60 * 1000);
     const server = createFactoryServer({
       databasePath: join(directory, "factory.sqlite"),
+      operator: { name: "test-operator", secret: "test-operator-secret" },
       port: 0,
       t3ActivityReader: t3,
     });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await loginTestOperator(server),
+    });
     try {
       await new Promise<void>((resolve, reject) => {
         socket.addEventListener("open", () => resolve(), { once: true });
@@ -396,6 +400,7 @@ describe("Factory T3 tRPC integration", () => {
     let shellReads = 0;
     const server = createFactoryServer({
       databasePath: join(directory, "factory.sqlite"),
+      operator: { name: "test-operator", secret: "test-operator-secret" },
       port: 0,
       t3ActivityReader: {
         async readShell() {
@@ -414,7 +419,9 @@ describe("Factory T3 tRPC integration", () => {
         },
       },
     });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await loginTestOperator(server),
+    });
     try {
       await new Promise<void>((resolve, reject) => {
         socket.addEventListener("open", () => resolve(), { once: true });
@@ -488,6 +495,7 @@ describe("Factory T3 tRPC integration", () => {
     const t3 = reader();
     const server = createFactoryServer({
       databasePath: join(directory, "factory.sqlite"),
+      operator: { name: "test-operator", secret: "test-operator-secret" },
       port: 0,
       t3ActivityReader: {
         readShell: async () => ({
@@ -497,7 +505,9 @@ describe("Factory T3 tRPC integration", () => {
         readThread: t3.readThread,
       },
     });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await loginTestOperator(server),
+    });
     try {
       await new Promise<void>((resolve, reject) => {
         socket.addEventListener("open", () => resolve(), { once: true });
@@ -551,10 +561,13 @@ describe("Factory T3 tRPC integration", () => {
     const t3 = reader();
     const server = createFactoryServer({
       databasePath: join(directory, "factory.sqlite"),
+      operator: { name: "test-operator", secret: "test-operator-secret" },
       port: 0,
       t3ActivityReader: t3,
     });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await loginTestOperator(server),
+    });
     try {
       await new Promise<void>((resolve, reject) => {
         socket.addEventListener("open", () => resolve(), { once: true });

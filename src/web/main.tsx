@@ -537,6 +537,7 @@ function Dashboard() {
   }, []);
 
   useEffect(() => {
+    if (sessionLoading || !human) return;
     const generation = webSocketGeneration;
     const client = createWSClient({
       onClose: () => {
@@ -588,7 +589,7 @@ function Dashboard() {
       subscriptionCleanup.current = null;
       void client.close();
     };
-  }, [connection, webSocketGeneration]);
+  }, [connection, human, sessionLoading, webSocketGeneration]);
 
   const refreshGitHubStatuses = async (detail: ProjectDetail) => {
     const client = trpc.current;
@@ -1321,6 +1322,50 @@ function Dashboard() {
     }
   };
 
+  const signInForm = (
+    <form className="session-form" onSubmit={signIn}>
+      <label>
+        <span className="visually-hidden">Operator secret</span>
+        <input
+          aria-label="Operator secret"
+          disabled={sessionBusy}
+          onChange={(event) => setSessionSecret(event.target.value)}
+          placeholder="Operator secret"
+          type="password"
+          value={sessionSecret}
+        />
+      </label>
+      <button disabled={sessionBusy || !sessionSecret} type="submit">
+        Sign in
+      </button>
+      {sessionError && (
+        <span className="session-error" role="alert">
+          {sessionError}
+        </span>
+      )}
+    </form>
+  );
+
+  if (sessionLoading) {
+    return (
+      <main>
+        <p className="status-twin">Checking session…</p>
+      </main>
+    );
+  }
+
+  if (!human) {
+    return (
+      <main>
+        <section className="panel" aria-labelledby="sign-in-title">
+          <p className="eyebrow">Factory</p>
+          <h1 id="sign-in-title">Sign in to continue</h1>
+          {signInForm}
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main>
       <header>
@@ -1356,29 +1401,7 @@ function Dashboard() {
                 Sign out
               </button>
             </div>
-          ) : (
-            <form className="session-form" onSubmit={signIn}>
-              <label>
-                <span className="visually-hidden">Operator secret</span>
-                <input
-                  aria-label="Operator secret"
-                  disabled={sessionBusy}
-                  onChange={(event) => setSessionSecret(event.target.value)}
-                  placeholder="Operator secret"
-                  type="password"
-                  value={sessionSecret}
-                />
-              </label>
-              <button disabled={sessionBusy || !sessionSecret} type="submit">
-                Sign in
-              </button>
-              {sessionError && (
-                <span className="session-error" role="alert">
-                  {sessionError}
-                </span>
-              )}
-            </form>
-          )}
+          ) : null}
           <ConnectionIndicator snapshot={snapshot} />
         </div>
       </header>

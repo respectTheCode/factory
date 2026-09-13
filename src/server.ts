@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 
+import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { getWSConnectionHandler } from "@trpc/server/adapters/ws";
 import { initTRPC, TRPCError } from "@trpc/server";
 import { observable } from "@trpc/server/observable";
@@ -8,8 +9,10 @@ import { z } from "zod";
 import {
   createFactoryApplication,
   type DashboardSnapshot,
+  type PortfolioStatus,
   type ProjectHierarchy,
 } from "./application";
+import { FACTORY_API_VERSION } from "./api-version";
 import {
   createGitHubStatusReader,
   parseGitHubPullRequestUrl,
@@ -32,6 +35,11 @@ import {
   type FactoryOperator,
   type HumanIdentity,
 } from "./human-session";
+import {
+  createMachineCredentialStore,
+  resolveMachineToken,
+  type MachineCredentialIdentity,
+} from "./machine-credential";
 
 type ConnectionEvent = "close" | "error" | "message";
 type ConnectionListener = (...args: unknown[]) => void;
@@ -46,8 +54,9 @@ export type FactoryServer = {
   url: URL;
 };
 
-type FactoryContext = {
+export type FactoryContext = {
   human: HumanIdentity | null;
+  machine: MachineCredentialIdentity | null;
 };
 
 const trpc = initTRPC.context<FactoryContext>().create();
@@ -142,12 +151,119 @@ function dashboardAfterPublish(
   );
 }
 
-function projectIdForSubtask(
-  application: ReturnType<typeof createFactoryApplication>,
-  subtaskId: string,
-): string {
-  const subtask = application.getSubtaskDetail(subtaskId);
-  return application.getTaskDetail(subtask.taskId).projectId;
+type ProjectIdResolver = (input: unknown) => string | undefined;
+
+const unauthenticatedMessage = "Authentication is required.";
+
+function humanProcedure(message = unauthenticatedMessage) {
+  return trpc.procedure.use(({ ctx, next }) => {
+    if (!ctx.human) {
+      throw new TRPCError({ code: "UNAUTHORIZED", message });
+    }
+    return next();
+  });
+}
+
+function scopedProcedure(resolveProjectId?: ProjectIdResolver) {
+  return trpc.procedure.use(async ({ ctx, getRawInput, next }) => {
+    if (!ctx.human && !ctx.machine) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: unauthenticatedMessage,
+      });
+    }
+    if (ctx.machine && resolveProjectId) {
+      // This middleware runs before .input(), so the parsed input is not yet
+      // available; resolve the Project from the raw input instead.
+      const projectId = resolveProjectId(await getRawInput());
+      if (!projectId || !ctx.machine.projectIds.includes(projectId)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: projectId
+            ? "The machine credential is not scoped to this Project."
+            : "A Project-scoped request is required for a machine credential.",
+        });
+      }
+    }
+    return next();
+  });
+}
+
+function fieldProjectId(field: string): ProjectIdResolver {
+  return (input) => {
+    const value = (input as Record<string, unknown> | null | undefined)?.[
+      field
+    ];
+    return typeof value === "string" ? value : undefined;
+  };
+}
+
+function scopePortfolioStatus(
+  portfolioStatus: PortfolioStatus,
+  projectIds: Set<string>,
+): PortfolioStatus {
+  const projects = portfolioStatus.projects.filter(({ projectId }) =>
+    projectIds.has(projectId),
+  );
+  const counts = { ...portfolioStatus.counts };
+  for (const state of Object.keys(counts) as Array<keyof typeof counts>) {
+    counts[state] = projects.reduce(
+      (total, project) => total + project.counts[state],
+      0,
+    );
+  }
+  return {
+    counts,
+    projects,
+    totalTasks: projects.reduce(
+      (total, project) => total + project.totalTasks,
+      0,
+    ),
+  };
+}
+
+function scopeDashboardSnapshot(
+  dashboard: DashboardSnapshot,
+  machine: MachineCredentialIdentity | null,
+): DashboardSnapshot {
+  if (!machine) return dashboard;
+  const projectIds = new Set(machine.projectIds);
+  const projectDetail =
+    dashboard.projectDetail && projectIds.has(dashboard.projectDetail.id)
+      ? dashboard.projectDetail
+      : undefined;
+  return {
+    attention: dashboard.attention.filter(({ projectId }) =>
+      projectIds.has(projectId),
+    ),
+    ...(projectDetail ? { projectDetail } : {}),
+    portfolioStatus: scopePortfolioStatus(
+      dashboard.portfolioStatus,
+      projectIds,
+    ),
+    projects: dashboard.projects.filter(({ id }) => projectIds.has(id)),
+    taskDetails: projectDetail ? dashboard.taskDetails : [],
+    taskStatuses: projectDetail ? dashboard.taskStatuses : [],
+  };
+}
+
+function withContextDashboard<T extends object>(
+  ctx: FactoryContext,
+  value: T,
+  dashboard: DashboardSnapshot,
+): T & { dashboard: DashboardSnapshot } {
+  return withDashboard(value, scopeDashboardSnapshot(dashboard, ctx.machine));
+}
+
+function withContextDashboardItems<T>(
+  ctx: FactoryContext,
+  items: T[],
+  dashboard: DashboardSnapshot,
+): { items: T[]; dashboard: DashboardSnapshot } {
+  return withDashboardItems(
+    items,
+    scopeDashboardSnapshot(dashboard, ctx.machine),
+  );
 }
 
 function createRouter(
@@ -190,7 +306,7 @@ function createRouter(
 
   return trpc.router({
     projects: trpc.router({
-      create: trpc.procedure
+      create: humanProcedure()
         .input(
           z.object({
             gitOriginUrl: z.string().trim().min(1).optional(),
@@ -199,13 +315,14 @@ function createRouter(
             workspaceRoot: z.string().trim().min(1).optional(),
           }),
         )
-        .mutation(({ input }) =>
-          withDashboard(
+        .mutation(({ ctx, input }) =>
+          withContextDashboard(
+            ctx,
             application.createProject(input),
             application.getDashboardSnapshot(),
           ),
         ),
-      update: trpc.procedure
+      update: humanProcedure()
         .input(
           z.object({
             gitOriginUrl: z.string().trim().min(1).nullable(),
@@ -214,29 +331,31 @@ function createRouter(
             workspaceRoot: z.string().trim().min(1).nullable().optional(),
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           const project = application.updateProject(input);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             project,
             dashboardAfterPublish(application, projectUpdates, input.projectId),
           );
         }),
-      remove: trpc.procedure
+      remove: humanProcedure()
         .input(
           z.object({
             confirm: z.literal(true),
             projectId: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           application.removeProject(input.projectId);
           projectUpdates.publishAll();
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             { projectId: input.projectId },
             application.getDashboardSnapshot(),
           );
         }),
-      link: trpc.procedure
+      link: humanProcedure()
         .input(
           z.object({
             projectId: z.string().min(1),
@@ -246,27 +365,46 @@ function createRouter(
             url: z.string().url(),
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           const link = application.addProjectTrackerLink(input);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             link,
             dashboardAfterPublish(application, projectUpdates, input.projectId),
           );
         }),
-      list: trpc.procedure.query(() => application.listProjects()),
-      attention: trpc.procedure.query(() =>
-        application.getAttentionProjection(),
-      ),
-      portfolio: trpc.procedure.query(() => application.getPortfolioStatus()),
-      snapshot: trpc.procedure
+      list: scopedProcedure().query(({ ctx }) => {
+        const projects = application.listProjects();
+        return ctx.machine
+          ? projects.filter(({ id }) => ctx.machine!.projectIds.includes(id))
+          : projects;
+      }),
+      attention: scopedProcedure().query(({ ctx }) => {
+        const attention = application.getAttentionProjection();
+        return ctx.machine
+          ? attention.filter(({ projectId }) =>
+              ctx.machine!.projectIds.includes(projectId),
+            )
+          : attention;
+      }),
+      portfolio: scopedProcedure().query(({ ctx }) => {
+        const portfolio = application.getPortfolioStatus();
+        return ctx.machine
+          ? scopePortfolioStatus(portfolio, new Set(ctx.machine.projectIds))
+          : portfolio;
+      }),
+      snapshot: scopedProcedure(fieldProjectId("projectId"))
         .input(z.object({ projectId: z.string().min(1) }))
-        .query(({ input }) =>
-          application.getDashboardSnapshot(input.projectId),
+        .query(({ ctx, input }) =>
+          scopeDashboardSnapshot(
+            application.getDashboardSnapshot(input.projectId),
+            ctx.machine,
+          ),
         ),
-      status: trpc.procedure
+      status: scopedProcedure(fieldProjectId("projectId"))
         .input(z.object({ projectId: z.string().min(1) }))
         .query(({ input }) => application.getProjectStatus(input.projectId)),
-      detail: trpc.procedure
+      detail: scopedProcedure(fieldProjectId("projectId"))
         .input(z.object({ projectId: z.string().min(1) }))
         .query(({ input }) => {
           const detail = application.getDashboardSnapshot(
@@ -277,18 +415,22 @@ function createRouter(
           }
           return detail;
         }),
-      updates: trpc.procedure
+      updates: scopedProcedure(fieldProjectId("projectId"))
         .input(z.object({ projectId: z.string().min(1) }))
-        .subscription(({ input }) =>
+        .subscription(({ ctx, input }) =>
           observable<DashboardSnapshot>((emit) =>
             projectUpdates.subscribe(input.projectId, (snapshot) =>
-              emit.next(snapshot),
+              emit.next(scopeDashboardSnapshot(snapshot, ctx.machine)),
             ),
           ),
         ),
     }),
     t3: trpc.router({
-      status: trpc.procedure
+      status: scopedProcedure((input) => {
+        const projectId = (input as { projectId?: unknown } | null | undefined)
+          ?.projectId;
+        return typeof projectId === "string" ? projectId : undefined;
+      })
         .input(
           z
             .object({ projectId: z.string().min(1).optional() })
@@ -296,10 +438,16 @@ function createRouter(
             .optional(),
         )
         .query(({ input }) => t3Coordinator.status(input?.projectId)),
-      projectActivity: trpc.procedure
+      projectActivity: scopedProcedure(fieldProjectId("projectId"))
         .input(z.object({ projectId: z.string().min(1) }))
         .query(({ input }) => t3Coordinator.projectActivity(input.projectId)),
-      threadDetail: trpc.procedure
+      threadDetail: scopedProcedure((input) => {
+        const threadId = (input as { threadId?: unknown } | undefined)
+          ?.threadId;
+        return typeof threadId === "string"
+          ? application.getProjectIdForThread(threadId)
+          : undefined;
+      })
         .input(
           z.object({
             threadId: z.string().min(1),
@@ -309,7 +457,7 @@ function createRouter(
         .query(({ input }) =>
           t3Coordinator.threadDetail(input.threadId, input.turnLimit),
         ),
-      linkThread: trpc.procedure
+      linkThread: scopedProcedure(fieldProjectId("projectId"))
         .input(
           z.object({
             projectId: z.string().min(1),
@@ -318,14 +466,15 @@ function createRouter(
             threadId: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           const result = t3Coordinator.linkThread(input);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             result,
             dashboardAfterPublish(application, projectUpdates, input.projectId),
           );
         }),
-      autoLinkThread: trpc.procedure
+      autoLinkThread: scopedProcedure(fieldProjectId("projectId"))
         .input(
           z.object({
             branchName: z.string().min(1),
@@ -334,28 +483,35 @@ function createRouter(
             subtaskId: z.string().min(1).optional(),
           }),
         )
-        .mutation(async ({ input }) => {
+        .mutation(async ({ ctx, input }) => {
           const result = await t3Coordinator.autoLinkThread(input);
           const dashboard =
             result.status === "linked"
               ? (projectUpdates.publish(input.projectId) ??
                 application.getDashboardSnapshot(input.projectId))
               : application.getDashboardSnapshot(input.projectId);
-          return withDashboard(result, dashboard);
+          return withContextDashboard(ctx, result, dashboard);
         }),
-      unlinkThread: trpc.procedure
+      unlinkThread: scopedProcedure((input) => {
+        const threadId = (input as { threadId?: unknown } | undefined)
+          ?.threadId;
+        return typeof threadId === "string"
+          ? application.getProjectIdForThread(threadId)
+          : undefined;
+      })
         .input(
           z.object({
             associationId: z.string().min(1).optional(),
             threadId: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           const result = t3Coordinator.unlinkThread(
             input.threadId,
             input.associationId,
           );
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             result,
             dashboardAfterPublish(
               application,
@@ -366,7 +522,12 @@ function createRouter(
         }),
     }),
     subtasks: trpc.router({
-      create: trpc.procedure
+      create: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
         .input(
           z.object({
             description: z.string().optional(),
@@ -375,15 +536,22 @@ function createRouter(
             taskId: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           const subtask = application.createSubtask(input);
-          const projectId = application.getTaskDetail(input.taskId).projectId;
-          return withDashboard(
+          const projectId = application.getProjectIdForTask(input.taskId);
+          return withContextDashboard(
+            ctx,
             subtask,
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
-      update: trpc.procedure
+      update: scopedProcedure((input) => {
+        const subtaskId = (input as { subtaskId?: unknown } | undefined)
+          ?.subtaskId;
+        return typeof subtaskId === "string"
+          ? application.getProjectIdForSubtask(subtaskId)
+          : undefined;
+      })
         .input(
           z.object({
             description: z.string().nullable().optional(),
@@ -393,30 +561,38 @@ function createRouter(
             subtaskId: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => {
-          const projectId = projectIdForSubtask(application, input.subtaskId);
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForSubtask(input.subtaskId);
           const subtask = application.updateSubtask(input);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             subtask,
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
-      remove: trpc.procedure
+      remove: humanProcedure()
         .input(
           z.object({
             confirm: z.literal(true),
             subtaskId: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => {
-          const projectId = projectIdForSubtask(application, input.subtaskId);
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForSubtask(input.subtaskId);
           application.removeSubtask(input.subtaskId);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             { subtaskId: input.subtaskId },
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
-      report: trpc.procedure
+      report: scopedProcedure((input) => {
+        const subtaskId = (input as { subtaskId?: unknown } | undefined)
+          ?.subtaskId;
+        return typeof subtaskId === "string"
+          ? application.getProjectIdForSubtask(subtaskId)
+          : undefined;
+      })
         .input(
           z.object({
             evidence: z.string().optional(),
@@ -429,28 +605,45 @@ function createRouter(
             ]),
             reason: z.string().trim().min(1).optional(),
             reporter: z.string().min(1),
+            sessionRef: z
+              .object({
+                externalThreadId: z.string().min(1),
+                provider: z.literal("t3"),
+              })
+              .optional(),
             subtaskId: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => {
-          const projectId = projectIdForSubtask(application, input.subtaskId);
-          const report = application.reportSubtaskStatus(input);
-          return withDashboard(
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForSubtask(input.subtaskId);
+          const report = application.reportSubtaskStatus({
+            ...input,
+            ...(ctx.machine ? { machineId: ctx.machine.machineId } : {}),
+          });
+          return withContextDashboard(
+            ctx,
             report,
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
-      archive: trpc.procedure
+      archive: scopedProcedure((input) => {
+        const subtaskId = (input as { subtaskId?: unknown } | undefined)
+          ?.subtaskId;
+        return typeof subtaskId === "string"
+          ? application.getProjectIdForSubtask(subtaskId)
+          : undefined;
+      })
         .input(
           z.object({
             archiveState: z.enum(["released", "wont_do"]),
             subtaskId: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => {
-          const projectId = projectIdForSubtask(application, input.subtaskId);
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForSubtask(input.subtaskId);
           application.archiveSubtask(input.subtaskId, input.archiveState);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             {
               archiveState: input.archiveState,
               subtaskId: input.subtaskId,
@@ -458,17 +651,29 @@ function createRouter(
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
-      restore: trpc.procedure
+      restore: scopedProcedure((input) => {
+        const subtaskId = (input as { subtaskId?: unknown } | undefined)
+          ?.subtaskId;
+        return typeof subtaskId === "string"
+          ? application.getProjectIdForSubtask(subtaskId)
+          : undefined;
+      })
         .input(z.object({ subtaskId: z.string().min(1) }))
-        .mutation(({ input }) => {
-          const projectId = projectIdForSubtask(application, input.subtaskId);
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForSubtask(input.subtaskId);
           application.restoreSubtask(input.subtaskId);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             { subtaskId: input.subtaskId },
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
-      reorder: trpc.procedure
+      reorder: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
         .input(
           z.object({
             orderedSubtaskIds: z.array(z.string().min(1)).min(1),
@@ -476,15 +681,20 @@ function createRouter(
             workState: workStateSchema,
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           const result = application.reorderSubtasks(input);
-          const projectId = application.getTaskDetail(input.taskId).projectId;
-          return withDashboardItems(
+          const projectId = application.getProjectIdForTask(input.taskId);
+          return withContextDashboardItems(
+            ctx,
             result,
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
-      verify: trpc.procedure
+      verify: humanProcedure(
+        humanSessionConfigured
+          ? "A human session is required to verify status reports."
+          : "Human session not configured; verification is unavailable.",
+      )
         .input(
           z.object({
             decision: z.enum(["accepted", "rejected", "deferred"]),
@@ -493,42 +703,48 @@ function createRouter(
           }),
         )
         .mutation(({ ctx, input }) => {
-          if (!humanSessionConfigured) {
-            throw new TRPCError({
-              code: "UNAUTHORIZED",
-              message:
-                "Human session not configured; verification is unavailable.",
-            });
-          }
-          if (!ctx.human) {
-            throw new TRPCError({
-              code: "UNAUTHORIZED",
-              message: "A human session is required to verify status reports.",
-            });
-          }
           const projectId = application.getStatusReportProjectId(
             input.reportId,
           );
           application.verifyStatusReport({
             ...input,
-            verifier: ctx.human.name,
+            verifier: ctx.human!.name,
           });
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             { ok: true },
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
-      history: trpc.procedure
+      history: scopedProcedure((input) => {
+        const subtaskId = (input as { subtaskId?: unknown } | undefined)
+          ?.subtaskId;
+        return typeof subtaskId === "string"
+          ? application.getProjectIdForSubtask(subtaskId)
+          : undefined;
+      })
         .input(z.object({ subtaskId: z.string().min(1) }))
         .query(({ input }) =>
           application.getSubtaskReportHistory(input.subtaskId),
         ),
-      verifications: trpc.procedure
+      verifications: scopedProcedure((input) => {
+        const subtaskId = (input as { subtaskId?: unknown } | undefined)
+          ?.subtaskId;
+        return typeof subtaskId === "string"
+          ? application.getProjectIdForSubtask(subtaskId)
+          : undefined;
+      })
         .input(z.object({ subtaskId: z.string().min(1) }))
         .query(({ input }) =>
           application.getSubtaskVerificationHistory(input.subtaskId),
         ),
-      githubStatus: trpc.procedure
+      githubStatus: scopedProcedure((input) => {
+        const subtaskId = (input as { subtaskId?: unknown } | undefined)
+          ?.subtaskId;
+        return typeof subtaskId === "string"
+          ? application.getProjectIdForSubtask(subtaskId)
+          : undefined;
+      })
         .input(z.object({ subtaskId: z.string().min(1) }))
         .query(({ input }) =>
           githubStatus(
@@ -537,7 +753,7 @@ function createRouter(
         ),
     }),
     tasks: trpc.router({
-      create: trpc.procedure
+      create: scopedProcedure(fieldProjectId("projectId"))
         .input(
           z.object({
             acceptanceCriteria: z.array(z.string()).default([]),
@@ -552,40 +768,62 @@ function createRouter(
             repositoryLinks: z.array(z.string().url()).default([]),
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           const task = application.createTask(input);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             task,
             dashboardAfterPublish(application, projectUpdates, input.projectId),
           );
         }),
-      remove: trpc.procedure
+      remove: humanProcedure()
         .input(
           z.object({
             confirm: z.literal(true),
             taskId: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => {
-          const projectId = application.getTaskDetail(input.taskId).projectId;
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForTask(input.taskId);
           application.removeTask(input.taskId);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             { taskId: input.taskId },
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
-      status: trpc.procedure
+      status: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
         .input(z.object({ taskId: z.string().min(1) }))
         .query(({ input }) => application.getTaskStatus(input.taskId)),
-      detail: trpc.procedure
+      detail: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
         .input(z.object({ taskId: z.string().min(1) }))
         .query(({ input }) => application.getTaskDetail(input.taskId)),
-      githubStatus: trpc.procedure
+      githubStatus: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
         .input(z.object({ taskId: z.string().min(1) }))
         .query(({ input }) =>
           githubStatus(application.getTaskDetail(input.taskId).pullRequestUrl),
         ),
-      update: trpc.procedure
+      update: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
         .input(
           z.object({
             acceptanceCriteria: z.array(z.string()).optional(),
@@ -596,24 +834,31 @@ function createRouter(
             taskId: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           const task = application.updateTask(input);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             task,
             dashboardAfterPublish(application, projectUpdates, task.projectId),
           );
         }),
-      archive: trpc.procedure
+      archive: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
         .input(
           z.object({
             archiveState: z.enum(["released", "wont_do"]),
             taskId: z.string().min(1),
           }),
         )
-        .mutation(({ input }) => {
-          const projectId = application.getTaskDetail(input.taskId).projectId;
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForTask(input.taskId);
           application.archiveTask(input.taskId, input.archiveState);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             {
               archiveState: input.archiveState,
               taskId: input.taskId,
@@ -621,17 +866,23 @@ function createRouter(
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
-      restore: trpc.procedure
+      restore: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
         .input(z.object({ taskId: z.string().min(1) }))
-        .mutation(({ input }) => {
-          const projectId = application.getTaskDetail(input.taskId).projectId;
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForTask(input.taskId);
           application.restoreTask(input.taskId);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             { taskId: input.taskId },
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
-      reorder: trpc.procedure
+      reorder: scopedProcedure(fieldProjectId("projectId"))
         .input(
           z.object({
             orderedTaskIds: z.array(z.string().min(1)).min(1),
@@ -639,18 +890,25 @@ function createRouter(
             workState: workStateSchema,
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           const result = application.reorderTasks(input);
-          return withDashboardItems(
+          return withContextDashboardItems(
+            ctx,
             result,
             dashboardAfterPublish(application, projectUpdates, input.projectId),
           );
         }),
-      resumeRollup: trpc.procedure
+      resumeRollup: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
         .input(z.object({ taskId: z.string().min(1) }))
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           const result = application.resumeTaskRollup(input.taskId);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             result,
             dashboardAfterPublish(
               application,
@@ -659,7 +917,12 @@ function createRouter(
             ),
           );
         }),
-      setState: trpc.procedure
+      setState: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
         .input(
           z.object({
             reason: z.string().trim().min(1).optional(),
@@ -667,9 +930,10 @@ function createRouter(
             workState: editableTaskStateSchema,
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           const result = application.setTaskWorkState(input);
-          return withDashboard(
+          return withContextDashboard(
+            ctx,
             result,
             dashboardAfterPublish(
               application,
@@ -678,7 +942,12 @@ function createRouter(
             ),
           );
         }),
-      link: trpc.procedure
+      link: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
         .input(
           z.object({
             system: z.enum(["linear", "notion"]),
@@ -688,10 +957,11 @@ function createRouter(
             url: z.string().url(),
           }),
         )
-        .mutation(({ input }) => {
+        .mutation(({ ctx, input }) => {
           const link = application.addTaskTrackerLink(input);
-          const projectId = application.getTaskDetail(input.taskId).projectId;
-          return withDashboard(
+          const projectId = application.getProjectIdForTask(input.taskId);
+          return withContextDashboard(
+            ctx,
             link,
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
@@ -804,6 +1074,7 @@ export function createFactoryServer({
       : undefined;
   const application = createFactoryApplication({ databasePath });
   const humanSessions = createHumanSessionStore({ databasePath });
+  const machineCredentials = createMachineCredentialStore({ databasePath });
   const t3Coordinator = createT3Coordinator({
     application,
     reader:
@@ -820,12 +1091,23 @@ export function createFactoryServer({
     t3Coordinator,
     configuredOperator !== undefined,
   );
+  const resolveContext = (
+    headers: Headers | Record<string, string | string[] | undefined>,
+  ): FactoryContext => {
+    const human = configuredOperator
+      ? humanSessions.get(getHumanSessionToken(getHeader(headers, "cookie")))
+      : null;
+    return {
+      human,
+      machine: human
+        ? null
+        : machineCredentials.authenticate(
+            resolveMachineToken(getHeader(headers, "authorization")),
+          ),
+    };
+  };
   const onConnection = getWSConnectionHandler({
-    createContext: ({ req }) => ({
-      human: configuredOperator
-        ? humanSessions.get(getHumanSessionToken(req.headers.cookie))
-        : null,
-    }),
+    createContext: ({ req }) => resolveContext(req.headers),
     router,
     wss: undefined as never,
   });
@@ -919,6 +1201,29 @@ export function createFactoryServer({
         });
       }
 
+      if (url.pathname === "/version" && request.method === "GET") {
+        return jsonResponse({
+          apiVersion: FACTORY_API_VERSION,
+          revision: Bun.env.FACTORY_REVISION?.trim() || "dev",
+          schemaVersion: 1,
+        });
+      }
+
+      if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
+        if (!originAllowed(request, allowedOrigins)) {
+          return new Response("Forbidden", { status: 403 });
+        }
+        if (url.pathname === "/api/projects.updates") {
+          return new Response("Not Found", { status: 404 });
+        }
+        return fetchRequestHandler({
+          createContext: ({ req }) => resolveContext(req.headers),
+          endpoint: "/api",
+          req: request,
+          router,
+        });
+      }
+
       if (url.pathname === "/trpc") {
         if (!originAllowed(request, allowedOrigins)) {
           return new Response("Forbidden", { status: 403 });
@@ -964,7 +1269,10 @@ export function createFactoryServer({
   return {
     stop() {
       if (!stopPromise) {
-        stopPromise = server.stop().finally(() => humanSessions.close());
+        stopPromise = server.stop(true).finally(() => {
+          humanSessions.close();
+          machineCredentials.close();
+        });
       }
       return stopPromise;
     },
@@ -983,6 +1291,15 @@ function jsonResponse(
     headers,
     status: options.status ?? 200,
   });
+}
+
+function getHeader(
+  headers: Headers | Record<string, string | string[] | undefined>,
+  name: string,
+): string | undefined {
+  if (headers instanceof Headers) return headers.get(name) ?? undefined;
+  const value = headers[name] ?? headers[name.toLowerCase()];
+  return Array.isArray(value) ? value.join(",") : value;
 }
 
 function sessionCookie(token: string, request: Request, clear = false): string {

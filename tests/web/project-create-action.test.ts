@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 
 import { createFactoryServer } from "../../src/server";
 import { createProjectAndRefresh } from "../../src/web/project-actions";
+import { createWebSocket, loginTestOperator } from "../transport/helpers";
 
 type RawTRPCResponse = {
   id: number;
@@ -47,9 +48,12 @@ describe("dashboard project creation", () => {
     );
     const server = createFactoryServer({
       databasePath: join(temporaryDirectory, "factory.sqlite"),
+      operator: { name: "test-operator", secret: "test-operator-secret" },
       port: 0,
     });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await loginTestOperator(server),
+    });
     let nextRequestId = 1;
 
     try {

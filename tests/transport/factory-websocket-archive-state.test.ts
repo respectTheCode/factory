@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import { createFactoryServer } from "../../src/server";
+import { openAuthenticatedSocket } from "./helpers";
 
 type RawTRPCResponse = {
   id: number;
@@ -52,16 +53,7 @@ function responseData(response: RawTRPCResponse): Record<string, unknown> {
 }
 
 async function openSocket(server: { url: URL }): Promise<WebSocket> {
-  const socket = new WebSocket(new URL("/trpc", server.url));
-  await new Promise<void>((resolve, reject) => {
-    socket.addEventListener("open", () => resolve(), { once: true });
-    socket.addEventListener(
-      "error",
-      () => reject(new Error("WebSocket connection failed")),
-      { once: true },
-    );
-  });
-  return socket;
+  return openAuthenticatedSocket(server);
 }
 
 describe("Factory archive state WebSocket transport", () => {
@@ -71,6 +63,7 @@ describe("Factory archive state WebSocket transport", () => {
     );
     const server = createFactoryServer({
       databasePath: join(temporaryDirectory, "factory.sqlite"),
+      operator: { name: "test-operator", secret: "test-operator-secret" },
       port: 0,
     });
     const socket = await openSocket(server);
@@ -180,6 +173,7 @@ describe("Factory archive state WebSocket transport", () => {
     );
     const server = createFactoryServer({
       databasePath: join(temporaryDirectory, "factory.sqlite"),
+      operator: { name: "test-operator", secret: "test-operator-secret" },
       port: 0,
     });
     const socket = await openSocket(server);
@@ -276,6 +270,7 @@ describe("Factory archive state WebSocket transport", () => {
     );
     const server = createFactoryServer({
       databasePath: join(temporaryDirectory, "factory.sqlite"),
+      operator: { name: "test-operator", secret: "test-operator-secret" },
       port: 0,
     });
     const socket = await openSocket(server);

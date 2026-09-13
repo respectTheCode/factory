@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import { createFactoryServer } from "../../src/server";
+import { createWebSocket, loginTestOperator } from "./helpers";
 
 type RawResponse = {
   id: number;
@@ -46,9 +47,12 @@ describe("Factory status WebSocket transport", () => {
     );
     const server = createFactoryServer({
       databasePath: join(temporaryDirectory, "factory.sqlite"),
+      operator: { name: "test-operator", secret: "test-operator-secret" },
       port: 0,
     });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await loginTestOperator(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -154,9 +158,12 @@ describe("Factory status WebSocket transport", () => {
     );
     const server = createFactoryServer({
       databasePath: join(temporaryDirectory, "factory.sqlite"),
+      operator: { name: "test-operator", secret: "test-operator-secret" },
       port: 0,
     });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await loginTestOperator(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {

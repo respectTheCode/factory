@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import { createFactoryServer } from "../../src/server";
+import { createWebSocket, loginTestOperator } from "./helpers";
 
 type RawTRPCMessage = {
   id: number;
@@ -73,8 +74,14 @@ describe("Factory subscription WebSocket transport", () => {
       join(tmpdir(), "software-factory-subscription-transport-"),
     );
     const databasePath = join(temporaryDirectory, "factory.sqlite");
-    const server = createFactoryServer({ port: 0, databasePath });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const server = createFactoryServer({
+      databasePath,
+      operator: { name: "test-operator", secret: "test-operator-secret" },
+      port: 0,
+    });
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await loginTestOperator(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -181,8 +188,14 @@ describe("Factory subscription WebSocket transport", () => {
       join(tmpdir(), "software-factory-project-removal-subscription-"),
     );
     const databasePath = join(temporaryDirectory, "factory.sqlite");
-    const server = createFactoryServer({ port: 0, databasePath });
-    const socket = new WebSocket(new URL("/trpc", server.url));
+    const server = createFactoryServer({
+      databasePath,
+      operator: { name: "test-operator", secret: "test-operator-secret" },
+      port: 0,
+    });
+    const socket = createWebSocket(new URL("/trpc", server.url), {
+      Cookie: await loginTestOperator(server),
+    });
 
     try {
       await new Promise<void>((resolve, reject) => {

@@ -107,6 +107,11 @@ export type StatusReport = {
   reporter: string;
   evidence?: string;
   reason?: string;
+  machineId?: string;
+  sessionRef?: {
+    provider: "t3";
+    externalThreadId: string;
+  };
   createdAt: Date;
 };
 
@@ -1153,15 +1158,19 @@ export class FactoryApplication {
 
   reportSubtaskStatus({
     evidence,
+    machineId,
     reason,
     reporter,
     reportedState,
+    sessionRef,
     subtaskId,
   }: {
     evidence?: string;
+    machineId?: string;
     reason?: string;
     reporter: string;
     reportedState: ReportedState;
+    sessionRef?: StatusReport["sessionRef"];
     subtaskId: string;
   }): StatusReport {
     this.refreshFromPersistence();
@@ -1188,6 +1197,8 @@ export class FactoryApplication {
       reporter,
       evidence: currentEvidence,
       ...(normalizedReason ? { reason: normalizedReason } : {}),
+      ...(machineId ? { machineId } : {}),
+      ...(sessionRef ? { sessionRef: { ...sessionRef } } : {}),
       createdAt: this.clock(),
     };
 
@@ -1462,6 +1473,22 @@ export class FactoryApplication {
     return this.statusReports.filter(
       (report) => report.subtaskId === resolvedSubtaskId,
     );
+  }
+
+  getProjectIdForTask(taskId: string): string {
+    this.refreshFromPersistence();
+    return this.requireTask(taskId).projectId;
+  }
+
+  getProjectIdForSubtask(subtaskId: string): string {
+    this.refreshFromPersistence();
+    const subtask = this.requireSubtask(subtaskId);
+    return this.requireTask(subtask.taskId).projectId;
+  }
+
+  getProjectIdForThread(externalThreadId: string): string {
+    this.refreshFromPersistence();
+    return this.requireT3Observation("t3", externalThreadId).projectId;
   }
 
   getStatusReportProjectId(reportId: string): string {
