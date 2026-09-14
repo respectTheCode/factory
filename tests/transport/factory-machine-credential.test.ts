@@ -288,6 +288,29 @@ describe("Factory machine credentials", () => {
   });
 });
 
+describe("machine credential rotation", () => {
+  test("re-issues a revoked machine ID and keeps active IDs unique", () => {
+    const directory = mkdtempSync(join(tmpdir(), "factory-credential-rotate-"));
+    const store = createMachineCredentialStore({
+      databasePath: join(directory, "factory.sqlite"),
+    });
+    try {
+      const first = store.create({ machineId: "mac-mini", projectIds: ["p"] });
+      expect(() =>
+        store.create({ machineId: "mac-mini", projectIds: ["p"] }),
+      ).toThrow();
+      store.revoke("mac-mini");
+      const second = store.create({ machineId: "mac-mini", projectIds: ["p"] });
+      expect(store.authenticate(first.token)).toBeNull();
+      expect(store.authenticate(second.token)?.machineId).toBe("mac-mini");
+      expect(store.list().map((c) => c.id)).toEqual([second.id]);
+    } finally {
+      store.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+});
+
 describe("machine token parsing", () => {
   test("accepts only bearer machine tokens", () => {
     expect(resolveMachineToken("Bearer fmc_abc-123_X")).toBe("fmc_abc-123_X");

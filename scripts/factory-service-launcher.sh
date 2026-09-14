@@ -42,4 +42,10 @@ else
 fi
 unset FACTORY_OPERATOR_SECRET_PATH
 
+# Report the deployed release through GET /version so clients and humans can
+# see which build is serving.
+if [[ -z "${FACTORY_REVISION:-}" ]]; then
+  export FACTORY_REVISION="$(basename "$(cd -- "$(dirname -- "$0")" && pwd -P)")"
+fi
+
 exec "${FACTORY_BUN_PATH}" "${FACTORY_SERVER_PATH}"

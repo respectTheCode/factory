@@ -73,6 +73,14 @@ export function createMachineCredentialStore({
       const token = `${MACHINE_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
       const id = randomUUID();
       const createdAt = clock().toISOString();
+      // Rotation: a revoked credential must not block re-issuing the same
+      // machine ID. Active credentials stay unique per machine.
+      database
+        .query(
+          `DELETE FROM factory_machine_credentials
+            WHERE machine_id = $machineId AND revoked_at IS NOT NULL`,
+        )
+        .run({ $machineId: machineId });
       database
         .query(
           `INSERT INTO factory_machine_credentials
