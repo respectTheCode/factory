@@ -49,9 +49,17 @@ if [ -z "$factory_env" ] && [ -n "${HOME:-}" ]; then
   factory_env="$HOME/.config/factory/env"
 fi
 if [ -n "$factory_env" ] && [ -f "$factory_env" ]; then
+  # Explicit environment wins over the env file.
+  preset_url=${FACTORY_URL:-}
+  preset_token_file=${FACTORY_ACCESS_TOKEN_FILE:-}
+  preset_cli=${FACTORY_CLI:-}
   set -a
   . "$factory_env" 2>/dev/null || exit 0
   set +a
+  [ -z "$preset_url" ] || FACTORY_URL=$preset_url
+  [ -z "$preset_token_file" ] || FACTORY_ACCESS_TOKEN_FILE=$preset_token_file
+  [ -z "$preset_cli" ] || FACTORY_CLI=$preset_cli
+  export FACTORY_URL FACTORY_ACCESS_TOKEN_FILE FACTORY_CLI
 fi
 
 factory_url=${FACTORY_URL:-}

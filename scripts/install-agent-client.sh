@@ -172,6 +172,8 @@ mv "$token_temporary" "$token_destination"
 {
   printf 'FACTORY_URL=%s\n' "$(shell_quote "$factory_url")"
   printf 'FACTORY_ACCESS_TOKEN_FILE=%s\n' "$(shell_quote "$token_destination")"
+  # Hooks run with a minimal PATH, so name the binary explicitly.
+  printf 'FACTORY_CLI=%s\n' "$(shell_quote "$installed_binary")"
   if [ -n "$machine_id" ]; then
     printf 'FACTORY_MACHINE_ID=%s\n' "$(shell_quote "$machine_id")"
   fi
