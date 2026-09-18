@@ -172,12 +172,12 @@ function shellResponse(): Response {
 }
 
 describe("T3 read-only activity transport", () => {
-  test("accepts the current supported T3 0.0.40 descriptor", async () => {
+  test("accepts the current supported T3 0.0.42 descriptor", async () => {
     const reader = createT3ActivityReader({
       baseUrl: BASE_URL,
       fetcher: async (input) =>
         String(input).includes("/.well-known")
-          ? descriptorResponse("0.0.40")
+          ? descriptorResponse("0.0.42")
           : shellResponse(),
       token: FIXTURE_TOKEN,
     });
@@ -344,8 +344,8 @@ describe("T3 read-only activity transport", () => {
 
     const incompatible = createT3ActivityReader({
       baseUrl: BASE_URL,
-      expectedServerVersion: "0.0.38",
-      fetcher: async () => descriptorResponse("0.0.37"),
+      expectedServerVersion: "0.0.42",
+      fetcher: async () => descriptorResponse("0.0.41"),
       token: FIXTURE_TOKEN,
     });
     await expect(incompatible.readShell()).resolves.toMatchObject({

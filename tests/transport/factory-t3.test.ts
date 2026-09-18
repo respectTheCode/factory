@@ -9,6 +9,7 @@ import type {
   T3ShellObservation,
   T3ThreadObservation,
 } from "../../src/t3";
+import { resolveT3Project } from "../../src/t3-coordinator";
 import { createFactoryServer } from "../../src/server";
 import { createWebSocket, loginTestOperator } from "./helpers";
 
@@ -613,5 +614,26 @@ describe("Factory T3 tRPC integration", () => {
       server.stop();
       rmSync(directory, { force: true, recursive: true });
     }
+  });
+
+  test("matches repository identities without being sensitive to GitHub casing", () => {
+    const t3Project = {
+      ...shell().projects[0]!,
+      repositoryIdentity: {
+        canonicalKey: "github.com/respectthecode/factory",
+      },
+      workspaceRoot: "/t3/factory",
+    };
+    const factoryProject: Parameters<typeof resolveT3Project>[1][number] = {
+      gitOriginUrl: "git@github.com:respectTheCode/factory.git",
+      id: "factory-project",
+      name: "Factory",
+    };
+
+    expect(resolveT3Project(t3Project, [factoryProject])).toMatchObject({
+      basis: ["repositoryIdentity"],
+      project: { id: "factory-project" },
+      status: "matched",
+    });
   });
 });
