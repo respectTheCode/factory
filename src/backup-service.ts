@@ -132,6 +132,7 @@ class FactoryBackupService implements BackupService {
     if (!this.directory) return [];
     try {
       const backups = await this.runWorker<BackupSummary[]>({
+        databasePath: this.databasePath,
         directory: this.directory,
         kind: "list",
         requireNfs: this.requireNfs,
@@ -189,6 +190,7 @@ class FactoryBackupService implements BackupService {
     if (!this.directory) throw this.fail("Backups are not configured.");
     try {
       await this.runWorker({
+        databasePath: this.databasePath,
         directory: this.directory,
         id,
         kind: "delete",
@@ -242,36 +244,40 @@ class FactoryBackupService implements BackupService {
     if (this.busyState)
       throw this.fail("A backup operation is already in progress.");
     this.busyState = true;
-    const worker = Bun.spawn(
-      [
-        process.execPath,
-        "run",
-        fileURLToPath(new URL("./backup-worker.ts", import.meta.url)),
-      ],
-      {
-        cwd: dirname(this.databasePath),
-        env: { ...Bun.env },
-        stderr: "pipe",
-        stdin: "pipe",
-        stdout: "pipe",
-      },
-    );
-    const stdout = new Response(worker.stdout).text();
-    const stderr = new Response(worker.stderr).text();
+    let worker: ReturnType<typeof Bun.spawn> | undefined;
+    let stdout = Promise.resolve("");
+    let stderr = Promise.resolve("");
     try {
-      worker.stdin.write(JSON.stringify(request));
-      worker.stdin.end();
+      const spawned = Bun.spawn(
+        [
+          process.execPath,
+          "run",
+          fileURLToPath(new URL("./backup-worker.ts", import.meta.url)),
+        ],
+        {
+          cwd: dirname(this.databasePath),
+          env: { ...Bun.env },
+          stderr: "pipe",
+          stdin: "pipe",
+          stdout: "pipe",
+        },
+      );
+      worker = spawned;
+      stdout = new Response(spawned.stdout).text();
+      stderr = new Response(spawned.stderr).text();
+      spawned.stdin.write(JSON.stringify(request));
+      spawned.stdin.end();
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_resolve, reject) => {
         timeoutId = setTimeout(() => {
           const timeoutError = new Error("Backup operation timed out.");
           this.recordError(timeoutError);
           console.error(`[backup] ${timeoutError.message}`);
-          if (!worker.killed) worker.kill("SIGKILL");
+          if (!spawned.killed) spawned.kill("SIGKILL");
           reject(timeoutError);
         }, this.operationTimeoutMs);
       });
-      const completed = Promise.all([worker.exited, stdout, stderr]);
+      const completed = Promise.all([spawned.exited, stdout, stderr]);
       let result: [number, string, string];
       try {
         result = await Promise.race([completed, timeout]);
@@ -293,9 +299,11 @@ class FactoryBackupService implements BackupService {
       if (!response.ok) throw new Error(response.error);
       return response.result as T;
     } catch (error) {
-      if (!worker.killed) worker.kill();
-      await worker.exited;
-      await Promise.allSettled([stdout, stderr]);
+      if (worker) {
+        if (!worker.killed) worker.kill();
+        await worker.exited;
+        await Promise.allSettled([stdout, stderr]);
+      }
       throw error;
     } finally {
       // Keep the single-operation lock through child exit, including timeout

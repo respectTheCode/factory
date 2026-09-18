@@ -504,9 +504,17 @@ function compareInspection(
 }
 
 function readManifest(path: string): FactorySnapshotManifest {
+  let manifestText: string;
+  try {
+    manifestText = readFileSync(path, "utf8");
+  } catch (error) {
+    // Preserve filesystem errors (including NAS I/O failures) for callers;
+    // only malformed bytes should be reported as a corrupt manifest.
+    throw error;
+  }
   let value: unknown;
   try {
-    value = JSON.parse(readFileSync(path, "utf8"));
+    value = JSON.parse(manifestText);
   } catch {
     throw new Error("Manifest is not valid JSON.");
   }
