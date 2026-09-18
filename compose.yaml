@@ -1,0 +1,62 @@
+name: factory
+
+services:
+  factory:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        FACTORY_REVISION: ${FACTORY_REVISION:-}
+    image: ${FACTORY_IMAGE:-factory:st-162}
+    platform: linux/amd64
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # Compose recreates a changed service by stopping the old container before
+    # starting its replacement.  Keep the explicit single-replica policy here
+    # for Dokploy/Swarm implementations that honor deploy settings.
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+    environment:
+      FACTORY_ENVIRONMENT: ${FACTORY_ENVIRONMENT:-production}
+      FACTORY_HOST: 0.0.0.0
+      FACTORY_PORT: 3101
+      FACTORY_DB: /data/factory.sqlite
+      FACTORY_REQUIRE_EXISTING_DB: ${FACTORY_REQUIRE_EXISTING_DB:-true}
+      FACTORY_OPERATOR_NAME: ${FACTORY_OPERATOR_NAME:?FACTORY_OPERATOR_NAME is required}
+      FACTORY_OPERATOR_SECRET_FILE: /run/secrets/factory_operator
+      FACTORY_ALLOWED_ORIGINS: ${FACTORY_ALLOWED_ORIGINS:-}
+    ports:
+      - target: 3101
+        published: ${FACTORY_PUBLIC_PORT:-3101}
+        host_ip: ${FACTORY_BIND_IP:?FACTORY_BIND_IP is required}
+        protocol: tcp
+    volumes:
+      - type: volume
+        source: factory-data
+        target: /data
+    secrets:
+      - source: factory_operator
+        target: factory_operator
+        mode: 0444
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "fetch('http://127.0.0.1:3101/readyz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+secrets:
+  factory_operator:
+    file: ${FACTORY_OPERATOR_SECRET_FILE:?FACTORY_OPERATOR_SECRET_FILE must point to a host file}
+
+volumes:
+  factory-data:
+    name: ${FACTORY_DATA_VOLUME:-factory-data}

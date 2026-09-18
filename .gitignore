@@ -4,3 +4,7 @@ dist/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# Local browser diagnostics and database recovery copies
+.playwright-cli/
+*.sqlite.bak*

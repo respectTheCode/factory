@@ -79,13 +79,22 @@ ST-161 ships the CLI as a compiled single binary (`bun build --compile`) per ope
 
 ### Deployment and recovery
 
-The server currently has no Dockerfile, no health, readiness or version endpoints, defaults to loopback with no host override, and resolves static files relative to the working directory. ST-162 adds all of these.
+At the start of ST-162, the server already supports `FACTORY_HOST` and `/version`. Remaining packaging work includes a Dockerfile and Compose configuration, health/readiness, graceful shutdown, working-directory-independent static assets, and production database startup guards. See [the Dokploy runbook](../factory-dokploy.md) for the current packaging and test deployment evidence.
 
 Build a Linux image with pinned Bun and immutable revision metadata, prebuilt web assets and a non-root runtime. Include health/readiness and version endpoints, graceful shutdown, a configurable bind host, and a persistent data directory with validated permissions. Readiness requires a compatible usable database; missing optional T3 or GitHub connectivity is degraded integration status, not core downtime. Production startup must reject an unexpectedly missing database instead of silently initializing an empty service.
 
 Dokploy uses a single replica and stop-first updates on verified local storage. Bind the private proxy path deliberately and verify rendered runtime ports. Agent machines reach the service by LAN IP over HTTP; the phone reaches it through a private HTTPS route (Tailscale) with WebSocket upgrades at `/trpc`; do not inherit a public Cloudflare route. Keep pilot and development databases, credentials and URLs distinct from production, and label the pilot visibly.
 
 Proposed recovery targets: at most one hour of lost data (RPO), restoration within one hour (RTO); hourly consistent backups, seven days of hourly retention, thirty daily backups, and a pre-deployment backup. Confirm storage capacity and destination in ST-157. Backups must leave the Dokploy host and failures must be visible through an explicitly configured operational mechanism. Test restore into an isolated service and compare durable IDs, report and verification histories and integrity. Credentials need a separate recovery procedure.
+
+ST-163 implementation and rehearsal evidence are maintained in
+[the recovery runbook](../factory-recovery.md). On 2026-09-18 Kevin requested
+app-managed backups, retention and restores using the NFS export
+`192.168.5.16:/volume1/docker/factory-backups`, replacing native Dokploy volume
+backups. The app defaults to half-hourly recovery points, seven days of recent
+copies and thirty daily points, with failures visible in the app and service
+logs. Keep the old NAS archives until the replacement restore path is verified.
+The live SQLite database remains on local storage.
 
 Rollback after new production writes must preserve those writes. Prefer a compatible prior image against current data or a forward fix. Restoring the pre-cutover database after new reports arrive requires a deliberate reconciliation and data-loss decision; it is not an automatic rollback.
 
