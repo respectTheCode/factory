@@ -117,3 +117,21 @@ Once the deployment is marked ready in the handoff:
 
 Acceptance of ST-162 is recorded in the authoritative Mac dashboard, not in
 the synthetic pilot. No production clients should switch to this test URL.
+
+## Initial deployment evidence
+
+On 2026-09-17, commit `b38236b01ba151470ca0a2d8bc2a0f2c5e7ae132` built
+and started successfully on Dokploy. Local validation passed typecheck and
+98 transport, persistence, and CLI tests; the Linux amd64 image also passed
+its build gate and disposable non-root restart smoke test.
+
+The live LAN check passed health/readiness/static assets, human sign-in,
+authenticated WebSocket queries/subscriptions/reconnection, machine-scoped
+reporting, duplicate-request idempotency, and durable history read-back.
+Unauthenticated reads and machine verification attempts were denied. The
+synthetic report remains unverified for the human test.
+
+The data volume `factory-pilot-st162-data` uses Docker's local driver with no
+remote filesystem options. The service runs as `bun`, with one Factory
+container. GitHub automatic deployment is enabled only for
+`deploy/factory-pilot`; this documentation commit exercises that trigger.
