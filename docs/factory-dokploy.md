@@ -19,9 +19,8 @@ Read through `dokploy_home` on 2026-09-17:
   remains the canonical repository; no Gitea migration is necessary.
 - The physically separate NAS is `192.168.5.16`. ST-163 now targets app-managed
   backups on its NFS share `/volume1/docker/factory-backups`, with status in
-  Factory and errors in Dokploy service logs. Mount and UID 1000 write access passed after host recovery; the new live
-  restore rehearsal is pending. Existing MinIO jobs and archives remain in
-  place during this transition; see the recovery runbook. No active notification
+  Factory and errors in Dokploy service logs. Mount, UID 1000 write access and app-managed restore passed after host recovery.
+  Old MinIO jobs are disabled; archives remain available. See the recovery runbook. No active notification
   destination is configured.
 
 ## Isolation and access

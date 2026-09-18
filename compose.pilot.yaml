@@ -56,36 +56,6 @@ services:
         parallelism: 1
         order: stop-first
 
-  # The sidecar is deliberately isolated from the network and reads the live
-  # database volume without write access. Dokploy's native volume backup may
-  # stop this service while it tars the volume; the Factory service remains up.
-  backup-snapshots:
-    <<: *factory-image
-    init: true
-    network_mode: none
-    depends_on:
-      factory:
-        condition: service_healthy
-    entrypoint: [bun, scripts/backup-loop.ts]
-    environment:
-      FACTORY_DB: /data/factory.sqlite
-      FACTORY_BACKUP_DIR: /backups
-      FACTORY_SNAPSHOT_INTERVAL_MS: "300000"
-      FACTORY_SNAPSHOT_MAX_AGE_MS: "600000"
-      FACTORY_SNAPSHOT_TIMEOUT_MS: "20000"
-    volumes:
-      - factory-data:/data:ro
-      - factory-snapshots:/backups
-    restart: unless-stopped
-    stop_grace_period: 30s
-    healthcheck:
-      test:
-        [CMD, bun, scripts/backup-loop.ts, healthcheck, --directory, /backups, --max-age-ms, "600000"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-      retries: 3
-
   # Explicit, one-time command only. Refuses an existing database or token.
   # docker compose -f compose.pilot.yaml run --rm --build pilot-init
   pilot-init:
@@ -107,6 +77,4 @@ volumes:
     external: true
   factory-data:
     name: factory-pilot-st162-data
-  factory-snapshots:
-    name: factory-pilot-st163-snapshots
   tailscale-state:

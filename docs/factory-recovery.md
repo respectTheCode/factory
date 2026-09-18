@@ -109,8 +109,8 @@ against an attacker able to replace both database and manifest.
 
 On 2026-09-18 Kevin requested this app-managed NFS design instead of native
 Dokploy volume backups. Keep the existing MinIO archives during the transition.
-Disable the old half-hourly and daily Dokploy jobs only after an app-managed NAS
-backup and restore have passed. Their IDs are `ZsJVrP3JY19lMvKAG7eyD` and
+The old half-hourly and daily Dokploy jobs were disabled after an app-managed
+NAS backup and restore passed. Their IDs are `ZsJVrP3JY19lMvKAG7eyD` and
 `DBLk--LZBCKMugziiyAUP`; the old archive prefix is
 `factory-pilot-st162-ewgahg_backup-snapshots/st163/` in MinIO bucket `dokploy`.
 
@@ -146,5 +146,22 @@ volume. Its driver is local, type nfs, device
 `:/volume1/docker/factory-backups`, options `addr=192.168.5.16,rw,nfsvers=4`.
 Preserve this volume and the pilot subfolder ownership on redeploy.
 
-The new application deployment and live NAS restore rehearsal remain pending.
-Existing native backup jobs and archives remain in place during validation.
+Revision `db7545523b229833f6ecd232485dddbdcccf0155` deployed successfully
+(`f8dzBqdWmU3ky1BUUrcKu`). The first automatic NAS backup completed at
+16:01:34 UTC. Manual backup `b-20260918T160237.284Z-65dee220` was restored through
+the authenticated app API, with mandatory safety backup
+`b-20260918T160237.533Z-c1a8e728`. Restore acknowledgment to ready/status
+verification took 1.17 seconds for this small synthetic dataset. Content,
+durable IDs, report and human-verification history, machine credentials and
+idempotency receipts matched; database integrity was OK. Human sessions were
+invalidated. The saved restore result reported `restored`.
+
+The new pre-deployment gate created verified NAS backup
+`b-20260918T160305.550Z-3d075358`. Old MinIO schedules are disabled and the
+snapshot sidecar has been removed from Compose. Historical MinIO archives and
+the local snapshot volume are retained. Application status/logs now own failures.
+Browser visual verification remains for the human pilot check because the
+connected browser blocks the private URL; HTTP API and restart behavior passed.
+
+The host's interrupted package configuration was completed with user approval;
+`dpkg --audit` returned no issues, and Docker, Factory and Paperless were healthy.
