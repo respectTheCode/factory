@@ -1,0 +1,43 @@
+# Start with an allowlist so local databases, credentials, internal notes and
+# unrelated workspace files never enter the image build context.
+**
+!package.json
+!bun.lock
+!tsconfig.json
+!src/
+!src/**
+!tests/
+!tests/**
+!scripts/
+!scripts/**
+
+# Build-only revision provenance. Keep only HEAD, branch refs and an optional
+# packed-refs file; Git config, hooks, logs and object data stay excluded.
+.git/**
+!.git/HEAD
+!.git/refs/heads/
+!.git/refs/heads/**
+!.git/packed-refs
+
+# Defense in depth for files restored by a future allowlist change.
+**/.DS_Store
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+*.sqlite*
+*.db
+*.db-*
+*.bak
+*.bak-*
+*.env
+*.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.token
+*.secret
+*.secret.*
+credentials.json

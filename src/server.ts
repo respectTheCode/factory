@@ -1,12 +1,16 @@
 import { Buffer } from "node:buffer";
+import { accessSync, constants, existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { getWSConnectionHandler } from "@trpc/server/adapters/ws";
 import { initTRPC, TRPCError } from "@trpc/server";
 import { observable } from "@trpc/server/observable";
 import { z } from "zod";
+import { Database } from "bun:sqlite";
 
 import {
+  checkFactoryDatabase,
   createFactoryApplication,
   FactoryConflictError,
   type DashboardSnapshot,
@@ -42,6 +46,16 @@ import {
   type MachineCredentialIdentity,
 } from "./machine-credential";
 import { canonicalPayloadDigest, createIdempotencyStore } from "./idempotency";
+import {
+  DEFAULT_SHUTDOWN_TIMEOUT_MS,
+  resolveFactoryEnvironment,
+  resolveGitHubToken,
+  resolveRequireExistingDatabase,
+  resolveRevision,
+  resolveShutdownTimeout,
+  withTimeout,
+  type FactoryEnvironment,
+} from "./server-runtime";
 
 type ConnectionEvent = "close" | "error" | "message";
 type ConnectionListener = (...args: unknown[]) => void;
@@ -52,7 +66,8 @@ type SocketData = {
 };
 
 export type FactoryServer = {
-  stop: () => Promise<void>;
+  stop: (options?: { timeoutMs?: number }) => Promise<void>;
+  shutdownTimeoutMs: number;
   url: URL;
 };
 
@@ -196,14 +211,22 @@ function scopedProcedure(resolveProjectId?: ProjectIdResolver) {
 
 function createMutationMutex() {
   let tail = Promise.resolve();
+  let accepting = true;
   return {
     run<T>(operation: () => T | PromiseLike<T>): Promise<T> {
+      if (!accepting) {
+        return Promise.reject(new Error("Factory server is shutting down."));
+      }
       const current = tail.then(operation, operation);
       tail = current.then(
         () => undefined,
         () => undefined,
       );
       return current;
+    },
+    stopAccepting(): Promise<void> {
+      accepting = false;
+      return tail;
     },
   };
 }
@@ -308,9 +331,9 @@ function createRouter(
   t3Coordinator: ReturnType<typeof createT3Coordinator>,
   humanSessionConfigured: boolean,
   idempotencyStore: ReturnType<typeof createIdempotencyStore>,
+  mutationMutex = createMutationMutex(),
 ) {
   const projectUpdates = new ProjectUpdateBus(application);
-  const mutationMutex = createMutationMutex();
   const serializedMutation = trpc.middleware(async ({ next }) =>
     mutationMutex.run(async () => {
       const result = await next();
@@ -1200,10 +1223,14 @@ export type FactoryRouter = ReturnType<typeof createRouter>;
 
 export type FactoryServerOptions = {
   databasePath: string;
+  environment?: FactoryEnvironment;
   githubToken?: string;
   hostname: string;
   operator?: FactoryOperator;
   port: number;
+  requireExistingDatabase?: boolean;
+  revision?: string;
+  shutdownTimeoutMs?: number;
   allowedOrigins?: string[];
   t3AccessToken?: string;
   t3BaseUrl?: string;
@@ -1248,6 +1275,23 @@ export function getFactoryServerOptions(
     ? normalizeT3BaseUrl(configuredT3BaseUrl)
     : undefined;
   const t3AccessToken = resolveT3AccessToken(environment);
+  const factoryEnvironment = resolveFactoryEnvironment(environment);
+  const configuredRequireExistingDatabase =
+    resolveRequireExistingDatabase(environment);
+  const requireExistingDatabase =
+    factoryEnvironment === "production" &&
+    environment.FACTORY_REQUIRE_EXISTING_DB?.trim() === "false"
+      ? (() => {
+          throw new Error(
+            "FACTORY_REQUIRE_EXISTING_DB cannot be false in production.",
+          );
+        })()
+      : environment.FACTORY_REQUIRE_EXISTING_DB?.trim()
+        ? configuredRequireExistingDatabase
+        : factoryEnvironment === "production";
+  const shutdownTimeoutMs = resolveShutdownTimeout(environment);
+  const githubToken = resolveGitHubToken(environment);
+  const revision = resolveRevision(environment);
   const operator = resolveFactoryOperator(environment);
   const allowedOrigins = (environment.FACTORY_ALLOWED_ORIGINS ?? "")
     .split(",")
@@ -1256,12 +1300,21 @@ export function getFactoryServerOptions(
 
   return {
     databasePath: environment.FACTORY_DB ?? "factory.sqlite",
-    ...(environment.GITHUB_TOKEN || environment.GH_TOKEN
-      ? { githubToken: environment.GITHUB_TOKEN ?? environment.GH_TOKEN }
+    ...(environment.FACTORY_ENVIRONMENT?.trim()
+      ? { environment: factoryEnvironment }
       : {}),
+    ...(githubToken ? { githubToken } : {}),
     hostname: environment.FACTORY_HOST ?? "127.0.0.1",
     ...(operator ? { operator } : {}),
     port,
+    ...(environment.FACTORY_REQUIRE_EXISTING_DB?.trim() ||
+    factoryEnvironment === "production"
+      ? { requireExistingDatabase }
+      : {}),
+    ...(revision ? { revision } : {}),
+    ...(environment.FACTORY_SHUTDOWN_TIMEOUT_MS?.trim()
+      ? { shutdownTimeoutMs }
+      : {}),
     ...(allowedOrigins.length > 0 ? { allowedOrigins } : {}),
     ...(t3AccessToken ? { t3AccessToken } : {}),
     ...(t3BaseUrl ? { t3BaseUrl } : {}),
@@ -1272,11 +1325,15 @@ export function getFactoryServerOptions(
 export function createFactoryServer({
   allowedOrigins = [],
   databasePath = "factory.sqlite",
+  environment: configuredFactoryEnvironment,
   githubStatusReader,
   githubToken,
   hostname = "127.0.0.1",
   operator,
   port,
+  requireExistingDatabase: configuredRequireExistingDatabase,
+  revision,
+  shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
   t3AccessToken: _t3AccessToken,
   t3BaseUrl: _t3BaseUrl,
   t3TimeoutMs: _t3TimeoutMs,
@@ -1284,20 +1341,40 @@ export function createFactoryServer({
 }: {
   allowedOrigins?: string[];
   databasePath?: string;
+  environment?: FactoryEnvironment;
   githubStatusReader?: GitHubStatusReader;
   githubToken?: string;
   hostname?: string;
   operator?: FactoryOperator;
   port: number;
+  requireExistingDatabase?: boolean;
+  revision?: string;
+  shutdownTimeoutMs?: number;
   t3AccessToken?: string;
   t3BaseUrl?: string;
   t3TimeoutMs?: number;
   t3ActivityReader?: T3ActivityReader;
 }): FactoryServer {
+  const factoryEnvironment = configuredFactoryEnvironment ?? "development";
+  const requireExistingDatabase =
+    configuredRequireExistingDatabase ?? factoryEnvironment === "production";
+  if (requireExistingDatabase) {
+    try {
+      checkFactoryDatabase({ databasePath, requireSnapshot: true });
+      assertDatabaseWritable(databasePath);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `FACTORY_REQUIRE_EXISTING_DB=true requires a compatible existing Factory database: ${detail}`,
+      );
+    }
+  }
   const configuredOperator =
     operator && operator.name.trim() && operator.secret
       ? { ...operator, name: operator.name.trim() }
       : undefined;
+  let shuttingDown = false;
+  const sockets = new Set<Bun.ServerWebSocket<SocketData>>();
   const application = createFactoryApplication({
     databasePath,
     refreshBeforeOperations: false,
@@ -1305,6 +1382,7 @@ export function createFactoryServer({
   const humanSessions = createHumanSessionStore({ databasePath });
   const machineCredentials = createMachineCredentialStore({ databasePath });
   const idempotencyStore = createIdempotencyStore({ databasePath });
+  const mutationMutex = createMutationMutex();
   const t3Coordinator = createT3Coordinator({
     application,
     reader:
@@ -1321,7 +1399,31 @@ export function createFactoryServer({
     t3Coordinator,
     configuredOperator !== undefined,
     idempotencyStore,
+    mutationMutex,
   );
+  const deploymentIdentity = {
+    apiVersion: FACTORY_API_VERSION,
+    revision: revision?.trim() || Bun.env.FACTORY_REVISION?.trim() || "dev",
+    schemaVersion: 1 as const,
+    ...(configuredFactoryEnvironment
+      ? { environment: factoryEnvironment }
+      : {}),
+  };
+  const optionalIntegrations = {
+    github: githubToken ? "configured" : "unavailable",
+    t3: _t3BaseUrl || _t3AccessToken ? "configured" : "unavailable",
+  } as const;
+  const checkReadiness = (): {
+    database: "ok" | "unavailable";
+    staticAssets: "ok" | "unavailable";
+  } => ({
+    database:
+      !shuttingDown && databaseIsReady(databasePath, requireExistingDatabase)
+        ? "ok"
+        : "unavailable",
+    staticAssets:
+      !shuttingDown && staticAssetsAreReady() ? "ok" : "unavailable",
+  });
   const resolveContext = (
     headers: Headers | Record<string, string | string[] | undefined>,
   ): FactoryContext => {
@@ -1433,11 +1535,29 @@ export function createFactoryServer({
       }
 
       if (url.pathname === "/version" && request.method === "GET") {
-        return jsonResponse({
-          apiVersion: FACTORY_API_VERSION,
-          revision: Bun.env.FACTORY_REVISION?.trim() || "dev",
-          schemaVersion: 1,
-        });
+        return jsonResponse(deploymentIdentity);
+      }
+
+      if (url.pathname === "/deployment.json" && request.method === "GET") {
+        return jsonResponse(deploymentIdentity);
+      }
+
+      if (url.pathname === "/healthz" && request.method === "GET") {
+        return jsonResponse({ status: "ok" });
+      }
+
+      if (url.pathname === "/readyz" && request.method === "GET") {
+        const checks = checkReadiness();
+        const ready = checks.database === "ok" && checks.staticAssets === "ok";
+        return jsonResponse(
+          {
+            checks,
+            integrations: optionalIntegrations,
+            ready,
+            status: ready ? "ready" : "not_ready",
+          },
+          { status: ready ? 200 : 503 },
+        );
       }
 
       if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
@@ -1479,6 +1599,7 @@ export function createFactoryServer({
     },
     websocket: {
       open(socket) {
+        sockets.add(socket);
         const url = new URL(socket.data.request.url);
         const request = {
           headers: toNodeHeaders(socket.data.request.headers),
@@ -1491,6 +1612,7 @@ export function createFactoryServer({
         emit(socket.data, "message", toBuffer(message), false);
       },
       close(socket) {
+        sockets.delete(socket);
         emit(socket.data, "close");
       },
     },
@@ -1498,17 +1620,139 @@ export function createFactoryServer({
 
   let stopPromise: Promise<void> | undefined;
   return {
-    stop() {
+    stop(options = {}) {
       if (!stopPromise) {
-        stopPromise = server.stop(true).finally(() => {
-          humanSessions.close();
-          machineCredentials.close();
-          idempotencyStore.close();
+        shuttingDown = true;
+        const timeoutMs = options.timeoutMs ?? shutdownTimeoutMs;
+        stopPromise = stopServerResources({
+          application,
+          closeWebSockets: () => {
+            for (const socket of sockets) socket.terminate();
+            sockets.clear();
+          },
+          forceStop: () => server.stop(true),
+          humanSessions,
+          idempotencyStore,
+          machineCredentials,
+          mutationMutex,
+          stopListening: () =>
+            stopListeningGracefully(
+              () => server.stop(false),
+              () => server.stop(true),
+              Math.min(timeoutMs, 250),
+            ),
+          timeoutMs,
         });
       }
       return stopPromise;
     },
+    shutdownTimeoutMs,
     url: server.url,
+  };
+}
+
+async function stopServerResources({
+  application,
+  closeWebSockets,
+  forceStop,
+  stopListening,
+  humanSessions,
+  idempotencyStore,
+  machineCredentials,
+  mutationMutex,
+  timeoutMs,
+}: {
+  application: ReturnType<typeof createFactoryApplication>;
+  closeWebSockets: () => void;
+  forceStop: () => void | Promise<void>;
+  stopListening: () => void | Promise<void>;
+  humanSessions: ReturnType<typeof createHumanSessionStore>;
+  idempotencyStore: ReturnType<typeof createIdempotencyStore>;
+  machineCredentials: ReturnType<typeof createMachineCredentialStore>;
+  mutationMutex: ReturnType<typeof createMutationMutex>;
+  timeoutMs: number;
+}): Promise<void> {
+  const gracefulOperation = (async () => {
+    await mutationMutex.stopAccepting();
+    closeWebSockets();
+    await stopListening();
+  })();
+
+  try {
+    await withTimeout(gracefulOperation, timeoutMs);
+  } catch {
+    // A mutation or transport that does not finish in the bounded window must
+    // not keep the process alive. Bun's forceful stop closes active WebSockets.
+    try {
+      await forceStop();
+    } catch {
+      // Resource closure below is still required if Bun has already stopped.
+    }
+  } finally {
+    application.close();
+    humanSessions.close();
+    machineCredentials.close();
+    idempotencyStore.close();
+  }
+}
+
+async function stopListeningGracefully(
+  stopListening: () => void | Promise<void>,
+  forceStop: () => void | Promise<void>,
+  graceMs: number,
+): Promise<void> {
+  let settled = false;
+  const graceful = Promise.resolve()
+    .then(stopListening)
+    .then(
+      () => {
+        settled = true;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      },
+    );
+  await Promise.race([
+    graceful,
+    new Promise<void>((resolve) => setTimeout(resolve, graceMs)),
+  ]);
+  if (!settled) await forceStop();
+}
+
+export function installFactoryServerSignalHandlers(
+  server: FactoryServer,
+): () => void {
+  let shutdownPromise: Promise<void> | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const shutdown = () => {
+    if (shutdownPromise) return;
+    timeout = setTimeout(() => {
+      console.error("Factory server shutdown timed out; forcing exit.");
+      process.exit(1);
+    }, server.shutdownTimeoutMs + 100);
+    shutdownPromise = server.stop();
+    void shutdownPromise
+      .then(
+        () => process.exit(0),
+        (error) => {
+          console.error(
+            `Factory server shutdown failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          process.exit(1);
+        },
+      )
+      .finally(() => {
+        if (timeout !== undefined) clearTimeout(timeout);
+      });
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+  return () => {
+    process.off("SIGTERM", shutdown);
+    process.off("SIGINT", shutdown);
   };
 }
 
@@ -1614,37 +1858,98 @@ function toNodeHeaders(headers: Headers): Record<string, string> {
 }
 
 function getStaticFile(pathname: string): string | null {
+  const sourceRoot = import.meta.dir;
   if (pathname.startsWith("/projects/")) {
-    return "src/web/index.html";
+    return resolve(sourceRoot, "web/index.html");
   }
 
   const files: Record<string, string> = {
-    "/": "src/web/index.html",
-    "/icon.svg": "src/web/icon.svg",
-    "/icons/icon-192.png": "src/web/icons/icon-192.png",
-    "/icons/icon-512.png": "src/web/icons/icon-512.png",
-    "/icons/apple-touch-icon.png": "src/web/icons/apple-touch-icon.png",
-    "/manifest.webmanifest": "src/web/manifest.webmanifest",
-    "/main.css": "dist/main.css",
-    "/main.js": "dist/main.js",
-    "/service-worker.js": "dist/service-worker.js",
-    "/fonts/ibm-plex-sans-latin-400-normal.woff2":
-      "src/web/fonts/ibm-plex-sans-latin-400-normal.woff2",
-    "/fonts/ibm-plex-sans-latin-500-normal.woff2":
-      "src/web/fonts/ibm-plex-sans-latin-500-normal.woff2",
-    "/fonts/ibm-plex-sans-latin-600-normal.woff2":
-      "src/web/fonts/ibm-plex-sans-latin-600-normal.woff2",
-    "/fonts/ibm-plex-sans-latin-700-normal.woff2":
-      "src/web/fonts/ibm-plex-sans-latin-700-normal.woff2",
-    "/fonts/ibm-plex-mono-latin-400-normal.woff2":
-      "src/web/fonts/ibm-plex-mono-latin-400-normal.woff2",
-    "/fonts/ibm-plex-mono-latin-500-normal.woff2":
-      "src/web/fonts/ibm-plex-mono-latin-500-normal.woff2",
-    "/fonts/ibm-plex-mono-latin-600-normal.woff2":
-      "src/web/fonts/ibm-plex-mono-latin-600-normal.woff2",
+    "/": resolve(sourceRoot, "web/index.html"),
+    "/icon.svg": resolve(sourceRoot, "web/icon.svg"),
+    "/icons/icon-192.png": resolve(sourceRoot, "web/icons/icon-192.png"),
+    "/icons/icon-512.png": resolve(sourceRoot, "web/icons/icon-512.png"),
+    "/icons/apple-touch-icon.png": resolve(
+      sourceRoot,
+      "web/icons/apple-touch-icon.png",
+    ),
+    "/manifest.webmanifest": resolve(sourceRoot, "web/manifest.webmanifest"),
+    "/main.css": resolve(sourceRoot, "../dist/main.css"),
+    "/main.js": resolve(sourceRoot, "../dist/main.js"),
+    "/service-worker.js": resolve(sourceRoot, "../dist/service-worker.js"),
+    "/fonts/ibm-plex-sans-latin-400-normal.woff2": resolve(
+      sourceRoot,
+      "web/fonts/ibm-plex-sans-latin-400-normal.woff2",
+    ),
+    "/fonts/ibm-plex-sans-latin-500-normal.woff2": resolve(
+      sourceRoot,
+      "web/fonts/ibm-plex-sans-latin-500-normal.woff2",
+    ),
+    "/fonts/ibm-plex-sans-latin-600-normal.woff2": resolve(
+      sourceRoot,
+      "web/fonts/ibm-plex-sans-latin-600-normal.woff2",
+    ),
+    "/fonts/ibm-plex-sans-latin-700-normal.woff2": resolve(
+      sourceRoot,
+      "web/fonts/ibm-plex-sans-latin-700-normal.woff2",
+    ),
+    "/fonts/ibm-plex-mono-latin-400-normal.woff2": resolve(
+      sourceRoot,
+      "web/fonts/ibm-plex-mono-latin-400-normal.woff2",
+    ),
+    "/fonts/ibm-plex-mono-latin-500-normal.woff2": resolve(
+      sourceRoot,
+      "web/fonts/ibm-plex-mono-latin-500-normal.woff2",
+    ),
+    "/fonts/ibm-plex-mono-latin-600-normal.woff2": resolve(
+      sourceRoot,
+      "web/fonts/ibm-plex-mono-latin-600-normal.woff2",
+    ),
   };
 
   return files[pathname] ?? null;
+}
+
+function staticAssetsAreReady(): boolean {
+  return ["/", "/main.css", "/main.js", "/service-worker.js"].every(
+    (pathname) => {
+      const file = getStaticFile(pathname);
+      return file !== null && existsSync(file);
+    },
+  );
+}
+
+function databaseIsReady(
+  databasePath: string,
+  requireExistingDatabase: boolean,
+): boolean {
+  // A memory database belongs to the running application and cannot be
+  // inspected by checkFactoryDatabase's independent read-only connection.
+  if (databasePath === ":memory:") return true;
+  try {
+    checkFactoryDatabase({
+      databasePath,
+      requireSnapshot: requireExistingDatabase,
+    });
+    assertDatabaseWritable(databasePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assertDatabaseWritable(databasePath: string): void {
+  const resolvedDatabasePath = resolve(databasePath);
+  accessSync(resolve(resolvedDatabasePath, ".."), constants.W_OK);
+  accessSync(resolvedDatabasePath, constants.W_OK);
+
+  // Exercise the same SQLite write path used by snapshot upserts without
+  // changing the durable state.
+  const database = new Database(resolvedDatabasePath);
+  try {
+    database.exec("BEGIN IMMEDIATE; ROLLBACK;");
+  } finally {
+    database.close();
+  }
 }
 
 function createWebSocketAdapter(socket: Bun.ServerWebSocket<SocketData>) {
@@ -1698,6 +2003,8 @@ function toBuffer(message: string | ArrayBuffer | Uint8Array): Buffer {
 }
 
 if (import.meta.main) {
-  const server = createFactoryServer(getFactoryServerOptions(Bun.env));
+  const options = getFactoryServerOptions(Bun.env);
+  const server = createFactoryServer(options);
+  installFactoryServerSignalHandlers(server);
   console.info(`Software Factory listening at ${server.url}`);
 }
