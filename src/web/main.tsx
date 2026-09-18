@@ -229,6 +229,35 @@ function isLiveWorkState(state: WorkStatus): state is LiveWorkState {
 
 type TRPCClient = ReturnType<typeof createTRPCProxyClient<FactoryRouter>>;
 
+type DeploymentEnvironment = "pilot" | "production" | "development";
+
+const DEFAULT_DOCUMENT_TITLE = "Software Factory";
+const PILOT_DOCUMENT_TITLE = "PILOT — Software Factory";
+
+function isDeploymentEnvironment(
+  value: unknown,
+): value is DeploymentEnvironment {
+  return value === "pilot" || value === "production" || value === "development";
+}
+
+function PilotBanner({
+  environment,
+}: {
+  environment: DeploymentEnvironment | null;
+}) {
+  if (environment !== "pilot") return null;
+  return (
+    <aside
+      aria-label="Pilot environment"
+      className="deployment-banner"
+      data-deployment-environment="pilot"
+      role="status"
+    >
+      PILOT — isolated test data
+    </aside>
+  );
+}
+
 function observedDate(value: unknown): string | undefined {
   const date =
     value instanceof Date
@@ -394,6 +423,8 @@ function unavailableObservedActivity(
 
 function Dashboard() {
   const [connection] = useState(() => new ConnectionState());
+  const [deploymentEnvironment, setDeploymentEnvironment] =
+    useState<DeploymentEnvironment | null>(null);
   const [snapshot, setSnapshot] = useState<ConnectionSnapshot>(
     connection.snapshot(),
   );
@@ -504,6 +535,32 @@ function Dashboard() {
     document.addEventListener("pointerdown", dismissOpenMenus);
     return () => {
       document.removeEventListener("pointerdown", dismissOpenMenus);
+    };
+  }, []);
+
+  useEffect(() => {
+    document.title =
+      deploymentEnvironment === "pilot"
+        ? PILOT_DOCUMENT_TITLE
+        : DEFAULT_DOCUMENT_TITLE;
+  }, [deploymentEnvironment]);
+
+  useEffect(() => {
+    let active = true;
+    void fetch("/deployment.json", {
+      cache: "no-store",
+      credentials: "omit",
+    })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const result = (await response.json()) as { environment?: unknown };
+        if (active && isDeploymentEnvironment(result.environment)) {
+          setDeploymentEnvironment(result.environment);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
     };
   }, []);
 
@@ -1349,6 +1406,7 @@ function Dashboard() {
   if (sessionLoading) {
     return (
       <main>
+        <PilotBanner environment={deploymentEnvironment} />
         <p className="status-twin">Checking session…</p>
       </main>
     );
@@ -1357,6 +1415,7 @@ function Dashboard() {
   if (!human) {
     return (
       <main>
+        <PilotBanner environment={deploymentEnvironment} />
         <section className="panel" aria-labelledby="sign-in-title">
           <p className="eyebrow">Factory</p>
           <h1 id="sign-in-title">Sign in to continue</h1>
@@ -1368,6 +1427,7 @@ function Dashboard() {
 
   return (
     <main>
+      <PilotBanner environment={deploymentEnvironment} />
       <header>
         <a
           aria-label="Factory dashboard"

@@ -33,6 +33,7 @@ export type FactoryIdGenerator = () => string;
 export type FactoryApplicationOptions = {
   clock: FactoryClock;
   idGenerator: FactoryIdGenerator;
+  close?: () => void;
   refreshBeforeOperations?: boolean;
   refresh?: () => FactoryState | undefined;
   state?: FactoryState;
@@ -637,6 +638,7 @@ export type DashboardSnapshot = {
 export class FactoryApplication {
   private readonly clock: FactoryClock;
   private readonly idGenerator: FactoryIdGenerator;
+  private readonly closePersistence?: () => void;
   private readonly persist?: (state: FactoryState) => void;
   private readonly refresh?: () => FactoryState | undefined;
   private readonly refreshBeforeOperations: boolean;
@@ -654,9 +656,11 @@ export class FactoryApplication {
   private readonly reconciliationFindings: ReconciliationFinding[];
   private nextTaskSimpleId: number;
   private nextSubtaskSimpleId: number;
+  private persistenceClosed = false;
 
   constructor({
     clock,
+    close,
     idGenerator,
     persist,
     refreshBeforeOperations = true,
@@ -665,6 +669,7 @@ export class FactoryApplication {
   }: FactoryApplicationOptions) {
     const normalizedState = state ? normalizeSimpleIdState(state) : undefined;
     this.clock = clock;
+    this.closePersistence = close;
     this.idGenerator = idGenerator;
     this.persist = persist;
     this.refreshBeforeOperations = refreshBeforeOperations;
@@ -689,6 +694,13 @@ export class FactoryApplication {
     this.nextSubtaskSimpleId =
       normalizedState?.simpleIdCounters?.nextSubtask ??
       nextSimpleIdNumber(this.subtasks, SUBTASK_SIMPLE_ID_PREFIX);
+  }
+
+  /** Close the backing persistence handle, if this application owns one. */
+  close(): void {
+    if (this.persistenceClosed) return;
+    this.persistenceClosed = true;
+    this.closePersistence?.();
   }
 
   resolveTaskId(taskId: string): string {
@@ -3356,6 +3368,9 @@ export function createFactoryApplication({
 
   return new FactoryApplication({
     clock: () => new Date(),
+    close() {
+      database.close();
+    },
     idGenerator: () => crypto.randomUUID(),
     refreshBeforeOperations,
     persist(nextState) {
@@ -3398,8 +3413,11 @@ export type FactoryDatabaseCheck = {
 
 export function checkFactoryDatabase({
   databasePath,
+  requireSnapshot = false,
 }: {
   databasePath: string;
+  /** Require the canonical row when checking a production database. */
+  requireSnapshot?: boolean;
 }): FactoryDatabaseCheck {
   const resolvedDatabasePath = resolve(databasePath);
   if (!existsSync(resolvedDatabasePath)) {
@@ -3429,7 +3447,27 @@ export function checkFactoryDatabase({
     const row = database
       .query("SELECT state FROM factory_state WHERE id = 1")
       .get() as { state: string } | null;
-    const state = row ? (JSON.parse(row.state) as FactoryState) : undefined;
+    if (!row && requireSnapshot) {
+      throw new Error(
+        `Factory database has no persisted factory_state snapshot: ${resolvedDatabasePath}`,
+      );
+    }
+
+    let state: FactoryState | undefined;
+    if (row) {
+      try {
+        const parsed = JSON.parse(row.state) as unknown;
+        assertFactoryStateSnapshot(parsed);
+        // Hydration is the existing application-level compatibility check. It
+        // also catches malformed nested records and invalid legacy shapes.
+        state = hydrateState(parsed);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Factory state snapshot is corrupt or incompatible: ${detail}`,
+        );
+      }
+    }
     return {
       counts: {
         projects: state?.projects.length ?? 0,
@@ -3502,6 +3540,150 @@ export function backupFactoryDatabase({
     };
   } finally {
     database.close();
+  }
+}
+
+function assertFactoryStateSnapshot(
+  value: unknown,
+): asserts value is FactoryState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("snapshot must be a JSON object");
+  }
+
+  const record = value as Record<string, unknown>;
+  if ("schemaVersion" in record && record.schemaVersion !== 1) {
+    throw new Error("snapshot schemaVersion must be 1");
+  }
+  for (const field of [
+    "projects",
+    "tasks",
+    "subtasks",
+    "statusReports",
+    "verifications",
+  ]) {
+    if (!Array.isArray(record[field])) {
+      throw new Error(`snapshot field ${field} must be an array`);
+    }
+  }
+  const projects = record.projects as unknown[];
+  const tasks = record.tasks as unknown[];
+  const subtasks = record.subtasks as unknown[];
+  const statusReports = record.statusReports as unknown[];
+  const verifications = record.verifications as unknown[];
+
+  const requireRecord = (
+    field: string,
+    item: unknown,
+  ): Record<string, unknown> => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`snapshot ${field} entries must be objects`);
+    }
+    return item as Record<string, unknown>;
+  };
+  const requireString = (field: string, item: unknown): void => {
+    if (typeof item !== "string" || !item.trim()) {
+      throw new Error(`snapshot ${field} must be a non-empty string`);
+    }
+  };
+  const requireDate = (field: string, item: unknown): void => {
+    if (
+      !(item instanceof Date) &&
+      (typeof item !== "string" || !Number.isFinite(Date.parse(item)))
+    ) {
+      throw new Error(`snapshot ${field} must be an ISO date`);
+    }
+  };
+  const requireArray = (field: string, item: unknown): void => {
+    if (!Array.isArray(item))
+      throw new Error(`snapshot ${field} must be an array`);
+  };
+  const requireStringArray = (field: string, item: unknown): void => {
+    requireArray(field, item);
+    for (const entry of item as unknown[]) requireString(field, entry);
+  };
+  const requireOneOf = (
+    field: string,
+    item: unknown,
+    values: readonly string[],
+  ): void => {
+    requireString(field, item);
+    if (!values.includes(item as string)) {
+      throw new Error(`snapshot ${field} has an unsupported value`);
+    }
+  };
+
+  for (const field of [
+    "trackerLinks",
+    "runs",
+    "codeSessions",
+    "codeSessionAssociations",
+    "codeSessionObservations",
+    "sessionEvidence",
+    "reconciliationFindings",
+  ]) {
+    if (
+      field in record &&
+      record[field] !== null &&
+      record[field] !== undefined
+    ) {
+      requireArray(`snapshot ${field}`, record[field]);
+    }
+  }
+
+  for (const item of projects) {
+    const project = requireRecord("projects", item);
+    requireString("project.id", project.id);
+    requireString("project.name", project.name);
+    requireDate("project.createdAt", project.createdAt);
+  }
+  for (const item of tasks) {
+    const task = requireRecord("tasks", item);
+    requireString("task.id", task.id);
+    requireString("task.name", task.name);
+    requireString("task.projectId", task.projectId);
+    requireDate("task.createdAt", task.createdAt);
+    if (task.acceptanceCriteria != null) {
+      requireStringArray("task.acceptanceCriteria", task.acceptanceCriteria);
+    }
+    if (task.dependencies != null) {
+      requireStringArray("task.dependencies", task.dependencies);
+    }
+    if (task.repositoryLinks != null) {
+      requireStringArray("task.repositoryLinks", task.repositoryLinks);
+    }
+  }
+  for (const item of subtasks) {
+    const subtask = requireRecord("subtasks", item);
+    requireString("subtask.id", subtask.id);
+    requireString("subtask.name", subtask.name);
+    requireString("subtask.taskId", subtask.taskId);
+    requireDate("subtask.createdAt", subtask.createdAt);
+  }
+  for (const item of statusReports) {
+    const report = requireRecord("statusReports", item);
+    requireString("statusReport.id", report.id);
+    requireString("statusReport.subtaskId", report.subtaskId);
+    requireOneOf("statusReport.reportedState", report.reportedState, [
+      "backlog",
+      "not_started",
+      "in_progress",
+      "blocked",
+      "complete",
+    ]);
+    requireString("statusReport.reporter", report.reporter);
+    requireDate("statusReport.createdAt", report.createdAt);
+  }
+  for (const item of verifications) {
+    const verification = requireRecord("verifications", item);
+    requireString("verification.id", verification.id);
+    requireString("verification.reportId", verification.reportId);
+    requireOneOf("verification.decision", verification.decision, [
+      "accepted",
+      "rejected",
+      "deferred",
+    ]);
+    requireString("verification.verifier", verification.verifier);
+    requireDate("verification.createdAt", verification.createdAt);
   }
 }
 

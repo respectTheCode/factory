@@ -79,7 +79,7 @@ ST-161 ships the CLI as a compiled single binary (`bun build --compile`) per ope
 
 ### Deployment and recovery
 
-The server currently has no Dockerfile, no health, readiness or version endpoints, defaults to loopback with no host override, and resolves static files relative to the working directory. ST-162 adds all of these.
+At the start of ST-162, the server already supports `FACTORY_HOST` and `/version`. Remaining packaging work includes a Dockerfile and Compose configuration, health/readiness, graceful shutdown, working-directory-independent static assets, and production database startup guards. See [the Dokploy runbook](../factory-dokploy.md) for the current packaging and test deployment evidence.
 
 Build a Linux image with pinned Bun and immutable revision metadata, prebuilt web assets and a non-root runtime. Include health/readiness and version endpoints, graceful shutdown, a configurable bind host, and a persistent data directory with validated permissions. Readiness requires a compatible usable database; missing optional T3 or GitHub connectivity is degraded integration status, not core downtime. Production startup must reject an unexpectedly missing database instead of silently initializing an empty service.
 
