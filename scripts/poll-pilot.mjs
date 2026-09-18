@@ -1,9 +1,11 @@
 import { randomBytes } from "node:crypto";
+import { execFile as execFileCallback } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 const GITHUB_REF_URL = new URL(
   "https://api.github.com/repos/respectTheCode/factory/git/ref/heads/deploy%2Ffactory-pilot",
@@ -14,6 +16,9 @@ const STATE_FILE = ".factory-pilot-last-request.json";
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_RESPONSE_BYTES = 256 * 1024;
+const MAX_BACKUP_OUTPUT_BYTES = 256 * 1024;
+const PREDEPLOY_BACKUP_TIMEOUT_MS = 120_000;
+const execFile = promisify(execFileCallback);
 
 function validSha(value) {
   return typeof value === "string" && SHA_PATTERN.test(value.trim());
@@ -231,6 +236,31 @@ async function writeLastRequestedSha(statePath, sha, now) {
   }
 }
 
+export async function runPredeployBackup(options = {}) {
+  const cwd = options.cwd ?? process.cwd();
+  const environment = options.environment ?? process.env;
+  const scriptPath = fileURLToPath(
+    new URL("./pilot-predeploy-backup.sh", import.meta.url),
+  );
+  const childEnvironment = { ...process.env, ...environment };
+  if (options.runningSha) {
+    childEnvironment.FACTORY_PILOT_EXPECTED_RUNNING_SHA = options.runningSha;
+  }
+
+  try {
+    const result = await execFile("bash", [scriptPath], {
+      cwd,
+      env: childEnvironment,
+      maxBuffer: MAX_BACKUP_OUTPUT_BYTES,
+      timeout: PREDEPLOY_BACKUP_TIMEOUT_MS,
+    });
+    const output = result.stdout.trim();
+    if (output) process.stdout.write(`${output}\n`);
+  } catch {
+    throw new Error("Pre-deployment backup failed.");
+  }
+}
+
 export async function pollPilot(options = {}) {
   const environment = options.environment ?? process.env;
   const cwd = options.cwd ?? process.cwd();
@@ -250,6 +280,8 @@ export async function pollPilot(options = {}) {
   }
 
   const webhookUrl = await readWebhookUrl(environment);
+  const backup = options.backup ?? runPredeployBackup;
+  await backup({ cwd, environment, releaseSha, runningSha });
   const body = JSON.stringify({
     ref: PILOT_BRANCH_REF,
     after: releaseSha,
