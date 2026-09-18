@@ -168,3 +168,7 @@ commits; production is outside this schedule.
 Reference: [Dokploy auto-deploy](https://docs.dokploy.com/docs/core/auto-deploy).
 The polling adapter uses the Compose webhook contract verified in
 [Dokploy v0.30.2](https://github.com/Dokploy/dokploy/blob/v0.30.2/apps/dokploy/pages/api/deploy/compose/%5BrefreshToken%5D.ts).
+
+The installed schedule's manual no-change check passed on revision
+`55d02bac9b3bc861da0cc7260ecfa88432e8a53a`, without queuing a deployment.
+This documentation update is the changed-revision test for the enabled timer.
