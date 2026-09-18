@@ -2903,6 +2903,28 @@ option {
   color: var(--ink);
 }
 
+.observed-source-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.8rem 0;
+}
+
+.observed-source-row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+}
+
+.observed-source-row span + span::before {
+  color: var(--muted);
+  content: "·";
+  margin-right: 0.55rem;
+}
+
 .observed-source-down {
   background: var(--tint-down);
   border-color: rgba(229, 72, 77, 0.35);

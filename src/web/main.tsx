@@ -49,6 +49,7 @@ import {
 } from "./status-presentation";
 import {
   ObservedActivitySection,
+  observedThreadKey,
   type ObservedActivityViewModel,
   type ObservedTarget,
   type ObservedThreadDetail,
@@ -316,6 +317,27 @@ function observedActivityView(
       threadId: finding.externalThreadId,
     })),
     projectName: result.projectName,
+    sources: result.sources?.map((source) => ({
+      connection: {
+        ...source.connection,
+        ...(observedDate(source.connection.observedAt)
+          ? { observedAt: observedDate(source.connection.observedAt) }
+          : {}),
+        ...(observedDate(source.connection.lastSuccessfulFetchAt)
+          ? {
+              lastSuccessfulFetchAt: observedDate(
+                source.connection.lastSuccessfulFetchAt,
+              ),
+            }
+          : {}),
+      },
+      counts: source.counts,
+      error: source.error,
+      label: source.label,
+      machineId: source.machineId,
+      sourceId: source.sourceId,
+      status: source.status,
+    })),
     targets,
     threads: result.threads.map((thread) => ({
       association: {
@@ -342,11 +364,13 @@ function observedActivityView(
       externalProjectId: thread.externalProjectId,
       hasPendingApprovals: thread.hasPendingApprovals,
       hasPendingUserInput: thread.hasPendingUserInput,
+      machineId: thread.machineId,
       latestSessionState: thread.latestSessionState,
       latestTurnState: thread.latestTurnState,
       linkedPullRequestUrl: thread.linkedPullRequestUrl,
       observedAt: observedDate(thread.observedAt),
       provider: thread.provider,
+      sourceId: thread.sourceId,
       sourceUpdatedAt: observedDate(thread.sourceUpdatedAt),
       threadId: thread.threadId,
       title: thread.title,
@@ -755,6 +779,7 @@ function Dashboard() {
               ...unavailable,
               findings: current.findings,
               projectName: current.projectName,
+              sources: current.sources,
               targets: current.targets,
               threads: current.threads,
             }
@@ -766,23 +791,25 @@ function Dashboard() {
     }
   };
 
-  const openT3ThreadDetail = async (threadId: string) => {
+  const openT3ThreadDetail = async (threadId: string, sourceId?: string) => {
     const client = trpc.current;
     if (!client) return;
+    const key = observedThreadKey(threadId, sourceId);
     setT3ThreadDetailLoadingIds((current) => {
       const next = new Set(current);
-      next.add(threadId);
+      next.add(key);
       return next;
     });
     try {
       const detail = await client.t3.threadDetail.query({
+        ...(sourceId === undefined ? {} : { sourceId }),
         threadId,
         turnLimit: 1,
       });
       if (trpc.current !== client) return;
       setT3ThreadDetails((current) => ({
         ...current,
-        [threadId]: observedThreadDetailView(
+        [key]: observedThreadDetailView(
           detail as unknown as T3ThreadDetailResult,
         ),
       }));
@@ -790,7 +817,7 @@ function Dashboard() {
       if (trpc.current !== client) return;
       setT3ThreadDetails((current) => ({
         ...current,
-        [threadId]: {
+        [key]: {
           error:
             error instanceof Error
               ? error.message
@@ -801,14 +828,18 @@ function Dashboard() {
       if (trpc.current === client) {
         setT3ThreadDetailLoadingIds((current) => {
           const next = new Set(current);
-          next.delete(threadId);
+          next.delete(key);
           return next;
         });
       }
     }
   };
 
-  const linkT3Thread = async (threadId: string, target: ObservedTarget) => {
+  const linkT3Thread = async (
+    threadId: string,
+    target: ObservedTarget,
+    sourceId?: string,
+  ) => {
     const client = trpc.current;
     const projectId = projectDetail?.id;
     if (!client || !projectId || !snapshot.canMutate || busy) return;
@@ -816,6 +847,7 @@ function Dashboard() {
     try {
       const result = await client.t3.linkThread.mutate({
         projectId,
+        ...(sourceId === undefined ? {} : { sourceId }),
         threadId,
         ...(target.kind === "task"
           ? { taskId: target.id }
@@ -828,7 +860,11 @@ function Dashboard() {
     }
   };
 
-  const unlinkT3Thread = async (threadId: string, associationId?: string) => {
+  const unlinkT3Thread = async (
+    threadId: string,
+    associationId?: string,
+    sourceId?: string,
+  ) => {
     const client = trpc.current;
     const projectId = projectDetail?.id;
     if (!client || !projectId || !snapshot.canMutate || busy) return;
@@ -836,6 +872,7 @@ function Dashboard() {
     try {
       const result = await client.t3.unlinkThread.mutate({
         threadId,
+        ...(sourceId === undefined ? {} : { sourceId }),
         ...(associationId === undefined ? {} : { associationId }),
       });
       applyDashboardSnapshot(result.dashboard);

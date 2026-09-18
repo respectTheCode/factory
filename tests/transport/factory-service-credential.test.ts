@@ -28,4 +28,21 @@ describe("stable service T3 credential wiring", () => {
       'install -d -m 0700 "${FACTORY_SERVICE_ROOT}/secrets"',
     );
   });
+
+  test("auto-selects the service-root source registry only when no override exists", () => {
+    const launcher = readFileSync(
+      join(repositoryRoot, "scripts/factory-service-launcher.sh"),
+      "utf8",
+    );
+    expect(launcher).toContain("FACTORY_T3_SOURCES_FILE+x");
+    expect(launcher).toContain(
+      "${FACTORY_SERVICE_ROOT}/secrets/t3-sources.json",
+    );
+    expect(launcher).toContain(
+      'export FACTORY_T3_SOURCES_FILE="${FACTORY_SERVICE_ROOT}/secrets/t3-sources.json"',
+    );
+    expect(launcher).toContain(
+      'if [[ -z "${FACTORY_T3_SOURCES_FILE:-}" ]] && [[ -z "${T3_BASE_URL:-}" ]]; then',
+    );
+  });
 });

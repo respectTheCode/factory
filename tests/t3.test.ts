@@ -420,8 +420,11 @@ describe("T3 read-only activity transport", () => {
     expect(() =>
       normalizeT3BaseUrl("http://t3.example.test?token=fixture"),
     ).toThrow("without credentials");
-    expect(() => normalizeT3BaseUrl("http://192.168.6.100:3773")).toThrow(
-      "https:// for non-loopback hosts",
+    expect(normalizeT3BaseUrl("http://192.168.6.100:3773")).toBe(
+      "http://192.168.6.100:3773",
+    );
+    expect(() => normalizeT3BaseUrl("http://8.8.8.8:3773")).toThrow(
+      "https:// for non-private hosts",
     );
   });
 });
