@@ -5,7 +5,7 @@ set -u
 FACTORY_GITHUB_KEYCHAIN_SERVICE="com.app-press.factory.github-token"
 FACTORY_GITHUB_KEYCHAIN_ACCOUNT="$(/usr/bin/id -un)"
 FACTORY_BUN_PATH="${FACTORY_BUN_PATH:-/opt/homebrew/bin/bun}"
-FACTORY_SERVER_PATH="$(cd -- "$(dirname -- "$0")" && pwd)/server.js"
+FACTORY_SERVER_PATH="$(cd -- "$(dirname -- "$0")" && pwd)/src/server.js"
 unset GITHUB_TOKEN
 unset T3_ACCESS_TOKEN
 
