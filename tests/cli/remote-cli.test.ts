@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { createFactoryApplication } from "../../src/application";
 import { createMachineCredentialStore } from "../../src/machine-credential";
 import { createFactoryServer } from "../../src/server";
+import type { T3ActivityReader } from "../../src/t3";
 
 async function runCli(
   args: string[],
@@ -43,6 +44,7 @@ describe("remote Factory CLI", () => {
     const app = createFactoryApplication({ databasePath });
     const project = app.createProject({
       name: "Remote Factory",
+      t3Mappings: [{ sourceId: "legacy", workspaceRoot: directory }],
       workspaceRoot: directory,
     });
     const task = app.createTask({
@@ -54,11 +56,34 @@ describe("remote Factory CLI", () => {
       name: "Remote report",
       taskId: task.id,
     });
+    const t3Reader: T3ActivityReader = {
+      readShell: async () => ({
+        error: "fixture unavailable",
+        fetchedAt: new Date().toISOString(),
+        ok: false,
+        status: "unavailable",
+      }),
+      readThread: async () => ({
+        error: "fixture unavailable",
+        fetchedAt: new Date().toISOString(),
+        ok: false,
+        status: "unavailable",
+      }),
+    };
     const server = createFactoryServer({
       databasePath,
       hostname: "127.0.0.1",
       operator: { name: "operator", secret: "operator-secret" },
       port: port(),
+      t3Sources: [
+        {
+          accessTokenFile: "/tmp/legacy-token",
+          baseUrl: "http://127.0.0.1:3773",
+          machineId: "mac-mini-remote",
+          reader: t3Reader,
+          sourceId: "legacy",
+        },
+      ],
     });
     const store = createMachineCredentialStore({ databasePath });
     const credential = store.create({
@@ -89,6 +114,17 @@ describe("remote Factory CLI", () => {
       expect(JSON.parse(remoteDetail.stdout)).toEqual(
         JSON.parse(localDetail.stdout),
       );
+
+      const remoteContext = await runCli(
+        ["project", "context", "--workspace-root", directory, "--json"],
+        remoteEnvironment,
+      );
+      expect(remoteContext.exitCode).toBe(0);
+      expect(JSON.parse(remoteContext.stdout)).toMatchObject({
+        context: {
+          t3Mappings: [{ sourceId: "legacy", workspaceRoot: directory }],
+        },
+      });
 
       const report = await runCli(
         [

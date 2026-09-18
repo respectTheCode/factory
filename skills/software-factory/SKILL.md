@@ -41,7 +41,9 @@ Run `bun run src/cli.ts doctor --json` first: it reports the mode, API compatibi
 machine identity with its Project scope, and exits non-zero when reporting cannot work. Reads
 and reports are limited to the credential's Projects; verification stays human-only in the
 dashboard. `subtask report` may add `--session-thread-id` with the current T3 thread so the
-report carries its session reference. Never print or paste the machine token.
+report carries its session reference. With multiple T3 sources, add `--session-source-id`
+when the source is known; the server validates it against the machine credential. Never print
+or paste the machine token.
 
 ## Choose the relevant operation
 
@@ -99,7 +101,10 @@ bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$F
 
 Immediately after `project context` resolves exactly one Project and Task, run `session auto-link`
 with those IDs and the current branch. The command reads current T3 activity and adds an idempotent
-Factory Work Association only when exactly one running T3 thread has that branch. Use
+Factory Work Association only when exactly one running T3 thread in the credential-bound
+source has that branch. Add `--thread-id` when the originating T3 thread is known and
+`--source-id` when selecting among configured sources for that machine. Never choose a
+source by branch alone. Use
 `project t3-status --project-id ... --json` as the quick way to confirm the connection state is
 `connected`.
 Treat `linked` as success. If it returns `unmatched` or `ambiguous`, create no association, continue
@@ -117,7 +122,10 @@ link` or the PWA's collapsed **Manage associations** section only as a fallback.
 association with its `--association-id`; never remove unrelated associations. Association changes
 are Factory metadata only and never change T3, Work State, Status Reports, or Verification.
 
-If the checkout has no Git remote, the normalized absolute workspace root remains sufficient. Workspace matching removes trailing
+If the checkout has no Git remote, the normalized absolute workspace root remains sufficient
+for Factory Project context. T3 matching on a non-legacy source additionally requires an explicit
+Project source mapping; see `docs/t3-multiple-sources.md` in the Factory repository.
+Workspace matching removes trailing
 slashes and lexical dot segments; it does not resolve symlinks. Stored or remote relative roots
 are not Project identities: correct their metadata to an absolute root rather than guessing. If the
 checkout is detached and `git branch --show-current` is empty, omit the branch-filtered command

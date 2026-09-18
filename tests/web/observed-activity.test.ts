@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import {
   formatObservedTime,
+  observedThreadKey,
   observedConnectionLabel,
   observedFindingLabel,
   suggestedAssociationTarget,
@@ -48,6 +49,11 @@ describe("observed activity presentation", () => {
     expect(formatObservedTime("2026-09-02T12:00:00.000Z")).toContain("2026");
   });
 
+  test("names thread UI state by source as well as external ID", () => {
+    expect(observedThreadKey("thread-1", "ubuntu")).toBe("ubuntu:thread-1");
+    expect(observedThreadKey("thread-1")).toBe("legacy:thread-1");
+  });
+
   test("shows T3 as read-only evidence without replacing Factory authority", () => {
     expect(source).toContain('data-observed-activity="true"');
     expect(source).toContain("T3 activity is read-only evidence");
@@ -79,6 +85,12 @@ describe("observed activity presentation", () => {
     expect(source).toContain("candidateIds");
     expect(source).toContain("Link suggested target");
     expect(source).toContain("Metadata only; transcript text is intentionally");
+  });
+
+  test("keeps per-source outage freshness visible beside aggregate status", () => {
+    expect(source).toContain("source.connection.lastSuccessfulFetchAt");
+    expect(source).toContain('aria-label="T3 source connections"');
+    expect(source).toContain("source.machineId");
   });
 
   test("keeps suggested badges compact and target labels singular", () => {

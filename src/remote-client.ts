@@ -24,6 +24,7 @@ import type {
   WorkState,
 } from "./application";
 import { FACTORY_API_VERSION } from "./api-version";
+import type { T3ProjectMapping } from "./t3-source-identity";
 import type { FactoryRouter } from "./server";
 
 export const MAX_FACTORY_ACCESS_TOKEN_BYTES = 16 * 1024;
@@ -76,6 +77,7 @@ export type FactoryRemoteClient = {
     id: string;
     name: string;
     gitOriginUrl?: string;
+    t3Mappings?: T3ProjectMapping[];
     workspaceRoot?: string;
     trackerLinks: TrackerLink[];
     tasks: Array<
@@ -103,14 +105,19 @@ export type FactoryRemoteClient = {
   addProjectTrackerLink: (
     input: Parameters<FactoryApplication["addProjectTrackerLink"]>[0],
   ) => Promise<TrackerLink>;
-  projectT3Status: (projectId?: string) => Promise<unknown>;
-  sessionDetail: (threadId: string, turnLimit: number) => Promise<unknown>;
+  projectT3Status: (projectId?: string, sourceId?: string) => Promise<unknown>;
+  sessionDetail: (
+    threadId: string,
+    turnLimit: number,
+    sourceId?: string,
+  ) => Promise<unknown>;
   sessionLink: (
     input: {
       projectId: string;
       taskId?: string;
       subtaskId?: string;
       threadId: string;
+      sourceId?: string;
     } & FactoryRequestKeyInput,
   ) => Promise<unknown>;
   sessionAutoLink: (
@@ -119,9 +126,15 @@ export type FactoryRemoteClient = {
       projectId: string;
       taskId?: string;
       subtaskId?: string;
+      sourceId?: string;
+      threadId?: string;
     } & FactoryRequestKeyInput,
   ) => Promise<unknown>;
-  sessionUnlink: (threadId: string, associationId?: string) => Promise<unknown>;
+  sessionUnlink: (
+    threadId: string,
+    associationId?: string,
+    sourceId?: string,
+  ) => Promise<unknown>;
   createTask: (
     input: WithRequestKey<Parameters<FactoryApplication["createTask"]>[0]>,
   ) => Promise<Task>;
@@ -336,14 +349,25 @@ export function createRemoteFactoryClient(
       invoke(async () =>
         unwrapDashboard(await client.projects.link.mutate(input)),
       ),
-    projectT3Status: (projectId) =>
+    projectT3Status: (projectId, sourceId) =>
       invoke(() =>
         client.t3.status.query(
-          projectId === undefined ? undefined : { projectId },
+          projectId === undefined && sourceId === undefined
+            ? undefined
+            : {
+                ...(projectId === undefined ? {} : { projectId }),
+                ...(sourceId === undefined ? {} : { sourceId }),
+              },
         ),
       ),
-    sessionDetail: (threadId, turnLimit) =>
-      invoke(() => client.t3.threadDetail.query({ threadId, turnLimit })),
+    sessionDetail: (threadId, turnLimit, sourceId) =>
+      invoke(() =>
+        client.t3.threadDetail.query({
+          ...(sourceId === undefined ? {} : { sourceId }),
+          threadId,
+          turnLimit,
+        }),
+      ),
     sessionLink: (input) =>
       invokeMutation(
         async () => unwrapDashboard(await client.t3.linkThread.mutate(input)),
@@ -355,11 +379,12 @@ export function createRemoteFactoryClient(
           unwrapDashboard(await client.t3.autoLinkThread.mutate(input)),
         input.requestKey,
       ),
-    sessionUnlink: (threadId, associationId) =>
+    sessionUnlink: (threadId, associationId, sourceId) =>
       invoke(async () =>
         unwrapDashboard(
           await client.t3.unlinkThread.mutate({
             ...(associationId === undefined ? {} : { associationId }),
+            ...(sourceId === undefined ? {} : { sourceId }),
             threadId,
           }),
         ),
