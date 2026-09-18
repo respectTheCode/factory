@@ -3,12 +3,10 @@ set -euo pipefail
 
 # This script runs on the Dokploy host, outside the Factory container. It is
 # intentionally limited to the ST-162 pilot Compose project. A deployment is
-# allowed to proceed only after a fresh local snapshot and its manifest verify.
+# allowed to proceed only after the app publishes and verifies a fresh backup on its configured share.
 
 readonly COMPOSE_PROJECT="factory-pilot-st162-ewgahg"
 readonly COMPOSE_SERVICE="factory"
-readonly SOURCE_DATABASE="/data/factory.sqlite"
-readonly PREDEPLOY_ROOT="/data/predeploy"
 
 die() {
   echo "pilot-predeploy-backup: $1" >&2
@@ -62,108 +60,30 @@ if [[ -n "$expected_running_sha" ]]; then
   [[ "$current_sha" == "${expected_running_sha,,}" ]] || die "pilot revision changed during the backup gate."
 fi
 
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)-$(date +%s)-$$" ||
-  die "could not generate a unique snapshot timestamp."
-[[ "$timestamp" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$ ]] ||
-  die "generated snapshot name was invalid."
-
-snapshot_directory="${PREDEPLOY_ROOT}/${timestamp}"
-snapshot_database="${snapshot_directory}/factory.sqlite"
-snapshot_manifest="${snapshot_database}.manifest.json"
-
-# Create the directory before invoking the snapshot helper. The ownership marker
-# is written only after both backup and manifest verification succeed, so failed
-# attempts never count toward retention.
-docker exec --env "FACTORY_PREDEPLOY_DIR=${snapshot_directory}" "$factory_container" bun -e '
-  import { mkdir } from "node:fs/promises";
-  const directory = Bun.env.FACTORY_PREDEPLOY_DIR;
-  if (!directory) throw new Error("missing snapshot directory");
-  await mkdir("/data/predeploy", { recursive: true });
-  await mkdir(directory);
-' >/dev/null 2>/dev/null || die "could not prepare the pre-deployment snapshot directory."
-
-docker exec "$factory_container" bun scripts/backup-snapshot.ts \
-  backup \
-  --database "$SOURCE_DATABASE" \
-  --output "$snapshot_database" \
-  >/dev/null 2>/dev/null || die "consistent pre-deployment snapshot failed."
-
-docker exec "$factory_container" bun scripts/backup-snapshot.ts \
-  verify \
-  --database "$snapshot_database" \
-  --manifest "$snapshot_manifest" \
-  >/dev/null 2>/dev/null || die "pre-deployment snapshot verification failed."
-
-# Read only the manifest's durable count and database/snapshot hash fields. Do
-# not print the manifest wholesale: it may contain sensitive credential hashes.
-manifest_summary="$(docker exec --env "FACTORY_PREDEPLOY_MANIFEST=${snapshot_manifest}" "$factory_container" bun -e '
-  const path = Bun.env.FACTORY_PREDEPLOY_MANIFEST;
-  if (!path) throw new Error("missing snapshot manifest");
-  const manifest = JSON.parse(await Bun.file(path).text());
-  const collections = manifest?.state?.collections;
-  if (!collections || typeof collections !== "object" || Array.isArray(collections)) {
-    throw new Error("manifest collections are missing");
-  }
-  const counts = {};
-  for (const [key, value] of Object.entries(collections)) {
-    if (!Number.isInteger(value?.count) || value.count < 0) throw new Error("manifest count is invalid");
-    counts[key] = value.count;
-  }
-  const hashes = {
-    snapshotSha256: manifest?.snapshot?.sha256,
-    contentDigest: manifest?.state?.contentDigest,
-    durableIdsDigest: manifest?.state?.durableIdsDigest,
-  };
-  for (const [key, value] of Object.entries(hashes)) {
-    if (typeof value !== "string" || !/^[0-9a-f]{32,128}$/i.test(value)) throw new Error(`manifest ${key} is invalid`);
-    hashes[key] = value.toLowerCase();
-  }
-  process.stdout.write(JSON.stringify({ counts, hashes }));
-' 2>/dev/null)" || die "pre-deployment manifest counts could not be read."
-
-docker exec --env "FACTORY_PREDEPLOY_DIR=${snapshot_directory}" "$factory_container" bun -e '
-  const directory = Bun.env.FACTORY_PREDEPLOY_DIR;
-  if (!directory) throw new Error("missing snapshot directory");
-  await Bun.write(`${directory}/.factory-st163-predeploy`, "factory-st163\n");
-' >/dev/null 2>/dev/null || die "could not mark the verified pre-deployment snapshot."
-
-# Prune only directories that this script created, and only after the new
-# snapshot has passed verification. The marker prevents removal of unrelated
-# data placed below /data/predeploy by an operator or another backup job.
-retention_summary="$(docker exec "$factory_container" bun -e '
-  import { readdir, rm, stat } from "node:fs/promises";
-  const root = "/data/predeploy";
-  const ownedName = /^[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/;
-  let entries;
+# Use the same human-authenticated application operation as the dashboard. The
+# mounted operator secret stays inside the container and never enters logs.
+docker exec "$factory_container" bun -e '
+  const base = "http://127.0.0.1:3000";
+  const secretFile = Bun.env.FACTORY_OPERATOR_SECRET_FILE;
+  if (!secretFile) throw new Error("operator secret file is not configured");
+  const secret = (await Bun.file(secretFile).text()).trim();
+  const login = await fetch(base + "/session/login", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({secret}), signal: AbortSignal.timeout(10000),
+  });
+  if (!login.ok) throw new Error("pre-deployment backup login failed");
+  const cookie = login.headers.get("set-cookie")?.split(";", 1)[0];
+  if (!cookie) throw new Error("pre-deployment backup session missing");
   try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      process.stdout.write(JSON.stringify({ retained: 0, pruned: 0 }));
-      process.exit(0);
-    }
-    throw error;
+    const response = await fetch(base + "/api/backups.create", {
+      method: "POST", headers: {"Content-Type": "application/json", Cookie: cookie},
+      body: JSON.stringify({trigger: "pre-deploy"}), signal: AbortSignal.timeout(100000),
+    });
+    const payload = await response.json();
+    const backup = payload?.result?.data;
+    if (!response.ok || !backup?.id) throw new Error("app-managed pre-deployment backup failed");
+    console.log("pilot-predeploy-backup: " + JSON.stringify({id:backup.id, createdAt:backup.createdAt, sizeBytes:backup.sizeBytes}));
+  } finally {
+    await fetch(base + "/session/logout", {method:"POST",headers:{Cookie:cookie},signal:AbortSignal.timeout(10000)}).catch(()=>{});
   }
-  const owned = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !ownedName.test(entry.name)) continue;
-    const directory = `${root}/${entry.name}`;
-    try {
-      const marker = await Bun.file(`${directory}/.factory-st163-predeploy`).text();
-      if (marker !== "factory-st163\n") continue;
-      const metadata = await stat(directory);
-      owned.push({ directory, modified: metadata.mtimeMs });
-    } catch {
-      continue;
-    }
-  }
-  owned.sort((left, right) => right.modified - left.modified);
-  let pruned = 0;
-  for (const item of owned.slice(10)) {
-    await rm(item.directory, { recursive: true, force: false });
-    pruned += 1;
-  }
-  process.stdout.write(JSON.stringify({ retained: Math.min(owned.length, 10), pruned }));
-' 2>/dev/null)" || die "pre-deployment snapshot retention failed."
-
-echo "pilot-predeploy-backup: revision=${current_sha} snapshot=${snapshot_database} manifest=${manifest_summary} retention=${retention_summary}"
+' || die "app-managed pre-deployment backup failed; deployment blocked."

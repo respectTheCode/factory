@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  backupsView,
   dashboardPath,
   dashboardViewFromPath,
   editProjectView,
@@ -11,6 +12,12 @@ import {
 describe("dashboard navigation", () => {
   test("starts on the home dashboard", () => {
     expect(homeView()).toEqual({ screen: "home" });
+  });
+
+  test("opens the global backups page and preserves it on reload", () => {
+    expect(backupsView()).toEqual({ screen: "backups" });
+    expect(dashboardViewFromPath("/backups")).toEqual(backupsView());
+    expect(dashboardPath(backupsView())).toBe("/backups");
   });
 
   test("a project link opens that project's task page", () => {

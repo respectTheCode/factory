@@ -1,10 +1,15 @@
 export type DashboardView =
   | { screen: "home" }
+  | { screen: "backups" }
   | { screen: "project"; projectId: string }
   | { screen: "edit_project"; projectId: string };
 
 export function homeView(): DashboardView {
   return { screen: "home" };
+}
+
+export function backupsView(): DashboardView {
+  return { screen: "backups" };
 }
 
 export function projectView(projectId: string): DashboardView {
@@ -18,6 +23,7 @@ export function editProjectView(projectId: string): DashboardView {
 export function dashboardViewFromPath(pathname: string): DashboardView {
   const segments = pathname.split("/").filter(Boolean);
   if (segments.length === 0) return homeView();
+  if (segments.length === 1 && segments[0] === "backups") return backupsView();
   if (
     segments[0] !== "projects" ||
     (segments.length !== 2 && segments.length !== 3)
@@ -38,6 +44,7 @@ export function dashboardViewFromPath(pathname: string): DashboardView {
 
 export function dashboardPath(view: DashboardView): string {
   if (view.screen === "home") return "/";
+  if (view.screen === "backups") return "/backups";
   const projectPath = `/projects/${encodeURIComponent(view.projectId)}`;
   return view.screen === "edit_project" ? `${projectPath}/edit` : projectPath;
 }

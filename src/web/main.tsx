@@ -11,6 +11,7 @@ import type {
   T3ThreadDetailResult,
 } from "../t3-coordinator";
 import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
+import { BackupsPage } from "./backups";
 import {
   githubActionsSummaryLabel,
   summarizeGitHubActions,
@@ -19,6 +20,7 @@ import {
 import {
   dashboardPath,
   dashboardViewFromPath,
+  backupsView,
   editProjectView,
   homeView,
   projectView,
@@ -1161,6 +1163,11 @@ function Dashboard() {
     navigateToView(homeView());
   };
 
+  const openBackups = () => {
+    stopProjectSubscription();
+    navigateToView(backupsView());
+  };
+
   const openProjectEditor = (projectId: string) => {
     navigateToView(editProjectView(projectId));
   };
@@ -1169,7 +1176,7 @@ function Dashboard() {
     const handlePopState = () => {
       const nextView = dashboardViewFromPath(window.location.pathname);
       setView(nextView);
-      if (nextView.screen === "home") {
+      if (nextView.screen === "home" || nextView.screen === "backups") {
         stopProjectSubscription();
         return;
       }
@@ -1184,7 +1191,7 @@ function Dashboard() {
     if (snapshot.state !== "connected") return;
     const nextView = dashboardViewFromPath(window.location.pathname);
     setView(nextView);
-    if (nextView.screen !== "home") {
+    if (nextView.screen === "project" || nextView.screen === "edit_project") {
       void loadProject(nextView.projectId);
     }
   }, [snapshot.state]);
@@ -1446,6 +1453,38 @@ function Dashboard() {
             </div>
           </div>
         </a>
+        <nav aria-label="Primary" className="global-nav">
+          <a
+            aria-current={view.screen === "home" ? "page" : undefined}
+            className={
+              view.screen === "home"
+                ? "global-nav-link selected"
+                : "global-nav-link"
+            }
+            href="/"
+            onClick={(event) => {
+              event.preventDefault();
+              openHome();
+            }}
+          >
+            Dashboard
+          </a>
+          <a
+            aria-current={view.screen === "backups" ? "page" : undefined}
+            className={
+              view.screen === "backups"
+                ? "global-nav-link selected"
+                : "global-nav-link"
+            }
+            href="/backups"
+            onClick={(event) => {
+              event.preventDefault();
+              openBackups();
+            }}
+          >
+            Backups
+          </a>
+        </nav>
         <div className="header-status">
           {sessionLoading ? (
             <span className="status-twin">Checking session…</span>
@@ -1655,23 +1694,30 @@ function Dashboard() {
         </>
       )}
 
-      {projects && projects.length > 0 && view.screen !== "home" && (
-        <nav aria-label="Projects" className="project-tabs">
-          {projects.map((project) => (
-            <button
-              className={
-                project.id === view.projectId ? "selected" : "secondary"
-              }
-              disabled={snapshot.state !== "connected"}
-              key={project.id}
-              onClick={() => void openProject(project.id)}
-              type="button"
-            >
-              {project.name}
-            </button>
-          ))}
-        </nav>
+      {view.screen === "backups" && (
+        <BackupsPage client={trpc.current} connection={snapshot} />
       )}
+
+      {projects &&
+        projects.length > 0 &&
+        view.screen !== "home" &&
+        view.screen !== "backups" && (
+          <nav aria-label="Projects" className="project-tabs">
+            {projects.map((project) => (
+              <button
+                className={
+                  project.id === view.projectId ? "selected" : "secondary"
+                }
+                disabled={snapshot.state !== "connected"}
+                key={project.id}
+                onClick={() => void openProject(project.id)}
+                type="button"
+              >
+                {project.name}
+              </button>
+            ))}
+          </nav>
+        )}
 
       {projectDetail &&
         view.screen === "edit_project" &&
