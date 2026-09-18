@@ -20,8 +20,10 @@ RUN FACTORY_REVISION= bun test \
       tests/transport/serialized-writes.test.ts \
       tests/transport/factory-server-runtime.test.ts \
       tests/transport/backup-api.test.ts \
+      tests/transport/factory-backups-route.test.ts \
       tests/persistence/backup-snapshot.test.ts \
       tests/persistence/backup-service.test.ts \
+      tests/persistence/backup-service-spawn.test.ts \
       tests/persistence/backup-restore.test.ts \
       tests/persistence/backup-loop.test.ts
 

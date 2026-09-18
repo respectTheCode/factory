@@ -2076,7 +2076,11 @@ function toNodeHeaders(headers: Headers): Record<string, string> {
 
 function getStaticFile(pathname: string): string | null {
   const sourceRoot = import.meta.dir;
-  if (pathname.startsWith("/projects/")) {
+  if (
+    pathname.startsWith("/projects/") ||
+    pathname === "/backups" ||
+    pathname === "/backups/"
+  ) {
     return resolve(sourceRoot, "web/index.html");
   }
 

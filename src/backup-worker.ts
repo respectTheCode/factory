@@ -70,12 +70,14 @@ export type BackupWorkerRequest =
       kind: "list";
       directory: string;
       requireNfs: boolean;
+      databasePath?: string;
     }
   | {
       kind: "delete";
       directory: string;
       id: string;
       requireNfs: boolean;
+      databasePath?: string;
     }
   | {
       kind: "prepare-restore";
@@ -94,9 +96,12 @@ export type BackupWorkerResponse =
 const METADATA_FILE = "metadata.json";
 const SNAPSHOT_FILE = "snapshot.sqlite";
 const MANIFEST_FILE = "manifest.json";
+const ARTIFACT_MARKER_FILE = ".factory-backup-owner.json";
 const METADATA_VERSION = 1 as const;
+const ARTIFACT_MARKER_VERSION = 1 as const;
 const PREDEPLOY_KEEP = 10;
 const SAFE_ID = /^b-[0-9]{8}T[0-9]{6}\.[0-9]{3}Z-[a-f0-9]{8}$/;
+const MAX_RECLAIM_ARTIFACTS = 32;
 
 type BackupMetadata = {
   format: "factory-backup";
@@ -112,6 +117,21 @@ type BackupMetadata = {
   manifestSizeBytes: number;
 };
 
+type ArtifactKind = "staging" | "local";
+
+type BackupArtifactMarker = {
+  format: "factory-backup-artifact";
+  version: typeof ARTIFACT_MARKER_VERSION;
+  kind: ArtifactKind;
+  artifactPath: string;
+  backupRoot: string;
+  databasePath: string;
+  pid: number;
+  processStartToken?: string;
+  token: string;
+  createdAt: string;
+};
+
 type OwnedBackup = {
   directory: string;
   metadata: BackupMetadata;
@@ -123,9 +143,18 @@ function run(request: BackupWorkerRequest): unknown {
     case "create":
       return createBackup(request);
     case "list":
-      return listBackups(request.directory, request.requireNfs);
+      return listBackups(
+        request.directory,
+        request.requireNfs,
+        request.databasePath,
+      );
     case "delete":
-      deleteBackup(request.directory, request.id, request.requireNfs);
+      deleteBackup(
+        request.directory,
+        request.id,
+        request.requireNfs,
+        request.databasePath,
+      );
       return undefined;
     case "prepare-restore":
       return prepareRestore(request);
@@ -136,19 +165,30 @@ function createBackup(
   request: Extract<BackupWorkerRequest, { kind: "create" }>,
 ): BackupSummary {
   const root = requireBackupDirectory(request.directory, request.requireNfs);
+  const databasePath = resolve(request.databasePath);
+  reclaimOwnedTemporaryArtifacts(root, databasePath);
   const id = createBackupId();
   const createdAt = new Date().toISOString();
-  const localDirectory = mkdtempSync(join(tmpdir(), "factory-backup-local-"));
+  const localDirectory = createMarkedArtifactDirectory(
+    join(tmpdir(), "factory-backup-local-"),
+    "local",
+    root,
+    databasePath,
+  );
   const localSnapshot = join(localDirectory, SNAPSHOT_FILE);
   const localManifest = join(localDirectory, MANIFEST_FILE);
-  const stagingDirectory = mkdtempSync(
-    join(root, `.factory-backup-staging-${id}-`),
-  );
+  let stagingDirectory: string | undefined;
 
   try {
+    stagingDirectory = createMarkedArtifactDirectory(
+      join(root, `.factory-backup-staging-${id}-`),
+      "staging",
+      root,
+      databasePath,
+    );
     if (request.revision) process.env.FACTORY_REVISION = request.revision;
     backupFactorySnapshot({
-      databasePath: request.databasePath,
+      databasePath,
       manifestPath: localManifest,
       outputPath: localSnapshot,
     });
@@ -161,6 +201,8 @@ function createBackup(
     chmodSync(stagedManifest, 0o600);
     syncFile(stagedSnapshot);
     syncFile(stagedManifest);
+
+    blockForTest(Bun.env.FACTORY_BACKUP_TEST_DELAY_AFTER_STAGING_MS);
 
     verifyFactorySnapshot({
       databasePath: stagedSnapshot,
@@ -195,21 +237,36 @@ function createBackup(
     if (existsSync(finalDirectory))
       throw new Error("Backup ID already exists.");
     renameSync(stagingDirectory, finalDirectory);
+    // Keep the marker through publication so a kill between rename and
+    // marker cleanup leaves a harmless, readable backup instead of an
+    // unowned staging directory. The marker is allowed in a published entry
+    // until a later successful cleanup can remove it.
+    try {
+      removeArtifactMarker(finalDirectory);
+    } catch {
+      // The marker is ignored by backup reads and is safe to leave behind.
+    }
     syncDirectory(root);
     const owned = readOwnedBackup(root, id);
     if (!owned) throw new Error("Published backup could not be read back.");
     pruneBackups(root, request.settings);
     return owned.summary;
   } catch (error) {
-    rmSync(stagingDirectory, { force: true, recursive: true });
+    if (stagingDirectory)
+      rmSync(stagingDirectory, { force: true, recursive: true });
     throw error;
   } finally {
     rmSync(localDirectory, { force: true, recursive: true });
   }
 }
 
-function listBackups(directory: string, requireNfs: boolean): BackupSummary[] {
+function listBackups(
+  directory: string,
+  requireNfs: boolean,
+  databasePath?: string,
+): BackupSummary[] {
   const root = requireBackupDirectory(directory, requireNfs);
+  if (databasePath) reclaimOwnedTemporaryArtifacts(root, resolve(databasePath));
   return discoverOwnedBackups(root)
     .map((entry) => entry.summary)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
@@ -219,9 +276,11 @@ function deleteBackup(
   directory: string,
   id: string,
   requireNfs: boolean,
+  databasePath?: string,
 ): void {
   assertSafeId(id);
   const root = requireBackupDirectory(directory, requireNfs);
+  if (databasePath) reclaimOwnedTemporaryArtifacts(root, resolve(databasePath));
   const owned = readOwnedBackup(root, id);
   if (!owned)
     throw new Error("Backup does not exist or is not owned by Factory.");
@@ -233,6 +292,8 @@ function prepareRestore(
 ): RestorePreparation {
   assertSafeId(request.id);
   const root = requireBackupDirectory(request.directory, request.requireNfs);
+  const databasePath = resolve(request.databasePath);
+  reclaimOwnedTemporaryArtifacts(root, databasePath);
   const selected = readOwnedBackup(root, request.id);
   if (!selected)
     throw new Error("Backup does not exist or is not owned by Factory.");
@@ -245,7 +306,7 @@ function prepareRestore(
   });
 
   const localDirectory = mkdtempSync(
-    join(dirname(resolve(request.databasePath)), ".factory-restore-"),
+    join(dirname(databasePath), ".factory-restore-"),
   );
   const stagedDatabasePath = join(localDirectory, SNAPSHOT_FILE);
   const stagedManifestPath = join(localDirectory, MANIFEST_FILE);
@@ -263,7 +324,7 @@ function prepareRestore(
     // Stage and verify before creating the pre-restore backup. Retention may
     // prune the selected scheduled entry once the pre-restore entry exists.
     const preRestore = createBackup({
-      databasePath: request.databasePath,
+      databasePath,
       directory: request.directory,
       requireNfs: request.requireNfs,
       revision: request.revision,
@@ -362,10 +423,21 @@ function readOwnedBackup(root: string, id: string): OwnedBackup | undefined {
       (name) =>
         name !== METADATA_FILE &&
         name !== SNAPSHOT_FILE &&
-        name !== MANIFEST_FILE,
+        name !== MANIFEST_FILE &&
+        name !== ARTIFACT_MARKER_FILE,
     )
   ) {
     return undefined;
+  }
+  if (names.includes(ARTIFACT_MARKER_FILE)) {
+    let markerStat;
+    try {
+      markerStat = lstatSync(join(directory, ARTIFACT_MARKER_FILE));
+    } catch (error) {
+      if (isMissingPath(error)) return undefined;
+      throw error;
+    }
+    if (!markerStat.isFile() || markerStat.isSymbolicLink()) return undefined;
   }
   const metadataPath = join(directory, METADATA_FILE);
   const snapshotPath = join(directory, SNAPSHOT_FILE);
@@ -425,7 +497,7 @@ function readOwnedBackup(root: string, id: string): OwnedBackup | undefined {
     snapshotSizeBytes !== metadata.snapshotSizeBytes ||
     manifestSizeBytes !== metadata.manifestSizeBytes
       ? "incomplete"
-      : "verified";
+      : verifyBackupIntegrity(snapshotPath, manifestPath);
   return {
     directory,
     metadata,
@@ -440,6 +512,45 @@ function readOwnedBackup(root: string, id: string): OwnedBackup | undefined {
       trigger: metadata.trigger,
     },
   };
+}
+
+function verifyBackupIntegrity(
+  snapshotPath: string,
+  manifestPath: string,
+): BackupIntegrity {
+  try {
+    verifyFactorySnapshot({
+      databasePath: snapshotPath,
+      manifestPath,
+    });
+    return "verified";
+  } catch (error) {
+    if (isIntegrityVerificationFailure(error)) return "corrupt";
+    throw error;
+  }
+}
+
+function isIntegrityVerificationFailure(error: unknown): boolean {
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof (error as { code?: unknown }).code === "string"
+  ) {
+    return false;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /^Snapshot (size|checksum|content) /.test(message) ||
+    /^Manifest /.test(message) ||
+    /^SQLite integrity check failed:/.test(message) ||
+    /^Factory (database has no persisted|state snapshot is corrupt)/.test(
+      message,
+    ) ||
+    /^Persisted (collection|snapshot) /.test(message) ||
+    /^Not a Factory database:/.test(message) ||
+    /database disk image is malformed|file is not a database/i.test(message)
+  );
 }
 
 function parseMetadata(value: unknown, id: string): BackupMetadata {
@@ -479,6 +590,226 @@ function isMissingPath(error: unknown): boolean {
     "code" in error &&
     (error as { code?: unknown }).code === "ENOENT",
   );
+}
+
+function reclaimOwnedTemporaryArtifacts(
+  backupRoot: string,
+  databasePath: string,
+): void {
+  const rootEntries = readdirSync(backupRoot, { withFileTypes: true });
+  const stagingEntries = rootEntries.filter(
+    (entry) =>
+      entry.name.startsWith(".factory-backup-staging-") &&
+      entry.isDirectory() &&
+      !entry.isSymbolicLink(),
+  );
+  let reclaimedStaging = 0;
+  for (const entry of stagingEntries) {
+    if (reclaimedStaging >= MAX_RECLAIM_ARTIFACTS) {
+      continue;
+    }
+    if (
+      reclaimOwnedArtifact(join(backupRoot, entry.name), "staging", {
+        backupRoot,
+        databasePath,
+      })
+    ) {
+      reclaimedStaging += 1;
+    }
+  }
+
+  const localRoot = resolve(tmpdir());
+  let localRootStat;
+  try {
+    localRootStat = lstatSync(localRoot);
+  } catch (error) {
+    if (isMissingPath(error)) return;
+    throw error;
+  }
+  if (!localRootStat.isDirectory() || localRootStat.isSymbolicLink()) return;
+  const localEntries = readdirSync(localRoot, { withFileTypes: true });
+  const localArtifactEntries = localEntries.filter(
+    (entry) =>
+      entry.name.startsWith("factory-backup-local-") &&
+      entry.isDirectory() &&
+      !entry.isSymbolicLink(),
+  );
+  let reclaimedLocal = 0;
+  for (const entry of localArtifactEntries) {
+    if (reclaimedLocal >= MAX_RECLAIM_ARTIFACTS) continue;
+    if (
+      reclaimOwnedArtifact(join(localRoot, entry.name), "local", {
+        backupRoot,
+        databasePath,
+      })
+    ) {
+      reclaimedLocal += 1;
+    }
+  }
+}
+
+function reclaimOwnedArtifact(
+  artifactPath: string,
+  kind: ArtifactKind,
+  scope: { backupRoot: string; databasePath: string },
+): boolean {
+  let artifactStat;
+  try {
+    artifactStat = lstatSync(artifactPath);
+  } catch (error) {
+    if (isMissingPath(error)) return false;
+    throw error;
+  }
+  if (!artifactStat.isDirectory() || artifactStat.isSymbolicLink())
+    return false;
+
+  const markerPath = join(artifactPath, ARTIFACT_MARKER_FILE);
+  let markerStat;
+  try {
+    markerStat = lstatSync(markerPath);
+  } catch (error) {
+    if (isMissingPath(error)) return false;
+    throw error;
+  }
+  if (!markerStat.isFile() || markerStat.isSymbolicLink()) return false;
+
+  let marker: BackupArtifactMarker;
+  let markerText: string;
+  try {
+    markerText = readFileSync(markerPath, "utf8");
+  } catch (error) {
+    if (isMissingPath(error)) return false;
+    throw error;
+  }
+  try {
+    marker = parseArtifactMarker(JSON.parse(markerText));
+  } catch {
+    return false;
+  }
+  if (
+    marker.kind !== kind ||
+    marker.artifactPath !== resolve(artifactPath) ||
+    marker.backupRoot !== scope.backupRoot ||
+    marker.databasePath !== scope.databasePath ||
+    isArtifactOwnerLive(marker)
+  ) {
+    return false;
+  }
+  rmSync(artifactPath, { force: false, recursive: true });
+  return true;
+}
+
+function createMarkedArtifactDirectory(
+  prefix: string,
+  kind: ArtifactKind,
+  backupRoot: string,
+  databasePath: string,
+): string {
+  const artifactPath = mkdtempSync(prefix);
+  try {
+    const markerPath = join(artifactPath, ARTIFACT_MARKER_FILE);
+    const processStartToken = readProcessStartToken(process.pid);
+    const marker: BackupArtifactMarker = {
+      artifactPath: resolve(artifactPath),
+      backupRoot,
+      createdAt: new Date().toISOString(),
+      databasePath,
+      format: "factory-backup-artifact",
+      kind,
+      pid: process.pid,
+      ...(processStartToken ? { processStartToken } : {}),
+      token: randomBytes(16).toString("hex"),
+      version: ARTIFACT_MARKER_VERSION,
+    };
+    writeFileSync(markerPath, `${JSON.stringify(marker)}\n`, {
+      flag: "wx",
+      mode: 0o600,
+    });
+    chmodSync(markerPath, 0o600);
+    syncFile(markerPath);
+    return artifactPath;
+  } catch (error) {
+    rmSync(artifactPath, { force: true, recursive: true });
+    throw error;
+  }
+}
+
+function removeArtifactMarker(artifactPath: string): void {
+  rmSync(join(artifactPath, ARTIFACT_MARKER_FILE), {
+    force: false,
+    recursive: false,
+  });
+}
+
+function parseArtifactMarker(value: unknown): BackupArtifactMarker {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Artifact marker is invalid.");
+  const record = value as Record<string, unknown>;
+  if (
+    record.format !== "factory-backup-artifact" ||
+    record.version !== ARTIFACT_MARKER_VERSION ||
+    (record.kind !== "staging" && record.kind !== "local") ||
+    typeof record.artifactPath !== "string" ||
+    typeof record.backupRoot !== "string" ||
+    typeof record.databasePath !== "string" ||
+    typeof record.pid !== "number" ||
+    !Number.isSafeInteger(record.pid) ||
+    record.pid <= 0 ||
+    (record.processStartToken !== undefined &&
+      (typeof record.processStartToken !== "string" ||
+        record.processStartToken.length === 0)) ||
+    typeof record.token !== "string" ||
+    !/^[a-f0-9]{32}$/.test(record.token) ||
+    typeof record.createdAt !== "string" ||
+    !Number.isFinite(Date.parse(record.createdAt))
+  ) {
+    throw new Error("Artifact marker is invalid.");
+  }
+  return record as unknown as BackupArtifactMarker;
+}
+
+function isArtifactOwnerLive(marker: BackupArtifactMarker): boolean {
+  if (marker.processStartToken) {
+    const currentStartToken = readProcessStartToken(marker.pid);
+    if (currentStartToken && currentStartToken !== marker.processStartToken)
+      return false;
+  }
+  try {
+    process.kill(marker.pid, 0);
+    return true;
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "ESRCH"
+    ) {
+      return false;
+    }
+    // EPERM and unknown process errors are kept conservatively: an artifact
+    // is never reclaimed while ownership cannot be disproved.
+    return true;
+  }
+}
+
+function readProcessStartToken(pid: number): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const commandEnd = stat.lastIndexOf(") ");
+    if (commandEnd < 0) return undefined;
+    const fields = stat.slice(commandEnd + 2).split(" ");
+    return fields[19] || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function blockForTest(value: string | undefined): void {
+  const milliseconds = Number(value ?? "0");
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return;
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(signal, 0, 0, milliseconds);
 }
 
 function requireBackupDirectory(
