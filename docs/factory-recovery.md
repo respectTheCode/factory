@@ -78,8 +78,10 @@ check. Do not roll back the database merely because an image deployment fails.
    Factory container against restored data with no published ports or external
    network. It uses a separate operator secret and checks readiness/version.
 4. Record download-through-readiness elapsed time against the one-hour RTO.
-   The script removes its temporary container and retains the restored volume
-   for inspection. Remove only that explicitly named drill volume after review.
+   The script removes its temporary container and operator secret. It retains
+   both the untouched restored archive volume and a separate `factory-pilot-st163-drill-*`
+   working volume with `st163-restore-report.json` for inspection. Remove these
+   explicitly named rehearsal volumes only after review.
 
 A manifest detects an incomplete or changed archive; it is not an independent
 signature against an attacker who can replace both files. Recovery comparisons
@@ -105,5 +107,31 @@ it is never automatic rollback.
 
 ## Evidence
 
-Live backup, timer, retention and restore results are recorded here after the
-rehearsal. Configuration alone does not complete ST-163.
+Rehearsed on 2026-09-18 UTC (2026-09-17 in Indianapolis), using pilot revision
+`9871bc2ffd2d93a8611946ab97b5295860c64d70` on Dokploy v0.30.2.
+
+| Check | Observed result |
+| --- | --- |
+| Scheduled upload | Timer run `qNSfIaBxXpdVwBrdQAls0` succeeded at 01:25 UTC; its 102,400-byte archive was listed on MinIO. The cron was temporarily every minute for this check, then restored and read back as `12,42 * * * *`. |
+| Retention | Three successful runs of disabled validation config `J_SvYaM33_GY4J2oA6VzQ` with keep=2 left exactly the two newest archives in `st163/retention-check/`; the first was pruned. |
+| Failure visibility | Run `NEviHHWRWTphIn8Fx9YV1` deliberately used a fake destination at local port 9. Dokploy recorded `error` and connection-refused logs. Factory remained healthy. The validation config remains disabled. |
+| Restore | Daily archive `factory-pilot-st163-snapshots-2026-09-18T01-24-25-590Z.tar` downloaded from MinIO into a new volume. Native UI reported successful extraction. |
+| Recovery time | Started timing at 01:28:42 UTC before Restore; successful readiness and evidence were observed by 01:29:10 UTC: **28 seconds**, below the one-hour target. Verification/startup inside the script took two seconds. This measures the small pilot dataset on the existing host with the image already present. |
+| Integrity and history | Restore run `gopR-dkK9QA51VdmHMheG` verified checksum, SQLite integrity, schema, content, durable IDs, report/verification history and protected-table digests, then passed isolated `/readyz` and `/version`. |
+| Pre-deploy copy | Run `Hi2EnAmUWG8VZpgeJl6Di` created and verified `/data/predeploy/20260918T012936Z-1789694976-545988/factory.sqlite`; its content and ID digests matched the restored snapshot. |
+
+The restored snapshot was created at 01:24:05.529 UTC. It contains one project,
+one task, two subtasks, one status report and one human verification. The report
+ID is `65122d24-6d58-44d3-9a3e-9da30ed6bc8a`; the preserved human verification is
+`47864aea-2ea2-42c5-91a1-502f75d008c1`. SQLite SHA-256 is
+`2a46561d660ce5def1614b4f711e100d83ddd8dcf99405b0138f665bc9bc6689`.
+The archive is under the daily prefix shown above. Retained inspection volumes:
+`factory-pilot-st163-restore-20260918T0130Z` and
+`factory-pilot-st163-drill-20260918T0130Z`.
+
+Validation passed: 19 focused tests (snapshot, loop, poller and skill contract),
+typecheck, shell/Node syntax checks, and 50 tests in the Linux amd64 Docker build.
+A separate non-root container check verified read-only source access, exported
+database/manifest ownership and freshness health. Poller tests prove backup
+failure prevents the deployment request. These checks establish pilot recovery;
+they do not constitute a production cutover or human acceptance of ST-163.
