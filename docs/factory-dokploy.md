@@ -25,6 +25,7 @@ The Dokploy project is **Factory**, environment **pilot**, Compose service
 `factory-pilot-st162-ewgahg`). It must not share the production database,
 operator secret, machine credentials, or client environment files.
 
+The pilot URL is `https://factory-pilot.tailb6a4be.ts.net` (Tailscale required).
 The service publishes HTTP only on `192.168.5.50:3101`. A dedicated Tailscale
 container supplies private HTTPS and WebSocket forwarding to Factory in the
 same network namespace. Its persistent state is separate from Factory data.
@@ -133,5 +134,37 @@ synthetic report remains unverified for the human test.
 
 The data volume `factory-pilot-st162-data` uses Docker's local driver with no
 remote filesystem options. The service runs as `bun`, with one Factory
-container. GitHub automatic deployment is enabled only for
-`deploy/factory-pilot`; this documentation commit exercises that trigger.
+container. The direct GitHub webhook could not reach private Dokploy. Commit
+`dc3c9c7caa1ed0f164eaf680648aa42e62b21a5b` was deployed manually to verify
+container replacement: the same synthetic report survived, HTTPS/WSS worked,
+and HTTPS login issued a Secure cookie. An internal polling schedule supplies
+automatic deployment as described below.
+
+## Automatic deployment while Dokploy stays private
+
+Schedule: **Factory pilot GitHub polling** (`jqWAnw5IkHbM37rynMkhm`),
+cron `*/5 * * * *`, timezone `America/Indiana/Indianapolis`.
+
+GitHub cannot deliver inbound webhooks to the private Dokploy endpoint. The
+repository stays on GitHub. A Dokploy server schedule runs every five minutes
+and checks the public `deploy/factory-pilot` Git ref against the pilot's
+`/version`. A matching revision is a no-op. A changed revision invokes the
+dedicated Compose webhook from inside the lab, retaining Dokploy's normal
+build and deployment history.
+
+The schedule executes `scripts/poll-pilot.mjs` from the managed checkout. Its
+`FACTORY_PILOT_WEBHOOK_FILE` points to the separately provisioned
+`files/secrets/pilot-webhook` file; never put that URL in Git or logs. It grants
+only the ability to queue this pilot deployment. The application does not mount
+this file.
+
+The schedule records the last requested commit in its own working directory.
+A failed build is not retried on every tick: inspect the Dokploy deployment
+error and publish a fixed release commit, or perform an explicit manual
+redeployment. An unavailable or unexpected pilot identity or a failed GitHub read stops
+the check without deploying. Only advance the release branch to reviewed
+commits; production is outside this schedule.
+
+Reference: [Dokploy auto-deploy](https://docs.dokploy.com/docs/core/auto-deploy).
+The polling adapter uses the Compose webhook contract verified in
+[Dokploy v0.30.2](https://github.com/Dokploy/dokploy/blob/v0.30.2/apps/dokploy/pages/api/deploy/compose/%5BrefreshToken%5D.ts).
