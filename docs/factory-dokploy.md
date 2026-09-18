@@ -5,6 +5,9 @@ service remains authoritative. This packaging test uses synthetic records and
 separate credentials; it does not satisfy ST-164's copied-data, recovery, and
 multi-machine pilot gates or authorize ST-165's production cutover.
 
+ST-163's snapshot, off-host archive and isolated restore procedure is in
+[the recovery runbook](factory-recovery.md).
+
 ## Verified infrastructure
 
 Read through `dokploy_home` on 2026-09-17:
@@ -14,9 +17,10 @@ Read through `dokploy_home` on 2026-09-17:
 - At inspection: about 15.9 GiB unused RAM and 51.7 GiB disk free.
 - GitHub provider can list `respectTheCode/factory` and its branches. GitHub
   remains the canonical repository; no Gitea migration is necessary.
-- MinIO destination `dokploy` at `http://192.168.5.16:9000` is configured, but
-  write access, physical separation, scheduled backups and recovery remain
-  ST-163 work. No Dokploy notification destinations were configured.
+- MinIO destination `dokploy` at `http://192.168.5.16:9000` is configured.
+  Kevin confirmed its physically separate NAS storage during ST-163 and chose
+  Dokploy status/logs for backup failures. See the recovery runbook for tested
+  backup and restore evidence. No active notification destination is configured.
 
 ## Isolation and access
 

@@ -18,7 +18,9 @@ RUN FACTORY_REVISION= bun test \
       tests/transport/factory-server-config.test.ts \
       tests/transport/factory-human-session.test.ts \
       tests/transport/serialized-writes.test.ts \
-      tests/transport/factory-server-runtime.test.ts
+      tests/transport/factory-server-runtime.test.ts \
+      tests/persistence/backup-snapshot.test.ts \
+      tests/persistence/backup-loop.test.ts
 
 FROM --platform=linux/amd64 oven/bun:1.3.14@sha256:50317d83cd5a5ae1d8b35b3379c69f57ce1a0dbf4def91f0965653d767851834 AS runtime
 
@@ -41,8 +43,10 @@ COPY --from=build --chown=bun:bun /app/node_modules ./node_modules
 COPY --from=build --chown=bun:bun /app/src ./src
 COPY --from=build --chown=bun:bun /app/dist ./dist
 COPY --from=build --chown=bun:bun /app/scripts/init-pilot.ts ./scripts/init-pilot.ts
+COPY --from=build --chown=bun:bun /app/scripts/backup-snapshot.ts ./scripts/backup-snapshot.ts
+COPY --from=build --chown=bun:bun /app/scripts/backup-loop.ts ./scripts/backup-loop.ts
 
-RUN mkdir -p /data && chown bun:bun /data
+RUN mkdir -p /data /backups && chown bun:bun /data /backups
 
 VOLUME ["/data"]
 EXPOSE 3101
