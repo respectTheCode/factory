@@ -31,15 +31,7 @@ trap 'rm -rf "${FACTORY_STAGE_DIR}"; rm -f "${FACTORY_PLIST_STAGE}"' EXIT
 
 cd "${FACTORY_REPOSITORY_DIR}"
 bun run build
-bun build ./src/server.ts --target bun --outfile "${FACTORY_STAGE_DIR}/server.js"
-install -m 0755 scripts/factory-service-launcher.sh "${FACTORY_STAGE_DIR}/factory-service-launcher.sh"
-
-mkdir -p "${FACTORY_STAGE_DIR}/dist" "${FACTORY_STAGE_DIR}/src/web/fonts" "${FACTORY_STAGE_DIR}/src/web/icons"
-cp dist/main.css dist/main.js dist/service-worker.js "${FACTORY_STAGE_DIR}/dist/"
-cp src/web/icon.svg src/web/index.html src/web/manifest.webmanifest "${FACTORY_STAGE_DIR}/src/web/"
-cp src/web/fonts/*.woff2 "${FACTORY_STAGE_DIR}/src/web/fonts/"
-cp src/web/fonts/LICENSE.txt "${FACTORY_STAGE_DIR}/src/web/fonts/"
-cp src/web/icons/*.png "${FACTORY_STAGE_DIR}/src/web/icons/"
+bash scripts/package-user-service.sh "${FACTORY_STAGE_DIR}"
 
 FACTORY_ESCAPE_SED_REPLACEMENT='s/[&|\\]/\\&/g'
 FACTORY_BUN_ESCAPED="$(printf '%s' "${FACTORY_BUN_PATH}" | sed "${FACTORY_ESCAPE_SED_REPLACEMENT}")"
