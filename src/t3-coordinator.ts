@@ -158,14 +158,14 @@ function normalizeRepositoryIdentity(
     if (scpStyle?.[1] && scpStyle[2]) {
       return `${scpStyle[1].toLowerCase()}/${scpStyle[2]
         .replace(/^\/+|\/+$/g, "")
-        .replace(/\.git$/i, "")}`;
+        .replace(/\.git$/i, "")}`.toLowerCase();
     }
   }
   try {
     const url = new URL(trimmed);
     return `${url.host.toLowerCase()}/${url.pathname
       .replace(/^\/+|\/+$/g, "")
-      .replace(/\.git$/i, "")}`;
+      .replace(/\.git$/i, "")}`.toLowerCase();
   } catch {
     return trimmed
       .replace(/^\/+|\/+$/g, "")
