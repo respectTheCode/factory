@@ -17,6 +17,14 @@ import {
   type PortfolioStatus,
   type ProjectHierarchy,
 } from "./application";
+import {
+  createBackupRestoreCoordinator,
+  createDisabledBackupService,
+  applyPendingRestore,
+  type BackupRestoreCoordinator,
+  type RestorePreparation,
+} from "./backup-restore";
+import { createBackupService, type BackupService } from "./backup-service";
 import { FACTORY_API_VERSION } from "./api-version";
 import {
   createGitHubStatusReader,
@@ -212,17 +220,61 @@ function scopedProcedure(resolveProjectId?: ProjectIdResolver) {
 function createMutationMutex() {
   let tail = Promise.resolve();
   let accepting = true;
+  let maintenance = false;
   return {
-    run<T>(operation: () => T | PromiseLike<T>): Promise<T> {
+    run<T>(
+      operation: () => T | PromiseLike<T>,
+      options: { allowMaintenance?: boolean } = {},
+    ): Promise<T> {
       if (!accepting) {
         return Promise.reject(new Error("Factory server is shutting down."));
       }
-      const current = tail.then(operation, operation);
+      if (maintenance && !options.allowMaintenance) {
+        return Promise.reject(
+          new Error("Factory server is in maintenance mode."),
+        );
+      }
+      const current = tail.then(
+        () => {
+          if (maintenance && !options.allowMaintenance) {
+            throw new Error("Factory server is in maintenance mode.");
+          }
+          return operation();
+        },
+        () => {
+          if (maintenance && !options.allowMaintenance) {
+            throw new Error("Factory server is in maintenance mode.");
+          }
+          return operation();
+        },
+      );
       tail = current.then(
         () => undefined,
         () => undefined,
       );
       return current;
+    },
+    enterMaintenance(): Promise<void> {
+      maintenance = true;
+      return tail;
+    },
+    runMaintenance<T>(operation: () => T | PromiseLike<T>): Promise<T> {
+      if (maintenance) {
+        return Promise.reject(
+          new Error("Factory server is in maintenance mode."),
+        );
+      }
+      maintenance = true;
+      return tail.then(
+        () => this.run(operation, { allowMaintenance: true }),
+        () => this.run(operation, { allowMaintenance: true }),
+      );
+    },
+    leaveMaintenance(): void {
+      maintenance = false;
+    },
+    isInMaintenance(): boolean {
+      return maintenance;
     },
     stopAccepting(): Promise<void> {
       accepting = false;
@@ -332,23 +384,34 @@ function createRouter(
   humanSessionConfigured: boolean,
   idempotencyStore: ReturnType<typeof createIdempotencyStore>,
   mutationMutex = createMutationMutex(),
+  backupRestore: BackupRestoreCoordinator,
 ) {
   const projectUpdates = new ProjectUpdateBus(application);
-  const serializedMutation = trpc.middleware(async ({ next }) =>
-    mutationMutex.run(async () => {
-      const result = await next();
-      if (!result.ok && result.error.cause instanceof FactoryConflictError) {
-        return {
-          ...result,
-          error: new TRPCError({
-            code: "CONFLICT",
-            message: result.error.cause.message,
-          }),
-        };
+  const serializedMutation = trpc.middleware(async ({ next }) => {
+    try {
+      return await mutationMutex.run(async () => {
+        const result = await next();
+        if (!result.ok && result.error.cause instanceof FactoryConflictError) {
+          return {
+            ...result,
+            error: new TRPCError({
+              code: "CONFLICT",
+              message: result.error.cause.message,
+            }),
+          };
+        }
+        return result;
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "Factory server is in maintenance mode."
+      ) {
+        throw new TRPCError({ code: "CONFLICT", message: error.message });
       }
-      return result;
-    }),
-  );
+      throw error;
+    }
+  });
   const idempotentMutation = trpc.middleware(async ({ ctx, input, next }) => {
     const requestKey = (input as { requestKey?: unknown } | null | undefined)
       ?.requestKey;
@@ -382,6 +445,15 @@ function createRouter(
       scope,
     });
     return result;
+  });
+  const backupOperation = trpc.middleware(async ({ next }) => {
+    if (mutationMutex.isInMaintenance()) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "Factory server is in maintenance mode.",
+      });
+    }
+    return next();
   });
 
   const githubStatus = async (
@@ -425,6 +497,56 @@ function createRouter(
             }
           : null,
       })),
+    }),
+    backups: trpc.router({
+      status: humanProcedure().query(() => backupRestore.status()),
+      list: humanProcedure().query(() => backupRestore.list()),
+      create: humanProcedure()
+        .input(
+          z
+            .object({
+              trigger: z
+                .enum(["manual", "pre-deploy"] as const)
+                .default("manual"),
+            })
+            .optional(),
+        )
+        .use(backupOperation)
+        .mutation(({ input }) =>
+          backupRestore.create(input?.trigger ?? "manual"),
+        ),
+      updateSettings: humanProcedure()
+        .input(
+          z.object({
+            enabled: z.boolean(),
+            intervalMinutes: z.number().int().positive(),
+            keepRecent: z.number().int().nonnegative(),
+            keepDaily: z.number().int().nonnegative(),
+          }),
+        )
+        .use(backupOperation)
+        .mutation(({ input }) => backupRestore.updateSettings(input)),
+      delete: humanProcedure()
+        .input(z.object({ backupId: z.string().trim().min(1) }))
+        .use(backupOperation)
+        .mutation(({ input }) => backupRestore.delete(input.backupId)),
+      restore: humanProcedure()
+        .input(
+          z.object({
+            backupId: z.string().trim().min(1),
+            confirm: z.literal(true),
+          }),
+        )
+        .mutation(async ({ input }) => {
+          if (mutationMutex.isInMaintenance()) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "Factory server is in maintenance mode.",
+            });
+          }
+          const prepared = await backupRestore.prepareRestore(input.backupId);
+          return { ...prepared, status: "restarting" as const };
+        }),
     }),
     projects: trpc.router({
       create: humanProcedure()
@@ -1222,6 +1344,9 @@ function createRouter(
 export type FactoryRouter = ReturnType<typeof createRouter>;
 
 export type FactoryServerOptions = {
+  backupDirectory?: string;
+  backupRequireNfs?: boolean;
+  backupService?: BackupService;
   databasePath: string;
   environment?: FactoryEnvironment;
   githubToken?: string;
@@ -1235,6 +1360,7 @@ export type FactoryServerOptions = {
   t3AccessToken?: string;
   t3BaseUrl?: string;
   t3TimeoutMs?: number;
+  onRestorePrepared?: (prepared: RestorePreparation) => void | Promise<void>;
 };
 
 export function getFactoryServerOptions(
@@ -1299,6 +1425,17 @@ export function getFactoryServerOptions(
     .filter(Boolean);
 
   return {
+    ...(environment.FACTORY_BACKUP_DIR?.trim()
+      ? { backupDirectory: environment.FACTORY_BACKUP_DIR.trim() }
+      : {}),
+    ...(environment.FACTORY_BACKUP_REQUIRE_NFS?.trim()
+      ? {
+          backupRequireNfs: parseBooleanEnvironment(
+            "FACTORY_BACKUP_REQUIRE_NFS",
+            environment.FACTORY_BACKUP_REQUIRE_NFS,
+          ),
+        }
+      : {}),
     databasePath: environment.FACTORY_DB ?? "factory.sqlite",
     ...(environment.FACTORY_ENVIRONMENT?.trim()
       ? { environment: factoryEnvironment }
@@ -1322,7 +1459,19 @@ export function getFactoryServerOptions(
   };
 }
 
+function parseBooleanEnvironment(name: string, configured: string): boolean {
+  const value = configured.trim().toLowerCase();
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(
+    `${name} must be true or false; received ${JSON.stringify(configured)}.`,
+  );
+}
+
 export function createFactoryServer({
+  backupDirectory,
+  backupRequireNfs = false,
+  backupService,
   allowedOrigins = [],
   databasePath = "factory.sqlite",
   environment: configuredFactoryEnvironment,
@@ -1338,7 +1487,11 @@ export function createFactoryServer({
   t3BaseUrl: _t3BaseUrl,
   t3TimeoutMs: _t3TimeoutMs,
   t3ActivityReader,
+  onRestorePrepared: configuredOnRestorePrepared,
 }: {
+  backupDirectory?: string;
+  backupRequireNfs?: boolean;
+  backupService?: BackupService;
   allowedOrigins?: string[];
   databasePath?: string;
   environment?: FactoryEnvironment;
@@ -1354,10 +1507,12 @@ export function createFactoryServer({
   t3BaseUrl?: string;
   t3TimeoutMs?: number;
   t3ActivityReader?: T3ActivityReader;
+  onRestorePrepared?: (prepared: RestorePreparation) => void | Promise<void>;
 }): FactoryServer {
   const factoryEnvironment = configuredFactoryEnvironment ?? "development";
   const requireExistingDatabase =
     configuredRequireExistingDatabase ?? factoryEnvironment === "production";
+  applyPendingRestore(databasePath);
   if (requireExistingDatabase) {
     try {
       checkFactoryDatabase({ databasePath, requireSnapshot: true });
@@ -1383,6 +1538,24 @@ export function createFactoryServer({
   const machineCredentials = createMachineCredentialStore({ databasePath });
   const idempotencyStore = createIdempotencyStore({ databasePath });
   const mutationMutex = createMutationMutex();
+  let onRestorePrepared: (
+    prepared: RestorePreparation,
+  ) => void | Promise<void> = async () => undefined;
+  const backupRestore = createBackupRestoreCoordinator({
+    databasePath,
+    gate: mutationMutex,
+    service:
+      backupService ??
+      (backupDirectory
+        ? createBackupService({
+            databasePath,
+            directory: backupDirectory,
+            requireNfs: backupRequireNfs,
+            revision,
+          })
+        : createDisabledBackupService()),
+    onRestorePrepared: (prepared) => onRestorePrepared(prepared),
+  });
   const t3Coordinator = createT3Coordinator({
     application,
     reader:
@@ -1400,6 +1573,7 @@ export function createFactoryServer({
     configuredOperator !== undefined,
     idempotencyStore,
     mutationMutex,
+    backupRestore,
   );
   const deploymentIdentity = {
     apiVersion: FACTORY_API_VERSION,
@@ -1462,6 +1636,12 @@ export function createFactoryServer({
         if (!originAllowed(request, allowedOrigins)) {
           return new Response("Forbidden", { status: 403 });
         }
+        if (mutationMutex.isInMaintenance()) {
+          return jsonResponse(
+            { error: "Factory server is in maintenance mode." },
+            { status: 503 },
+          );
+        }
 
         const clientAddress = getClientAddress(bunServer, request);
         const now = Date.now();
@@ -1512,6 +1692,12 @@ export function createFactoryServer({
       if (url.pathname === "/session/logout" && request.method === "POST") {
         if (!originAllowed(request, allowedOrigins)) {
           return new Response("Forbidden", { status: 403 });
+        }
+        if (mutationMutex.isInMaintenance()) {
+          return jsonResponse(
+            { error: "Factory server is in maintenance mode." },
+            { status: 503 },
+          );
         }
         humanSessions.delete(
           getHumanSessionToken(request.headers.get("cookie") ?? undefined),
@@ -1618,13 +1804,21 @@ export function createFactoryServer({
     },
   });
 
+  // `BackupService.start()` may have an in-flight initial filesystem probe.
+  // Keep shutdown behind that promise so a test/operator stop cannot remove
+  // the configured backup directory while its worker is still reading it.
+  let backupStartPromise: Promise<void> | undefined;
   let stopPromise: Promise<void> | undefined;
-  return {
-    stop(options = {}) {
-      if (!stopPromise) {
-        shuttingDown = true;
-        const timeoutMs = options.timeoutMs ?? shutdownTimeoutMs;
-        stopPromise = stopServerResources({
+  const stopServer = (
+    options: { timeoutMs?: number; forRestore?: boolean } = {},
+  ): Promise<void> => {
+    if (!stopPromise) {
+      shuttingDown = true;
+      const timeoutMs = options.timeoutMs ?? shutdownTimeoutMs;
+      stopPromise = (async () => {
+        backupRestore.stop();
+        await backupStartPromise?.catch(() => undefined);
+        return stopServerResources({
           application,
           closeWebSockets: () => {
             for (const socket of sockets) socket.terminate();
@@ -1641,11 +1835,32 @@ export function createFactoryServer({
               () => server.stop(true),
               Math.min(timeoutMs, 250),
             ),
+          drainMutations: !options.forRestore,
           timeoutMs,
         });
-      }
-      return stopPromise;
-    },
+      })();
+    }
+    return stopPromise;
+  };
+  onRestorePrepared =
+    configuredOnRestorePrepared ??
+    (() => {
+      // Let the tRPC response carrying the durable preparation identifiers
+      // leave the process before the listener is stopped. The maintenance gate
+      // remains closed during this short handoff window.
+      setTimeout(() => {
+        void stopServer({ forRestore: true });
+      }, 25);
+    });
+  backupStartPromise = backupRestore.start().catch((error) => {
+    console.error(
+      `Factory backup service failed to start: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  });
+  return {
+    stop: stopServer,
     shutdownTimeoutMs,
     url: server.url,
   };
@@ -1660,6 +1875,7 @@ async function stopServerResources({
   idempotencyStore,
   machineCredentials,
   mutationMutex,
+  drainMutations = true,
   timeoutMs,
 }: {
   application: ReturnType<typeof createFactoryApplication>;
@@ -1670,10 +1886,11 @@ async function stopServerResources({
   idempotencyStore: ReturnType<typeof createIdempotencyStore>;
   machineCredentials: ReturnType<typeof createMachineCredentialStore>;
   mutationMutex: ReturnType<typeof createMutationMutex>;
+  drainMutations?: boolean;
   timeoutMs: number;
 }): Promise<void> {
   const gracefulOperation = (async () => {
-    await mutationMutex.stopAccepting();
+    if (drainMutations) await mutationMutex.stopAccepting();
     closeWebSockets();
     await stopListening();
   })();

@@ -19,7 +19,10 @@ RUN FACTORY_REVISION= bun test \
       tests/transport/factory-human-session.test.ts \
       tests/transport/serialized-writes.test.ts \
       tests/transport/factory-server-runtime.test.ts \
+      tests/transport/backup-api.test.ts \
       tests/persistence/backup-snapshot.test.ts \
+      tests/persistence/backup-service.test.ts \
+      tests/persistence/backup-restore.test.ts \
       tests/persistence/backup-loop.test.ts
 
 FROM --platform=linux/amd64 oven/bun:1.3.14@sha256:50317d83cd5a5ae1d8b35b3379c69f57ce1a0dbf4def91f0965653d767851834 AS runtime

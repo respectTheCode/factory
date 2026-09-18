@@ -17,10 +17,12 @@ Read through `dokploy_home` on 2026-09-17:
 - At inspection: about 15.9 GiB unused RAM and 51.7 GiB disk free.
 - GitHub provider can list `respectTheCode/factory` and its branches. GitHub
   remains the canonical repository; no Gitea migration is necessary.
-- MinIO destination `dokploy` at `http://192.168.5.16:9000` is configured.
-  Kevin confirmed its physically separate NAS storage during ST-163 and chose
-  Dokploy status/logs for backup failures. See the recovery runbook for tested
-  backup and restore evidence. No active notification destination is configured.
+- The physically separate NAS is `192.168.5.16`. ST-163 now targets app-managed
+  backups on its NFS share `/volume1/docker/factory-backups`, with status in
+  Factory and errors in Dokploy service logs. Mount and UID 1000 write access passed after host recovery; the new live
+  restore rehearsal is pending. Existing MinIO jobs and archives remain in
+  place during this transition; see the recovery runbook. No active notification
+  destination is configured.
 
 ## Isolation and access
 

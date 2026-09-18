@@ -88,11 +88,13 @@ Dokploy uses a single replica and stop-first updates on verified local storage. 
 Proposed recovery targets: at most one hour of lost data (RPO), restoration within one hour (RTO); hourly consistent backups, seven days of hourly retention, thirty daily backups, and a pre-deployment backup. Confirm storage capacity and destination in ST-157. Backups must leave the Dokploy host and failures must be visible through an explicitly configured operational mechanism. Test restore into an isolated service and compare durable IDs, report and verification histories and integrity. Credentials need a separate recovery procedure.
 
 ST-163 implementation and rehearsal evidence are maintained in
-[the recovery runbook](../factory-recovery.md). The pilot uses five-minute
-consistent snapshots and half-hourly NAS archives to leave margin inside the
-one-hour RPO, with seven days of half-hourly and thirty daily copies. Kevin
-confirmed the NAS is physically separate and selected Dokploy status and logs
-as the failure-reporting mechanism on 2026-09-17.
+[the recovery runbook](../factory-recovery.md). On 2026-09-18 Kevin requested
+app-managed backups, retention and restores using the NFS export
+`192.168.5.16:/volume1/docker/factory-backups`, replacing native Dokploy volume
+backups. The app defaults to half-hourly recovery points, seven days of recent
+copies and thirty daily points, with failures visible in the app and service
+logs. Keep the old NAS archives until the replacement restore path is verified.
+The live SQLite database remains on local storage.
 
 Rollback after new production writes must preserve those writes. Prefer a compatible prior image against current data or a forward fix. Restoring the pre-cutover database after new reports arrive requires a deliberate reconciliation and data-loss decision; it is not an automatic rollback.
 

@@ -42,8 +42,11 @@ services:
       FACTORY_OPERATOR_NAME: kevin-pilot
       FACTORY_OPERATOR_SECRET_FILE: /run/secrets/factory_operator
       FACTORY_ALLOWED_ORIGINS: ${FACTORY_ALLOWED_ORIGINS:-}
+      FACTORY_BACKUP_DIR: /backups/pilot
+      FACTORY_BACKUP_REQUIRE_NFS: "true"
     volumes:
       - factory-data:/data
+      - factory-backups:/backups
       - ../files/secrets/operator-secret:/run/secrets/factory_operator:ro
     restart: unless-stopped
     stop_grace_period: 30s
@@ -98,6 +101,10 @@ services:
     restart: "no"
 
 volumes:
+  factory-backups:
+    name: factory-pilot-backups-nfs
+    # Provisioned NFS volume; do not recreate a mounted volume on redeploy.
+    external: true
   factory-data:
     name: factory-pilot-st162-data
   factory-snapshots:
