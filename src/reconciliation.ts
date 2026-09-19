@@ -1,4 +1,5 @@
 import { parseGitHubPullRequestUrl } from "./github";
+import { normalizeT3SourceId } from "./t3-source-identity";
 import { sameWorkspaceRoot } from "./workspace";
 
 /**
@@ -33,6 +34,8 @@ export type ReconciliationWorkState =
 
 export type ReconciliationSession = {
   provider: "t3";
+  sourceId?: string;
+  machineId?: string;
   externalThreadId: string;
   externalProjectId: string;
   projectId: string;
@@ -51,6 +54,7 @@ export type ReconciliationSession = {
 };
 
 export type ReconciliationTarget = {
+  sourceId?: string;
   projectId: string;
   taskId: string;
   taskName: string;
@@ -187,7 +191,11 @@ export function matchReconciliationTarget(
   session: ReconciliationSession,
   targets: ReconciliationTarget[],
 ): ReconciliationMatch {
-  const pullRequestMatches = targets.filter((target) =>
+  const sourceId = normalizeT3SourceId(session.sourceId);
+  const sourceTargets = targets.filter(
+    (target) => normalizeT3SourceId(target.sourceId) === sourceId,
+  );
+  const pullRequestMatches = sourceTargets.filter((target) =>
     same(
       canonicalPullRequestUrl(session.linkedPullRequestUrl),
       canonicalPullRequestUrl(target.pullRequestUrl),
@@ -197,7 +205,7 @@ export function matchReconciliationTarget(
     return finishMatch("pull_request", pullRequestMatches);
   }
 
-  const repositoryMatches = targets.filter(
+  const repositoryMatches = sourceTargets.filter(
     (target) =>
       sameRepository(session.repositoryIdentity, target.repositoryIdentity) &&
       same(session.branch, target.branchName),
@@ -209,7 +217,7 @@ export function matchReconciliationTarget(
     );
   }
 
-  const workspaceMatches = targets.filter(
+  const workspaceMatches = sourceTargets.filter(
     (target) =>
       sameWorkspaceRoot(session.workspaceRoot, target.workspaceRoot) &&
       same(session.branch, target.branchName),
@@ -226,6 +234,7 @@ export function matchReconciliationTarget(
 
 export type ReconciliationLink = {
   provider: "t3";
+  sourceId?: string;
   externalThreadId: string;
   taskId?: string;
   subtaskId?: string;
@@ -245,6 +254,8 @@ export type ReconciliationFindingSeverity = "info" | "attention";
 
 export type ReconciliationFindingDraft = {
   dedupeKey: string;
+  sourceId?: string;
+  machineId?: string;
   kind: ReconciliationFindingKind;
   severity: ReconciliationFindingSeverity;
   projectId: string;
@@ -263,11 +274,15 @@ export type ReconciliationInput = {
   links: ReconciliationLink[];
   now: Date;
   sourceUnavailable?: Array<{
+    sourceId?: string;
+    machineId?: string;
     projectId: string;
     observedAt: Date;
     explanation: string;
   }>;
   projectUnresolved?: Array<{
+    sourceId?: string;
+    machineId?: string;
     projectId: string;
     observedAt: Date;
     explanation: string;
@@ -282,6 +297,8 @@ function linksFor(
   return links.filter(
     (link) =>
       link.provider === session.provider &&
+      normalizeT3SourceId(link.sourceId) ===
+        normalizeT3SourceId(session.sourceId) &&
       link.externalThreadId === session.externalThreadId,
   );
 }
@@ -292,7 +309,10 @@ function targetForLink(
 ): ReconciliationTarget | undefined {
   return targets.find(
     (target) =>
-      target.taskId === link.taskId && target.subtaskId === link.subtaskId,
+      normalizeT3SourceId(target.sourceId) ===
+        normalizeT3SourceId(link.sourceId) &&
+      target.taskId === link.taskId &&
+      target.subtaskId === link.subtaskId,
   );
 }
 
@@ -348,22 +368,26 @@ export function computeReconciliationFindings({
   const findings: ReconciliationFindingDraft[] = [];
 
   for (const source of sourceUnavailable) {
+    const sourceId = normalizeT3SourceId(source.sourceId);
     addFinding(findings, {
       candidateIds: [],
-      dedupeKey: `source_unavailable:${source.projectId}`,
+      dedupeKey: `source_unavailable:${sourceId}:${source.projectId}`,
       explanation: source.explanation,
       kind: "source_unavailable",
       observedAt: source.observedAt,
       projectId: source.projectId,
       severity: "attention",
       suggestedAction: "Restore T3 read access and refresh observed activity.",
+      sourceId,
+      ...(source.machineId ? { machineId: source.machineId } : {}),
     });
   }
 
   for (const project of projectUnresolved) {
+    const sourceId = normalizeT3SourceId(project.sourceId);
     addFinding(findings, {
       candidateIds: [],
-      dedupeKey: `project_unresolved:${project.projectId}`,
+      dedupeKey: `project_unresolved:${sourceId}:${project.projectId}`,
       explanation: project.explanation,
       kind: "project_unresolved",
       observedAt: project.observedAt,
@@ -371,13 +395,18 @@ export function computeReconciliationFindings({
       severity: "attention",
       suggestedAction:
         "Set the Project's Git origin URL, workspace root, or T3 Project ID, then refresh observed activity.",
+      sourceId,
+      ...(project.machineId ? { machineId: project.machineId } : {}),
     });
   }
 
   for (const session of sessions) {
+    const sourceId = normalizeT3SourceId(session.sourceId);
     const sessionLinks = linksFor(session, links);
     const projectTargets = targets.filter(
-      (target) => target.projectId === session.projectId,
+      (target) =>
+        target.projectId === session.projectId &&
+        normalizeT3SourceId(target.sourceId) === sourceId,
     );
     const linkedTargets = sessionLinks
       .map((link) => targetForLink(link, projectTargets))
@@ -394,7 +423,7 @@ export function computeReconciliationFindings({
           candidateIds: match.candidates.map(
             (candidate) => candidate.subtaskId ?? candidate.taskId,
           ),
-          dedupeKey: `ambiguous_target:${session.provider}:${session.externalThreadId}`,
+          dedupeKey: `ambiguous_target:${sourceId}:${session.provider}:${session.externalThreadId}`,
           explanation: `Observed T3 activity matches multiple Factory targets by ${match.basis.replace("_", " ")}.`,
           externalThreadId: session.externalThreadId,
           kind: "ambiguous_target",
@@ -403,6 +432,8 @@ export function computeReconciliationFindings({
           severity: "attention",
           suggestedAction:
             "Choose the intended Factory Task or Subtask explicitly.",
+          sourceId,
+          ...(session.machineId ? { machineId: session.machineId } : {}),
         });
       } else {
         addFinding(findings, {
@@ -410,7 +441,7 @@ export function computeReconciliationFindings({
             match.status === "matched"
               ? [match.candidate.subtaskId ?? match.candidate.taskId]
               : [],
-          dedupeKey: `unlinked_activity:${session.provider}:${session.externalThreadId}`,
+          dedupeKey: `unlinked_activity:${sourceId}:${session.provider}:${session.externalThreadId}`,
           explanation:
             match.status === "matched"
               ? `Observed T3 activity appears to belong to ${targetLabel(match.candidate)}, but no Factory link exists.`
@@ -422,6 +453,8 @@ export function computeReconciliationFindings({
           severity: "attention",
           suggestedAction:
             "Review the branch or pull request, then link the thread explicitly if appropriate.",
+          sourceId,
+          ...(session.machineId ? { machineId: session.machineId } : {}),
         });
       }
       continue;
@@ -432,7 +465,7 @@ export function computeReconciliationFindings({
       if (!target) {
         addFinding(findings, {
           candidateIds: [],
-          dedupeKey: `ambiguous_target:${session.provider}:${session.externalThreadId}`,
+          dedupeKey: `ambiguous_target:${sourceId}:${session.provider}:${session.externalThreadId}`,
           explanation:
             "The linked Factory target no longer exists in this Project.",
           externalThreadId: session.externalThreadId,
@@ -442,6 +475,8 @@ export function computeReconciliationFindings({
           severity: "attention",
           suggestedAction:
             "Choose an existing Factory Task or Subtask explicitly.",
+          sourceId,
+          ...(session.machineId ? { machineId: session.machineId } : {}),
         });
         continue;
       }
@@ -454,7 +489,7 @@ export function computeReconciliationFindings({
       ) {
         addFinding(findings, {
           candidateIds: [target.subtaskId ?? target.taskId],
-          dedupeKey: `branch_mismatch:${session.provider}:${session.externalThreadId}:${target.subtaskId ?? target.taskId}`,
+          dedupeKey: `branch_mismatch:${sourceId}:${session.provider}:${session.externalThreadId}:${target.subtaskId ?? target.taskId}`,
           explanation: `The linked T3 session is on ${session.branch}, while the Factory target is assigned ${target.branchName}.`,
           externalThreadId: session.externalThreadId,
           kind: "branch_mismatch",
@@ -465,6 +500,8 @@ export function computeReconciliationFindings({
             "Confirm the target or update the Factory branch metadata.",
           ...(target.subtaskId ? { subtaskId: target.subtaskId } : {}),
           taskId: target.taskId,
+          sourceId,
+          ...(session.machineId ? { machineId: session.machineId } : {}),
         });
       }
 
@@ -484,7 +521,7 @@ export function computeReconciliationFindings({
       ) {
         addFinding(findings, {
           candidateIds: [target.subtaskId ?? target.taskId],
-          dedupeKey: `planned_but_running:${session.provider}:${session.externalThreadId}:${target.subtaskId ?? target.taskId}`,
+          dedupeKey: `planned_but_running:${sourceId}:${session.provider}:${session.externalThreadId}:${target.subtaskId ?? target.taskId}`,
           explanation: `T3 shows ${target.workState === "planned" ? "planned" : "backlog"} Factory work with active or newer turn activity.`,
           externalThreadId: session.externalThreadId,
           kind: "planned_but_running",
@@ -495,6 +532,8 @@ export function computeReconciliationFindings({
             "Review the observed activity and submit an explicit status report if needed.",
           ...(target.subtaskId ? { subtaskId: target.subtaskId } : {}),
           taskId: target.taskId,
+          sourceId,
+          ...(session.machineId ? { machineId: session.machineId } : {}),
         });
       }
 
@@ -505,7 +544,7 @@ export function computeReconciliationFindings({
       ) {
         addFinding(findings, {
           candidateIds: [target.subtaskId],
-          dedupeKey: `reported_state_stale:${session.provider}:${session.externalThreadId}:${target.subtaskId}`,
+          dedupeKey: `reported_state_stale:${sourceId}:${session.provider}:${session.externalThreadId}:${target.subtaskId}`,
           explanation:
             "Observed T3 activity is newer than the latest Factory Status Report.",
           externalThreadId: session.externalThreadId,
@@ -517,6 +556,8 @@ export function computeReconciliationFindings({
             "Review the session and submit a current Status Report.",
           subtaskId: target.subtaskId,
           taskId: target.taskId,
+          sourceId,
+          ...(session.machineId ? { machineId: session.machineId } : {}),
         });
       }
 
@@ -528,7 +569,7 @@ export function computeReconciliationFindings({
       ) {
         addFinding(findings, {
           candidateIds: [target.subtaskId ?? target.taskId],
-          dedupeKey: `session_needs_attention:${session.provider}:${session.externalThreadId}:${target.subtaskId ?? target.taskId}`,
+          dedupeKey: `session_needs_attention:${sourceId}:${session.provider}:${session.externalThreadId}:${target.subtaskId ?? target.taskId}`,
           explanation:
             session.latestSessionState === "error" ||
             session.latestTurnState === "error"
@@ -543,6 +584,8 @@ export function computeReconciliationFindings({
             "Inspect the T3 session and resolve the pending action.",
           ...(target.subtaskId ? { subtaskId: target.subtaskId } : {}),
           taskId: target.taskId,
+          sourceId,
+          ...(session.machineId ? { machineId: session.machineId } : {}),
         });
       }
     }

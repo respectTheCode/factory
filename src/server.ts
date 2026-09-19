@@ -40,6 +40,12 @@ import {
 } from "./t3";
 import { resolveT3AccessToken } from "./t3-credential";
 import {
+  DEFAULT_T3_MACHINE_ID,
+  LEGACY_T3_SOURCE_ID,
+  resolveT3Sources,
+  type T3Source,
+} from "./t3-sources";
+import {
   createHumanSessionStore,
   getHumanSessionToken,
   resolveFactoryOperator,
@@ -104,6 +110,36 @@ const editableTaskStateSchema = z.enum([
 const requestKeySchema = z
   .string()
   .regex(/^[A-Za-z0-9._-]{8,128}$/, "Invalid request key.");
+const sourceIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Invalid T3 source ID.");
+const t3ProjectMappingSchema = z
+  .object({
+    sourceId: sourceIdSchema,
+    t3ProjectId: z.string().trim().min(1).optional(),
+    workspaceRoot: z.string().trim().min(1).optional(),
+  })
+  .strict()
+  .refine(
+    (mapping) =>
+      mapping.t3ProjectId !== undefined || mapping.workspaceRoot !== undefined,
+    "A T3 source mapping requires t3ProjectId or workspaceRoot.",
+  );
+const t3MappingsSchema = z
+  .array(t3ProjectMappingSchema)
+  .superRefine((mappings, context) => {
+    const sourceIds = new Set<string>();
+    for (const [index, mapping] of mappings.entries()) {
+      if (sourceIds.has(mapping.sourceId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate T3 source mapping ${mapping.sourceId}.`,
+          path: [index, "sourceId"],
+        });
+      }
+      sourceIds.add(mapping.sourceId);
+    }
+  });
 
 class ProjectUpdateBus {
   private readonly listeners = new Map<
@@ -179,7 +215,10 @@ function dashboardAfterPublish(
   );
 }
 
-type ProjectIdResolver = (input: unknown) => string | undefined;
+type ProjectIdResolver = (
+  input: unknown,
+  ctx?: FactoryContext,
+) => string | undefined;
 
 const unauthenticatedMessage = "Authentication is required.";
 
@@ -203,7 +242,7 @@ function scopedProcedure(resolveProjectId?: ProjectIdResolver) {
     if (ctx.machine && resolveProjectId) {
       // This middleware runs before .input(), so the parsed input is not yet
       // available; resolve the Project from the raw input instead.
-      const projectId = resolveProjectId(await getRawInput());
+      const projectId = resolveProjectId(await getRawInput(), ctx);
       if (!projectId || !ctx.machine.projectIds.includes(projectId)) {
         throw new TRPCError({
           code: "FORBIDDEN",
@@ -385,7 +424,66 @@ function createRouter(
   idempotencyStore: ReturnType<typeof createIdempotencyStore>,
   mutationMutex = createMutationMutex(),
   backupRestore: BackupRestoreCoordinator,
+  t3Sources: readonly T3Source[] = [],
 ) {
+  const sourceAwareCoordinator = t3Coordinator;
+  const sourceById = new Map(
+    t3Sources.map((source) => [source.sourceId, source]),
+  );
+  const resolveSourceForContext = (
+    ctx: FactoryContext,
+    requestedSourceId: string | undefined,
+    options: { requireMachineSource?: boolean } = {},
+  ): string | undefined => {
+    if (requestedSourceId !== undefined) {
+      const source = sourceById.get(requestedSourceId);
+      if (!source) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `T3 source ${requestedSourceId} does not exist.`,
+        });
+      }
+      if (ctx.machine && source.machineId !== ctx.machine.machineId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "The machine credential is not authorized for this T3 source.",
+        });
+      }
+      return requestedSourceId;
+    }
+    if (!ctx.machine) return undefined;
+    const matches = t3Sources.filter(
+      (source) => source.machineId === ctx.machine?.machineId,
+    );
+    if (matches.length === 1) return matches[0]?.sourceId;
+    if (options.requireMachineSource) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message:
+          "The machine credential is not bound to exactly one T3 source; provide an authorized --source-id.",
+      });
+    }
+    return undefined;
+  };
+
+  const sourceProjectId = (
+    input: unknown,
+    ctx?: FactoryContext,
+  ): string | undefined => {
+    const candidate = input as Record<string, unknown> | null | undefined;
+    const threadId = candidate?.threadId;
+    if (typeof threadId !== "string") return undefined;
+    const sourceId =
+      typeof candidate?.sourceId === "string" ? candidate.sourceId : undefined;
+    const scopedSourceId = ctx
+      ? resolveSourceForContext(ctx, sourceId, {
+          requireMachineSource: true,
+        })
+      : sourceId;
+    return application.getProjectIdForThread(threadId, scopedSourceId);
+  };
+
   const projectUpdates = new ProjectUpdateBus(application);
   const serializedMutation = trpc.middleware(async ({ next }) => {
     try {
@@ -554,6 +652,7 @@ function createRouter(
           z.object({
             gitOriginUrl: z.string().trim().min(1).optional(),
             name: z.string().min(1),
+            t3Mappings: t3MappingsSchema.optional(),
             t3ProjectId: z.string().trim().min(1).optional(),
             workspaceRoot: z.string().trim().min(1).optional(),
           }),
@@ -571,6 +670,7 @@ function createRouter(
           z.object({
             gitOriginUrl: z.string().trim().min(1).nullable(),
             projectId: z.string().min(1),
+            t3Mappings: t3MappingsSchema.nullable().optional(),
             t3ProjectId: z.string().trim().min(1).nullable().optional(),
             workspaceRoot: z.string().trim().min(1).nullable().optional(),
           }),
@@ -699,6 +799,9 @@ function createRouter(
             ...(hierarchy.gitOriginUrl
               ? { gitOriginUrl: hierarchy.gitOriginUrl }
               : {}),
+            ...(hierarchy.t3Mappings
+              ? { t3Mappings: hierarchy.t3Mappings }
+              : {}),
             ...(hierarchy.workspaceRoot
               ? { workspaceRoot: hierarchy.workspaceRoot }
               : {}),
@@ -757,35 +860,65 @@ function createRouter(
       })
         .input(
           z
-            .object({ projectId: z.string().min(1).optional() })
+            .object({
+              projectId: z.string().min(1).optional(),
+              sourceId: sourceIdSchema.optional(),
+            })
             .nullable()
             .optional(),
         )
-        .query(({ input }) => t3Coordinator.status(input?.projectId)),
+        .query(({ ctx, input }) => {
+          const sourceId = resolveSourceForContext(ctx, input?.sourceId, {
+            requireMachineSource: true,
+          });
+          return sourceAwareCoordinator.status(input?.projectId, sourceId);
+        }),
       projectActivity: scopedProcedure(fieldProjectId("projectId"))
-        .input(z.object({ projectId: z.string().min(1) }))
-        .query(({ input }) => t3Coordinator.projectActivity(input.projectId)),
-      threadDetail: scopedProcedure((input) => {
+        .input(
+          z.object({
+            projectId: z.string().min(1),
+            sourceId: sourceIdSchema.optional(),
+          }),
+        )
+        .query(({ ctx, input }) => {
+          const sourceId = resolveSourceForContext(ctx, input.sourceId, {
+            requireMachineSource: true,
+          });
+          return sourceAwareCoordinator.projectActivity(
+            input.projectId,
+            sourceId,
+          );
+        }),
+      threadDetail: scopedProcedure((input, ctx) => {
         const threadId = (input as { threadId?: unknown } | undefined)
           ?.threadId;
         return typeof threadId === "string"
-          ? application.getProjectIdForThread(threadId)
+          ? sourceProjectId(input, ctx)
           : undefined;
       })
         .input(
           z.object({
+            sourceId: sourceIdSchema.optional(),
             threadId: z.string().min(1),
             turnLimit: z.number().int().min(1).max(10).default(1),
           }),
         )
-        .query(({ input }) =>
-          t3Coordinator.threadDetail(input.threadId, input.turnLimit),
-        ),
+        .query(({ ctx, input }) => {
+          const sourceId = resolveSourceForContext(ctx, input.sourceId, {
+            requireMachineSource: true,
+          });
+          return sourceAwareCoordinator.threadDetail(
+            input.threadId,
+            input.turnLimit,
+            sourceId,
+          );
+        }),
       linkThread: scopedProcedure(fieldProjectId("projectId"))
         .input(
           z.object({
             projectId: z.string().min(1),
             subtaskId: z.string().min(1).optional(),
+            sourceId: sourceIdSchema.optional(),
             taskId: z.string().min(1).optional(),
             threadId: z.string().min(1),
             requestKey: requestKeySchema.optional(),
@@ -794,7 +927,13 @@ function createRouter(
         .use(serializedMutation)
         .use(idempotentMutation)
         .mutation(({ ctx, input }) => {
-          const result = t3Coordinator.linkThread(input);
+          const sourceId = resolveSourceForContext(ctx, input.sourceId, {
+            requireMachineSource: true,
+          });
+          const result = sourceAwareCoordinator.linkThread({
+            ...input,
+            ...(sourceId === undefined ? {} : { sourceId }),
+          });
           return withContextDashboard(
             ctx,
             result,
@@ -806,6 +945,8 @@ function createRouter(
           z.object({
             branchName: z.string().min(1),
             projectId: z.string().min(1),
+            sourceId: sourceIdSchema.optional(),
+            threadId: z.string().min(1).optional(),
             taskId: z.string().min(1).optional(),
             subtaskId: z.string().min(1).optional(),
             requestKey: requestKeySchema.optional(),
@@ -814,7 +955,14 @@ function createRouter(
         .use(serializedMutation)
         .use(idempotentMutation)
         .mutation(async ({ ctx, input }) => {
-          const result = await t3Coordinator.autoLinkThread(input);
+          // Let the coordinator report an ambiguous or unmatched automatic
+          // link when a machine cannot be selected uniquely.
+          const sourceId = resolveSourceForContext(ctx, input.sourceId);
+          const result = await sourceAwareCoordinator.autoLinkThread({
+            ...input,
+            ...(sourceId === undefined ? {} : { sourceId }),
+            ...(ctx.machine ? { machineId: ctx.machine.machineId } : {}),
+          });
           const dashboard =
             result.status === "linked"
               ? (projectUpdates.publish(input.projectId) ??
@@ -822,24 +970,29 @@ function createRouter(
               : application.getDashboardSnapshot(input.projectId);
           return withContextDashboard(ctx, result, dashboard);
         }),
-      unlinkThread: scopedProcedure((input) => {
+      unlinkThread: scopedProcedure((input, ctx) => {
         const threadId = (input as { threadId?: unknown } | undefined)
           ?.threadId;
         return typeof threadId === "string"
-          ? application.getProjectIdForThread(threadId)
+          ? sourceProjectId(input, ctx)
           : undefined;
       })
         .input(
           z.object({
             associationId: z.string().min(1).optional(),
+            sourceId: sourceIdSchema.optional(),
             threadId: z.string().min(1),
           }),
         )
         .use(serializedMutation)
         .mutation(({ ctx, input }) => {
-          const result = t3Coordinator.unlinkThread(
+          const sourceId = resolveSourceForContext(ctx, input.sourceId, {
+            requireMachineSource: true,
+          });
+          const result = sourceAwareCoordinator.unlinkThread(
             input.threadId,
             input.associationId,
+            sourceId,
           );
           return withContextDashboard(
             ctx,
@@ -949,6 +1102,7 @@ function createRouter(
               .object({
                 externalThreadId: z.string().min(1),
                 provider: z.literal("t3"),
+                sourceId: sourceIdSchema.optional(),
               })
               .optional(),
             subtaskId: z.string().min(1),
@@ -958,9 +1112,24 @@ function createRouter(
         .use(idempotentMutation)
         .mutation(({ ctx, input }) => {
           const projectId = application.getProjectIdForSubtask(input.subtaskId);
+          const sourceId = resolveSourceForContext(
+            ctx,
+            input.sessionRef?.sourceId,
+            input.sessionRef === undefined
+              ? {}
+              : { requireMachineSource: true },
+          );
           const report = application.reportSubtaskStatus({
             ...input,
             ...(ctx.machine ? { machineId: ctx.machine.machineId } : {}),
+            ...(input.sessionRef
+              ? {
+                  sessionRef: {
+                    ...input.sessionRef,
+                    ...(sourceId === undefined ? {} : { sourceId }),
+                  },
+                }
+              : {}),
           });
           return withContextDashboard(
             ctx,
@@ -1359,6 +1528,7 @@ export type FactoryServerOptions = {
   allowedOrigins?: string[];
   t3AccessToken?: string;
   t3BaseUrl?: string;
+  t3Sources?: T3Source[];
   t3TimeoutMs?: number;
   onRestorePrepared?: (prepared: RestorePreparation) => void | Promise<void>;
 };
@@ -1397,10 +1567,20 @@ export function getFactoryServerOptions(
     }
   }
 
-  const t3BaseUrl = configuredT3BaseUrl
-    ? normalizeT3BaseUrl(configuredT3BaseUrl)
+  const configuredT3SourcesFile = environment.FACTORY_T3_SOURCES_FILE?.trim();
+  const t3Sources = configuredT3SourcesFile
+    ? resolveT3Sources(environment, {
+        ...(t3TimeoutMs === undefined ? {} : { timeoutMs: t3TimeoutMs }),
+      })
     : undefined;
-  const t3AccessToken = resolveT3AccessToken(environment);
+  const t3BaseUrl = configuredT3SourcesFile
+    ? undefined
+    : configuredT3BaseUrl
+      ? normalizeT3BaseUrl(configuredT3BaseUrl)
+      : undefined;
+  const t3AccessToken = configuredT3SourcesFile
+    ? undefined
+    : resolveT3AccessToken(environment);
   const factoryEnvironment = resolveFactoryEnvironment(environment);
   const configuredRequireExistingDatabase =
     resolveRequireExistingDatabase(environment);
@@ -1455,6 +1635,7 @@ export function getFactoryServerOptions(
     ...(allowedOrigins.length > 0 ? { allowedOrigins } : {}),
     ...(t3AccessToken ? { t3AccessToken } : {}),
     ...(t3BaseUrl ? { t3BaseUrl } : {}),
+    ...(t3Sources === undefined ? {} : { t3Sources }),
     ...(t3TimeoutMs === undefined ? {} : { t3TimeoutMs }),
   };
 }
@@ -1485,6 +1666,7 @@ export function createFactoryServer({
   shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
   t3AccessToken: _t3AccessToken,
   t3BaseUrl: _t3BaseUrl,
+  t3Sources: configuredT3Sources,
   t3TimeoutMs: _t3TimeoutMs,
   t3ActivityReader,
   onRestorePrepared: configuredOnRestorePrepared,
@@ -1505,6 +1687,7 @@ export function createFactoryServer({
   shutdownTimeoutMs?: number;
   t3AccessToken?: string;
   t3BaseUrl?: string;
+  t3Sources?: T3Source[];
   t3TimeoutMs?: number;
   t3ActivityReader?: T3ActivityReader;
   onRestorePrepared?: (prepared: RestorePreparation) => void | Promise<void>;
@@ -1556,15 +1739,30 @@ export function createFactoryServer({
         : createDisabledBackupService()),
     onRestorePrepared: (prepared) => onRestorePrepared(prepared),
   });
+  const legacyReader =
+    t3ActivityReader ??
+    createT3ActivityReader({
+      baseUrl: _t3BaseUrl,
+      timeoutMs: _t3TimeoutMs,
+      token: _t3AccessToken,
+    });
+  const t3Sources =
+    configuredT3Sources ??
+    ([
+      {
+        accessTokenFile: "<legacy-server-config>",
+        baseUrl: _t3BaseUrl ?? "http://127.0.0.1:3773",
+        label: "Legacy T3",
+        machineId:
+          Bun.env.FACTORY_T3_MACHINE_ID?.trim() || DEFAULT_T3_MACHINE_ID,
+        reader: legacyReader,
+        sourceId: LEGACY_T3_SOURCE_ID,
+      },
+    ] satisfies T3Source[]);
   const t3Coordinator = createT3Coordinator({
     application,
-    reader:
-      t3ActivityReader ??
-      createT3ActivityReader({
-        baseUrl: _t3BaseUrl,
-        timeoutMs: _t3TimeoutMs,
-        token: _t3AccessToken,
-      }),
+    reader: legacyReader,
+    sources: t3Sources,
   });
   const router = createRouter(
     application,
@@ -1574,6 +1772,7 @@ export function createFactoryServer({
     idempotencyStore,
     mutationMutex,
     backupRestore,
+    t3Sources,
   );
   const deploymentIdentity = {
     apiVersion: FACTORY_API_VERSION,
@@ -1585,7 +1784,10 @@ export function createFactoryServer({
   };
   const optionalIntegrations = {
     github: githubToken ? "configured" : "unavailable",
-    t3: _t3BaseUrl || _t3AccessToken ? "configured" : "unavailable",
+    t3:
+      configuredT3Sources?.length || _t3BaseUrl || _t3AccessToken
+        ? "configured"
+        : "unavailable",
   } as const;
   const checkReadiness = (): {
     database: "ok" | "unavailable";
@@ -2076,7 +2278,11 @@ function toNodeHeaders(headers: Headers): Record<string, string> {
 
 function getStaticFile(pathname: string): string | null {
   const sourceRoot = import.meta.dir;
-  if (pathname.startsWith("/projects/")) {
+  if (
+    pathname.startsWith("/projects/") ||
+    pathname === "/backups" ||
+    pathname === "/backups/"
+  ) {
     return resolve(sourceRoot, "web/index.html");
   }
 

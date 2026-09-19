@@ -179,7 +179,7 @@ export const DEFAULT_T3_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 // T3 uses the 0.0 minor line for breaking adapter changes, so keep this exact
 // version pin and advance it only after the current descriptor and payload
 // shapes have been exercised against the new server.
-export const DEFAULT_T3_SERVER_VERSION = "0.0.40";
+export const DEFAULT_T3_SERVER_VERSION = "0.0.42";
 export const MAX_T3_THREAD_TURN_LIMIT = 10;
 
 const DESCRIPTOR_PATH = "/.well-known/t3/environment";
@@ -246,14 +246,31 @@ export function normalizeT3BaseUrl(value: string): string {
     hostname === "localhost" ||
     hostname === "::1" ||
     /^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(hostname);
-  if (parsed.protocol === "http:" && !isLoopback) {
+  const isPrivateIpv4 = isRfc1918Ipv4(hostname);
+  if (parsed.protocol === "http:" && !isLoopback && !isPrivateIpv4) {
     throw new Error(
-      "T3_BASE_URL must use https:// for non-loopback hosts; plain http:// is allowed only for loopback.",
+      "T3_BASE_URL must use https:// for non-private hosts; plain http:// is allowed only for loopback or RFC1918 literal IP addresses.",
     );
   }
 
   parsed.pathname = parsed.pathname.replace(/\/+$/, "");
   return parsed.toString().replace(/\/$/, "");
+}
+
+function isRfc1918Ipv4(hostname: string): boolean {
+  const parts = hostname.split(".");
+  if (parts.length !== 4 || parts.some((part) => !/^\d+$/.test(part))) {
+    return false;
+  }
+  const octets = parts.map(Number);
+  if (octets.some((octet) => octet < 0 || octet > 255)) return false;
+  const first = octets[0] ?? -1;
+  const second = octets[1] ?? -1;
+  return (
+    first === 10 ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168)
+  );
 }
 
 function isIsoDate(value: unknown): value is string {

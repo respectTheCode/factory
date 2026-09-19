@@ -15,11 +15,13 @@ export type ObservedConnectionState =
   | "unavailable";
 
 export type ObservedConnection = {
+  machineId?: string;
   error?: string;
   lastSuccessfulFetchAt?: string;
   observedAt?: string;
   sourceVersion?: string;
   state: ObservedConnectionState;
+  sourceId?: string;
   warning?: string;
 };
 
@@ -60,7 +62,9 @@ export type ObservedThread = {
   linkedPullRequestUrl?: string;
   model?: string;
   observedAt?: string;
+  machineId?: string;
   provider?: string;
+  sourceId?: string;
   sourceUpdatedAt?: string;
   title: string;
   threadId: string;
@@ -103,6 +107,17 @@ export type ObservedActivityViewModel = {
   projectName?: string;
   targets: ObservedTarget[];
   threads: ObservedThread[];
+  sources?: ObservedActivitySource[];
+};
+
+export type ObservedActivitySource = {
+  connection: ObservedConnection;
+  counts: ObservedActivityCounts;
+  error?: string;
+  label?: string;
+  machineId: string;
+  sourceId: string;
+  status: string;
 };
 
 /** A bounded detail summary. Transcript/message bodies intentionally have no
@@ -125,10 +140,18 @@ export type ObservedActivityProps = {
   onLinkThread?: (
     threadId: string,
     target: ObservedTarget,
+    sourceId?: string,
   ) => void | Promise<void>;
-  onOpenThreadDetail?: (threadId: string) => void | Promise<void>;
+  onOpenThreadDetail?: (
+    threadId: string,
+    sourceId?: string,
+  ) => void | Promise<void>;
   onRefresh?: () => void | Promise<void>;
-  onUnlinkThread?: (threadId: string, linkId?: string) => void | Promise<void>;
+  onUnlinkThread?: (
+    threadId: string,
+    linkId?: string,
+    sourceId?: string,
+  ) => void | Promise<void>;
   threadDetails?: Readonly<Record<string, ObservedThreadDetail>>;
   threadDetailLoadingIds?: ReadonlySet<string>;
 };
@@ -178,6 +201,10 @@ export function suggestedAssociationTarget(
     return undefined;
   }
   return targets.find((target) => target.id === association.candidateIds?.[0]);
+}
+
+export function observedThreadKey(threadId: string, sourceId?: string): string {
+  return `${sourceId ?? "legacy"}:${threadId}`;
 }
 
 export function formatObservedTime(value: string | undefined): string | null {
@@ -235,6 +262,7 @@ export function ObservedActivitySection({
   const threads = activity?.threads ?? [];
   const findings = activity?.findings ?? [];
   const targets = activity?.targets ?? [];
+  const sources = activity?.sources ?? [];
   const lastFetch = formatObservedTime(
     connection.lastSuccessfulFetchAt ?? connection.observedAt,
   );
@@ -243,16 +271,20 @@ export function ObservedActivitySection({
 
   const linkTarget = (thread: ObservedThread, target: ObservedTarget) => {
     if (!onLinkThread) return;
-    void Promise.resolve(onLinkThread(thread.threadId, target)).then(() =>
+    const key = observedThreadKey(thread.threadId, thread.sourceId);
+    void Promise.resolve(
+      onLinkThread(thread.threadId, target, thread.sourceId),
+    ).then(() =>
       setPendingTargets((current) => ({
         ...current,
-        [thread.threadId]: "",
+        [key]: "",
       })),
     );
   };
 
   const linkThread = (thread: ObservedThread) => {
-    const targetId = pendingTargets[thread.threadId];
+    const key = observedThreadKey(thread.threadId, thread.sourceId);
+    const targetId = pendingTargets[key];
     const target = targets.find((candidate) => candidate.id === targetId);
     if (!target) return;
     linkTarget(thread, target);
@@ -334,6 +366,36 @@ export function ObservedActivitySection({
         <p className="observed-freshness">Last observed {lastFetch}</p>
       )}
 
+      {sources.length > 1 && (
+        <div
+          aria-label="T3 source connections"
+          className="observed-source-list"
+        >
+          {sources.map((source) => (
+            <div className="observed-source-row" key={source.sourceId}>
+              <strong>{source.label ?? source.sourceId}</strong>
+              <span>{source.machineId}</span>
+              <span data-observed-source-state={source.connection.state}>
+                {observedConnectionLabel(source.connection.state)}
+              </span>
+              {formatObservedTime(
+                source.connection.lastSuccessfulFetchAt ??
+                  source.connection.observedAt,
+              ) && (
+                <span>
+                  Last observed{" "}
+                  {formatObservedTime(
+                    source.connection.lastSuccessfulFetchAt ??
+                      source.connection.observedAt,
+                  )}
+                </span>
+              )}
+              {source.error && <span>{source.error}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div aria-label="Observed activity counts" className="observed-counts">
         <div className="observed-count">
           <strong>{counts.running}</strong>
@@ -371,14 +433,20 @@ export function ObservedActivitySection({
               association,
               targets,
             );
-            const loading =
-              threadDetailLoadingIds?.has(thread.threadId) ?? false;
+            const threadKey = observedThreadKey(
+              thread.threadId,
+              thread.sourceId,
+            );
+            const loading = threadDetailLoadingIds?.has(threadKey) ?? false;
             const threadTime = formatObservedTime(
               thread.sourceUpdatedAt ?? thread.observedAt,
             );
-            const detail = threadDetails?.[thread.threadId];
+            const detail = threadDetails?.[threadKey];
             return (
-              <article className="observed-thread" key={thread.threadId}>
+              <article
+                className="observed-thread"
+                key={observedThreadKey(thread.threadId, thread.sourceId)}
+              >
                 <div className="observed-thread-heading">
                   <div className="observed-thread-title">
                     <strong>{thread.title || "Untitled T3 thread"}</strong>
@@ -406,6 +474,8 @@ export function ObservedActivitySection({
                 <div className="observed-thread-meta">
                   <span>{threadStateLabel(thread)}</span>
                   {thread.provider && <span>{thread.provider}</span>}
+                  {thread.sourceId && <span>Source: {thread.sourceId}</span>}
+                  {thread.machineId && <span>Machine: {thread.machineId}</span>}
                   {thread.model && <span>{thread.model}</span>}
                   {thread.externalProjectId && (
                     <span>T3 project: {thread.externalProjectId}</span>
@@ -473,7 +543,12 @@ export function ObservedActivitySection({
                     <button
                       className="secondary"
                       disabled={loading}
-                      onClick={() => void onOpenThreadDetail(thread.threadId)}
+                      onClick={() =>
+                        void onOpenThreadDetail(
+                          thread.threadId,
+                          thread.sourceId,
+                        )
+                      }
                       type="button"
                     >
                       {loading ? "Loading details…" : "View details"}
@@ -511,10 +586,10 @@ export function ObservedActivitySection({
                             onChange={(event) =>
                               setPendingTargets((current) => ({
                                 ...current,
-                                [thread.threadId]: event.target.value,
+                                [threadKey]: event.target.value,
                               }))
                             }
-                            value={pendingTargets[thread.threadId] ?? ""}
+                            value={pendingTargets[threadKey] ?? ""}
                           >
                             <option value="">Choose Factory target</option>
                             {targets.map((target) => (
@@ -525,9 +600,7 @@ export function ObservedActivitySection({
                           </select>
                           <button
                             disabled={
-                              !canMutate ||
-                              busy ||
-                              !pendingTargets[thread.threadId]
+                              !canMutate || busy || !pendingTargets[threadKey]
                             }
                             onClick={() => linkThread(thread)}
                             type="button"
@@ -548,6 +621,7 @@ export function ObservedActivitySection({
                                   void onUnlinkThread(
                                     thread.threadId,
                                     link.linkId,
+                                    thread.sourceId,
                                   )
                                 }
                                 type="button"

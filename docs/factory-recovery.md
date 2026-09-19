@@ -42,8 +42,18 @@ digests. Factory copies the snapshot and manifest to a temporary directory on
 NFS, verifies that copy, then publishes it atomically. Retention follows a
 successful backup and only removes Factory-owned backup directories. Unrelated
 files are preserved. Partial work is never offered as a successful restore point.
-Listings use creation-verified metadata to avoid repeatedly scanning every SQLite
-file on NAS. Restore always rechecks the full snapshot and manifest before use.
+Listings verify snapshot contents against their manifests before reporting a
+recovery point as verified. Corrupt copies do not count toward freshness or the
+retention quota, so they cannot displace valid recovery points. Restore rechecks
+the selected snapshot and manifest before use. Verification runs in the backup
+worker under the operation timeout; large collections or a slow NAS can take
+longer to list and may produce a visible timeout instead of a healthy result.
+
+Temporary snapshot directories carry an ownership marker identifying the backup
+destination, database, and worker process. Later operations reclaim marked
+artifacts from exited workers in bounded batches. Live workers, symlinks, other
+databases, and restore staging are preserved. Older unmarked partial directories
+require operator inspection; Factory does not infer ownership from a name alone.
 
 The normal recovery point is at most about 30 minutes old plus backup duration,
 within the one-hour RPO. An outage lasting over an hour can violate that target.

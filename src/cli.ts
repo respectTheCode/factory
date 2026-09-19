@@ -27,6 +27,13 @@ import {
 import { createT3Coordinator } from "./t3-coordinator";
 import { createT3ActivityReader, MAX_T3_THREAD_TURN_LIMIT } from "./t3";
 import { resolveT3AccessToken } from "./t3-credential";
+import {
+  DEFAULT_T3_MACHINE_ID,
+  LEGACY_T3_SOURCE_ID,
+  resolveT3Sources,
+  type T3Source,
+} from "./t3-sources";
+import type { T3ProjectMapping } from "./t3-source-identity";
 import { createMachineCredentialStore } from "./machine-credential";
 import {
   createRemoteFactoryClient,
@@ -298,6 +305,7 @@ function projectSummary(project: {
   gitOriginUrl?: string;
   id: string;
   name: string;
+  t3Mappings?: T3ProjectMapping[];
   t3ProjectId?: string;
   workspaceRoot?: string;
 }) {
@@ -306,6 +314,7 @@ function projectSummary(project: {
     name: project.name,
     ...(project.gitOriginUrl ? { gitOriginUrl: project.gitOriginUrl } : {}),
     ...(project.t3ProjectId ? { t3ProjectId: project.t3ProjectId } : {}),
+    ...(project.t3Mappings ? { t3Mappings: project.t3Mappings } : {}),
     ...(project.workspaceRoot ? { workspaceRoot: project.workspaceRoot } : {}),
   };
 }
@@ -319,6 +328,23 @@ function optionalNullableFlag(
   return value || null;
 }
 
+function t3MappingsFlag(
+  flags: Map<string, string>,
+): T3ProjectMapping[] | undefined {
+  const configured = flags.get("t3-mappings-json");
+  if (configured === undefined) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(configured);
+  } catch {
+    throw new Error("--t3-mappings-json must contain a JSON array.");
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("--t3-mappings-json must contain a JSON array.");
+  }
+  return value as T3ProjectMapping[];
+}
+
 function turnLimitFlag(flags: Map<string, string>): number {
   const configured = flags.get("turn-limit") ?? "1";
   const value = Number(configured);
@@ -330,6 +356,17 @@ function turnLimitFlag(flags: Map<string, string>): number {
   ) {
     throw new Error(
       `--turn-limit must be an integer from 1 through ${MAX_T3_THREAD_TURN_LIMIT}.`,
+    );
+  }
+  return value;
+}
+
+function sourceIdFlag(flags: Map<string, string>): string | undefined {
+  const value = flags.get("source-id")?.trim();
+  if (value === undefined) return undefined;
+  if (!value || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) {
+    throw new Error(
+      "--source-id must start with an alphanumeric character and then use [A-Za-z0-9._-].",
     );
   }
   return value;
@@ -789,6 +826,43 @@ async function main(args: string[]): Promise<void> {
   const application: FactoryBackend =
     remoteClient ?? createLocalBackend(localApplication!);
   const configuredT3Timeout = Bun.env.T3_TIMEOUT_MS?.trim();
+  const localT3Sources: T3Source[] = remoteClient
+    ? []
+    : resolveT3Sources(Bun.env, {
+        ...(configuredT3Timeout === undefined
+          ? {}
+          : { timeoutMs: Number(configuredT3Timeout) }),
+      });
+  const localLegacyReader = remoteClient
+    ? undefined
+    : (localT3Sources.find((source) => source.sourceId === LEGACY_T3_SOURCE_ID)
+        ?.reader ??
+      createT3ActivityReader({
+        baseUrl: Bun.env.T3_BASE_URL,
+        timeoutMs:
+          configuredT3Timeout === undefined
+            ? undefined
+            : Number(configuredT3Timeout),
+        token: resolveT3AccessToken({
+          T3_ACCESS_TOKEN: Bun.env.T3_ACCESS_TOKEN,
+          T3_ACCESS_TOKEN_FILE: Bun.env.T3_ACCESS_TOKEN_FILE,
+        }),
+      }));
+  const localCoordinatorSources: T3Source[] = remoteClient
+    ? []
+    : localT3Sources.length
+      ? localT3Sources
+      : [
+          {
+            accessTokenFile: "<legacy-cli-config>",
+            baseUrl: Bun.env.T3_BASE_URL?.trim() || "http://127.0.0.1:3773",
+            label: "Legacy T3",
+            machineId:
+              Bun.env.FACTORY_T3_MACHINE_ID?.trim() || DEFAULT_T3_MACHINE_ID,
+            reader: localLegacyReader!,
+            sourceId: LEGACY_T3_SOURCE_ID,
+          },
+        ];
   const t3Coordinator = remoteClient
     ? {
         autoLinkThread: (input: {
@@ -797,6 +871,8 @@ async function main(args: string[]): Promise<void> {
           taskId?: string;
           subtaskId?: string;
           requestKey?: string;
+          sourceId?: string;
+          threadId?: string;
         }) => remoteClient.sessionAutoLink(input),
         linkThread: (input: {
           projectId: string;
@@ -804,26 +880,25 @@ async function main(args: string[]): Promise<void> {
           subtaskId?: string;
           threadId: string;
           requestKey?: string;
+          sourceId?: string;
         }) => remoteClient.sessionLink(input),
-        status: (projectId?: string) => remoteClient.projectT3Status(projectId),
-        threadDetail: (threadId: string, turnLimit: number) =>
-          remoteClient.sessionDetail(threadId, turnLimit),
-        unlinkThread: (threadId: string, associationId?: string) =>
-          remoteClient.sessionUnlink(threadId, associationId),
+        status: (projectId?: string, sourceId?: string) =>
+          remoteClient.projectT3Status(projectId, sourceId),
+        threadDetail: (
+          threadId: string,
+          turnLimit: number,
+          sourceId?: string,
+        ) => remoteClient.sessionDetail(threadId, turnLimit, sourceId),
+        unlinkThread: (
+          threadId: string,
+          associationId?: string,
+          sourceId?: string,
+        ) => remoteClient.sessionUnlink(threadId, associationId, sourceId),
       }
     : createT3Coordinator({
         application: localApplication!,
-        reader: createT3ActivityReader({
-          baseUrl: Bun.env.T3_BASE_URL,
-          timeoutMs:
-            configuredT3Timeout === undefined
-              ? undefined
-              : Number(configuredT3Timeout),
-          token: resolveT3AccessToken({
-            T3_ACCESS_TOKEN: Bun.env.T3_ACCESS_TOKEN,
-            T3_ACCESS_TOKEN_FILE: Bun.env.T3_ACCESS_TOKEN_FILE,
-          }),
-        }),
+        reader: localLegacyReader!,
+        sources: localCoordinatorSources,
       });
 
   if (resource === "doctor") {
@@ -890,11 +965,13 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "project" && action === "create") {
+    const t3Mappings = t3MappingsFlag(parsed.flags);
     const project = await application.createProject({
       gitOriginUrl:
         parsed.flags.get("git-origin-url") ?? parsed.flags.get("git-url"),
       name: requiredFlag(parsed.flags, "name"),
       t3ProjectId: parsed.flags.get("t3-project-id"),
+      ...(t3Mappings === undefined ? {} : { t3Mappings }),
       workspaceRoot: parsed.flags.get("workspace-root"),
     });
     output({ project: projectSummary(project) });
@@ -906,14 +983,16 @@ async function main(args: string[]): Promise<void> {
       parsed.flags.get("git-origin-url") ?? parsed.flags.get("git-url");
     const projectId = requiredFlag(parsed.flags, "project-id");
     const t3ProjectId = optionalNullableFlag(parsed.flags, "t3-project-id");
+    const t3Mappings = t3MappingsFlag(parsed.flags);
     const workspaceRoot = optionalNullableFlag(parsed.flags, "workspace-root");
     if (
       gitOriginUrl === undefined &&
       t3ProjectId === undefined &&
+      t3Mappings === undefined &&
       workspaceRoot === undefined
     ) {
       throw new Error(
-        "Provide at least one of --git-origin-url, --t3-project-id, or --workspace-root.",
+        "Provide at least one of --git-origin-url, --t3-project-id, --t3-mappings-json, or --workspace-root.",
       );
     }
     const existing = await application.getProjectDetail(projectId);
@@ -921,6 +1000,7 @@ async function main(args: string[]): Promise<void> {
       gitOriginUrl: gitOriginUrl ?? existing.gitOriginUrl ?? null,
       projectId,
       ...(t3ProjectId === undefined ? {} : { t3ProjectId }),
+      ...(t3Mappings === undefined ? {} : { t3Mappings }),
       ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
     });
     output({ project: projectSummary(project) });
@@ -1149,19 +1229,23 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "project" && action === "t3-status") {
+    const sourceId = sourceIdFlag(parsed.flags);
     output({
       status: await t3Coordinator.status(
         requiredFlag(parsed.flags, "project-id"),
+        sourceId,
       ),
     });
     return;
   }
 
   if (resource === "session" && action === "detail") {
+    const sourceId = sourceIdFlag(parsed.flags);
     output({
       session: await t3Coordinator.threadDetail(
         requiredFlag(parsed.flags, "thread-id"),
         turnLimitFlag(parsed.flags),
+        sourceId,
       ),
     });
     return;
@@ -1169,6 +1253,7 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "session" && action === "link") {
     const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
+    const sourceId = sourceIdFlag(parsed.flags);
     output({
       link: await t3Coordinator.linkThread({
         ...(parsed.flags.get("subtask-id") === undefined
@@ -1179,6 +1264,7 @@ async function main(args: string[]): Promise<void> {
           : { taskId: parsed.flags.get("task-id") }),
         projectId: requiredFlag(parsed.flags, "project-id"),
         threadId: requiredFlag(parsed.flags, "thread-id"),
+        ...(sourceId === undefined ? {} : { sourceId }),
         ...(requestKey === undefined ? {} : { requestKey }),
       }),
     });
@@ -1187,6 +1273,7 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "session" && action === "auto-link") {
     const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
+    const sourceId = sourceIdFlag(parsed.flags);
     output({
       link: await t3Coordinator.autoLinkThread({
         branchName: requiredFlag(parsed.flags, "branch-name"),
@@ -1197,6 +1284,10 @@ async function main(args: string[]): Promise<void> {
           ? {}
           : { taskId: parsed.flags.get("task-id") }),
         projectId: requiredFlag(parsed.flags, "project-id"),
+        ...(parsed.flags.get("thread-id") === undefined
+          ? {}
+          : { threadId: requiredFlag(parsed.flags, "thread-id") }),
+        ...(sourceId === undefined ? {} : { sourceId }),
         ...(requestKey === undefined ? {} : { requestKey }),
       }),
     });
@@ -1204,10 +1295,12 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "session" && action === "unlink") {
+    const sourceId = sourceIdFlag(parsed.flags);
     output({
       link: await t3Coordinator.unlinkThread(
         requiredFlag(parsed.flags, "thread-id"),
         parsed.flags.get("association-id"),
+        sourceId,
       ),
     });
     return;
@@ -1426,6 +1519,18 @@ async function main(args: string[]): Promise<void> {
             sessionRef: {
               externalThreadId: requiredFlag(parsed.flags, "session-thread-id"),
               provider: "t3" as const,
+              ...(parsed.flags.get("session-source-id") === undefined
+                ? {}
+                : {
+                    sourceId: sourceIdFlag(
+                      new Map([
+                        [
+                          "source-id",
+                          parsed.flags.get("session-source-id") ?? "",
+                        ],
+                      ]),
+                    ),
+                  }),
             },
           }),
       subtaskId: requiredFlag(parsed.flags, "subtask-id"),

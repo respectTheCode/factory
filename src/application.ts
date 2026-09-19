@@ -1,6 +1,6 @@
 import { sameWorkspaceRoot } from "./workspace";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 
 import { Database } from "bun:sqlite";
 
@@ -26,6 +26,11 @@ import {
   type ReconciliationTurnState,
   type ReconciliationWorkState,
 } from "./reconciliation";
+import {
+  LEGACY_T3_SOURCE_ID,
+  normalizeT3SourceId,
+  type T3ProjectMapping,
+} from "./t3-source-identity";
 
 export type FactoryClock = () => Date;
 export type FactoryIdGenerator = () => string;
@@ -46,6 +51,7 @@ export type Project = {
   gitOriginUrl?: string;
   t3ProjectId?: string;
   workspaceRoot?: string;
+  t3Mappings?: T3ProjectMapping[];
   createdAt: Date;
 };
 
@@ -133,6 +139,7 @@ export type StatusReport = {
   machineId?: string;
   sessionRef?: {
     provider: "t3";
+    sourceId?: string;
     externalThreadId: string;
   };
   createdAt: Date;
@@ -169,6 +176,8 @@ export type CodeSession = {
   id: string;
   runId: string;
   provider: "t3";
+  sourceId: string;
+  machineId?: string;
   externalThreadId: string;
   externalProjectId: string;
   title: string;
@@ -205,20 +214,34 @@ export type CodeSessionAssociation = {
  */
 export type CodeSessionObservationInput = Omit<
   CodeSession,
-  "id" | "runId" | "sourceCurrent"
+  "id" | "runId" | "sourceCurrent" | "sourceId"
 > & {
   projectId: string;
+  sourceId?: string;
 };
 
-export type CodeSessionObservation = CodeSessionObservationInput & {
+type NormalizedCodeSessionObservationInput = Omit<
+  CodeSessionObservationInput,
+  "sourceId"
+> & {
+  sourceId: string;
+};
+
+export type CodeSessionObservation = Omit<
+  CodeSessionObservationInput,
+  "sourceId"
+> & {
   id: string;
   projectId: string;
+  sourceId: string;
   sourceCurrent?: boolean;
 };
 
 export type SessionEvidence = {
   id: string;
   provider: "t3";
+  sourceId: string;
+  machineId?: string;
   externalThreadId: string;
   sourceSequence?: number;
   sourceStream?: string;
@@ -235,6 +258,8 @@ export type ReconciliationFindingStatus = "open" | "resolved" | "dismissed";
 export type ReconciliationFinding = {
   id: string;
   dedupeKey: string;
+  sourceId: string;
+  machineId?: string;
   kind: ReconciliationFindingKind;
   severity: ReconciliationFindingSeverity;
   status: ReconciliationFindingStatus;
@@ -347,9 +372,13 @@ export type LinkT3ThreadInput = {
   subtaskId?: string;
 };
 
-export type SessionEvidenceInput = Omit<SessionEvidence, "id">;
+export type SessionEvidenceInput = Omit<SessionEvidence, "id" | "sourceId"> & {
+  sourceId?: string;
+};
 
 export type T3ObservationRefreshBoundary = {
+  sourceId?: string;
+  machineId?: string;
   projectId: string;
   sourceSequence: number;
   sourceStream: string;
@@ -377,12 +406,115 @@ function removeMatching<T>(items: T[], matches: (item: T) => boolean): void {
   }
 }
 
+function normalizeT3ProjectMappings(
+  mappings: T3ProjectMapping[] | null | undefined,
+): T3ProjectMapping[] | undefined {
+  if (mappings == null) return undefined;
+  const bySource = new Map<string, T3ProjectMapping>();
+  for (const mapping of mappings) {
+    const sourceId = normalizeT3SourceId(mapping.sourceId);
+    if (bySource.has(sourceId)) {
+      throw new Error(`Project T3 source mapping ${sourceId} is duplicated.`);
+    }
+    const workspaceRoot = mapping.workspaceRoot?.trim();
+    const t3ProjectId = mapping.t3ProjectId?.trim();
+    if (!workspaceRoot && !t3ProjectId) {
+      throw new Error(
+        `Project T3 source mapping ${sourceId} must include a T3 Project ID or workspace root.`,
+      );
+    }
+    if (workspaceRoot && !isAbsolute(workspaceRoot)) {
+      throw new Error(
+        `Project T3 source mapping ${sourceId} workspace root must be absolute.`,
+      );
+    }
+    bySource.set(sourceId, {
+      sourceId,
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+      ...(t3ProjectId ? { t3ProjectId } : {}),
+    });
+  }
+  return [...bySource.values()];
+}
+
+function normalizeT3Project(project: Project): Project {
+  const t3Mappings = normalizeT3ProjectMappings(project.t3Mappings);
+  if (t3Mappings !== undefined) project.t3Mappings = t3Mappings;
+  return project;
+}
+
+function normalizeT3Collections(state: FactoryState): FactoryState {
+  const findingIds = new Set<string>();
+  const reconciliationFindings = state.reconciliationFindings ?? [];
+  for (const finding of reconciliationFindings) {
+    if (findingIds.has(finding.id)) {
+      throw new Error(`Reconciliation finding ID ${finding.id} is duplicated.`);
+    }
+    findingIds.add(finding.id);
+    const persistedSourceId =
+      typeof finding.sourceId === "string" && finding.sourceId.trim() !== "";
+    const sourceId = normalizeT3SourceId(finding.sourceId);
+    finding.sourceId = sourceId;
+    finding.dedupeKey = migrateFindingDedupeKey(
+      finding.dedupeKey,
+      sourceId,
+      persistedSourceId,
+    );
+  }
+  const statusReports = state.statusReports;
+  for (const report of statusReports) {
+    if (report.sessionRef) {
+      report.sessionRef.sourceId = normalizeT3SourceId(
+        report.sessionRef.sourceId,
+      );
+    }
+  }
+  const codeSessions = state.codeSessions ?? [];
+  for (const session of codeSessions) {
+    session.sourceId = normalizeT3SourceId(session.sourceId);
+  }
+  const codeSessionObservations = state.codeSessionObservations ?? [];
+  for (const observation of codeSessionObservations) {
+    observation.sourceId = normalizeT3SourceId(observation.sourceId);
+  }
+  const sessionEvidence = state.sessionEvidence ?? [];
+  for (const evidence of sessionEvidence) {
+    evidence.sourceId = normalizeT3SourceId(evidence.sourceId);
+  }
+  // Hydration must preserve the caller's collection ownership. Existing
+  // in-memory FactoryState callers rely on later appends being visible when a
+  // second application is opened over the same state object.
+  const projects = state.projects;
+  for (const project of projects) normalizeT3Project(project);
+  return {
+    ...state,
+    projects,
+    statusReports,
+    codeSessions,
+    codeSessionObservations,
+    sessionEvidence,
+    reconciliationFindings,
+  };
+}
+
+function migrateFindingDedupeKey(
+  dedupeKey: string,
+  sourceId: string,
+  persistedSourceId: boolean,
+): string {
+  if (persistedSourceId) return dedupeKey;
+  const [kind, ...rest] = dedupeKey.split(":");
+  if (!kind || rest.length === 0) return dedupeKey;
+  return `${kind}:${sourceId}:${rest.join(":")}`;
+}
+
 type LegacyTargetedRun = Run & {
   taskId?: string;
   subtaskId?: string;
 };
 
 function normalizeSimpleIdState(state: FactoryState): HydratedFactoryState {
+  state = normalizeT3Collections(state);
   const tasks: Task[] = backfillSimpleIds(
     state.tasks,
     TASK_SIMPLE_ID_PREFIX,
@@ -530,7 +662,10 @@ function normalizeRepositoryIdentity(
     const url = new URL(trimmed);
     return `${url.hostname.toLowerCase().replace(/^www\./, "")}${
       url.port ? `:${url.port}` : ""
-    }/${url.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "")}`;
+    }/${url.pathname
+      .replace(/^\/+|\/+$/g, "")
+      .replace(/\.git$/i, "")
+      .toLowerCase()}`;
   } catch {
     return trimmed
       .replace(/^\/+|\/+$/g, "")
@@ -545,6 +680,7 @@ export type ProjectHierarchy = {
   gitOriginUrl?: string;
   t3ProjectId?: string;
   workspaceRoot?: string;
+  t3Mappings?: T3ProjectMapping[];
   tasks: Array<{
     id: string;
     simpleId: string;
@@ -578,6 +714,7 @@ export type ProjectSummary = {
   gitOriginUrl?: string;
   t3ProjectId?: string;
   workspaceRoot?: string;
+  t3Mappings?: T3ProjectMapping[];
 };
 
 export type PortfolioStatus = {
@@ -619,6 +756,7 @@ export type ProjectMetadata = {
   gitOriginUrl?: string;
   t3ProjectId?: string;
   workspaceRoot?: string;
+  t3Mappings?: T3ProjectMapping[];
   trackerLinks: TrackerLink[];
 };
 
@@ -717,11 +855,13 @@ export class FactoryApplication {
     gitOriginUrl,
     name,
     t3ProjectId,
+    t3Mappings,
     workspaceRoot,
   }: {
     gitOriginUrl?: string;
     name: string;
     t3ProjectId?: string;
+    t3Mappings?: T3ProjectMapping[];
     workspaceRoot?: string;
   }): Project {
     this.refreshFromPersistence();
@@ -730,6 +870,9 @@ export class FactoryApplication {
       name,
       ...(gitOriginUrl?.trim() ? { gitOriginUrl: gitOriginUrl.trim() } : {}),
       ...(t3ProjectId?.trim() ? { t3ProjectId: t3ProjectId.trim() } : {}),
+      ...(t3Mappings === undefined
+        ? {}
+        : { t3Mappings: normalizeT3ProjectMappings(t3Mappings) }),
       ...(workspaceRoot?.trim() ? { workspaceRoot: workspaceRoot.trim() } : {}),
       createdAt: this.clock(),
     };
@@ -743,10 +886,12 @@ export class FactoryApplication {
     gitOriginUrl,
     projectId,
     t3ProjectId,
+    t3Mappings,
     workspaceRoot,
   }: {
     gitOriginUrl: string | null;
     projectId: string;
+    t3Mappings?: T3ProjectMapping[] | null;
     t3ProjectId?: string | null;
     workspaceRoot?: string | null;
   }): Project {
@@ -764,6 +909,10 @@ export class FactoryApplication {
     if (t3ProjectId !== undefined) {
       if (t3ProjectId?.trim()) project.t3ProjectId = t3ProjectId.trim();
       else delete project.t3ProjectId;
+    }
+    if (t3Mappings !== undefined) {
+      if (t3Mappings === null) delete project.t3Mappings;
+      else project.t3Mappings = normalizeT3ProjectMappings(t3Mappings);
     }
     if (workspaceRoot !== undefined) {
       if (workspaceRoot?.trim()) project.workspaceRoot = workspaceRoot.trim();
@@ -810,10 +959,16 @@ export class FactoryApplication {
     const threadIds = new Set([
       ...this.codeSessions
         .filter((session) => runIds.has(session.runId))
-        .map((session) => session.externalThreadId),
+        .map(
+          (session) =>
+            `${session.provider}:${normalizeT3SourceId(session.sourceId)}:${session.externalThreadId}`,
+        ),
       ...this.codeSessionObservations
         .filter((observation) => observation.projectId === projectId)
-        .map((observation) => observation.externalThreadId),
+        .map(
+          (observation) =>
+            `${observation.provider}:${normalizeT3SourceId(observation.sourceId)}:${observation.externalThreadId}`,
+        ),
     ]);
 
     this.projects.splice(projectIndex, 1);
@@ -841,7 +996,10 @@ export class FactoryApplication {
     removeMatching(
       this.sessionEvidence,
       (evidence) =>
-        evidence.provider === "t3" && threadIds.has(evidence.externalThreadId),
+        evidence.provider === "t3" &&
+        threadIds.has(
+          `${evidence.provider}:${normalizeT3SourceId(evidence.sourceId)}:${evidence.externalThreadId}`,
+        ),
     );
     removeMatching(
       this.reconciliationFindings,
@@ -1367,7 +1525,14 @@ export class FactoryApplication {
       evidence: currentEvidence,
       ...(normalizedReason ? { reason: normalizedReason } : {}),
       ...(machineId ? { machineId } : {}),
-      ...(sessionRef ? { sessionRef: { ...sessionRef } } : {}),
+      ...(sessionRef
+        ? {
+            sessionRef: {
+              ...sessionRef,
+              sourceId: normalizeT3SourceId(sessionRef.sourceId),
+            },
+          }
+        : {}),
       createdAt: this.clock(),
     };
 
@@ -1678,9 +1843,10 @@ export class FactoryApplication {
     return this.requireTask(subtask.taskId).projectId;
   }
 
-  getProjectIdForThread(externalThreadId: string): string {
+  getProjectIdForThread(externalThreadId: string, sourceId?: string): string {
     this.refreshFromPersistence();
-    return this.requireT3Observation("t3", externalThreadId).projectId;
+    return this.requireT3Observation("t3", externalThreadId, sourceId)
+      .projectId;
   }
 
   getStatusReportProjectId(reportId: string): string {
@@ -1731,6 +1897,7 @@ export class FactoryApplication {
       ...(project.workspaceRoot
         ? { workspaceRoot: project.workspaceRoot }
         : {}),
+      ...(project.t3Mappings ? { t3Mappings: project.t3Mappings } : {}),
       tasks: this.tasks
         .filter((task) => task.projectId === project.id)
         .sort((left, right) => this.compareTasks(left, right))
@@ -1830,6 +1997,7 @@ export class FactoryApplication {
       ...(project.workspaceRoot
         ? { workspaceRoot: project.workspaceRoot }
         : {}),
+      ...(project.t3Mappings ? { t3Mappings: project.t3Mappings } : {}),
     }));
   }
 
@@ -1848,12 +2016,16 @@ export class FactoryApplication {
     evidence?: SessionEvidenceInput[];
     observations: CodeSessionObservationInput[];
     projectUnresolved?: Array<{
+      sourceId?: string;
+      machineId?: string;
       projectId: string;
       observedAt: Date;
       explanation: string;
     }>;
     refreshedProjects?: T3ObservationRefreshBoundary[];
     sourceUnavailable?: Array<{
+      sourceId?: string;
+      machineId?: string;
       projectId: string;
       observedAt: Date;
       explanation: string;
@@ -1863,7 +2035,24 @@ export class FactoryApplication {
     findings: ReconciliationFinding[];
   } {
     this.refreshFromPersistence();
-    const projectIds = new Set<string>();
+    const scopes = new Map<string, Set<string>>();
+    const addScope = (projectId: string, sourceId?: string): void => {
+      const normalizedSourceId = normalizeT3SourceId(sourceId);
+      const sources = scopes.get(projectId) ?? new Set<string>();
+      sources.add(normalizedSourceId);
+      scopes.set(projectId, sources);
+    };
+    const normalizedObservations = observations.map((input) =>
+      this.normalizeObservationInput(input),
+    );
+    const normalizedSourceUnavailable = sourceUnavailable.map((source) => ({
+      ...source,
+      sourceId: normalizeT3SourceId(source.sourceId),
+    }));
+    const normalizedProjectUnresolved = projectUnresolved.map((project) => ({
+      ...project,
+      sourceId: normalizeT3SourceId(project.sourceId),
+    }));
 
     for (const boundary of refreshedProjects) {
       this.requireProject(boundary.projectId);
@@ -1884,16 +2073,18 @@ export class FactoryApplication {
       ) {
         throw new Error("T3 refresh boundary timestamps must be valid dates.");
       }
-      projectIds.add(boundary.projectId);
+      addScope(boundary.projectId, boundary.sourceId);
     }
 
-    for (const observation of observations) {
+    for (const observation of normalizedObservations) {
       this.requireProject(observation.projectId);
-      projectIds.add(observation.projectId);
+      addScope(observation.projectId, observation.sourceId);
+      const sourceId = normalizeT3SourceId(observation.sourceId);
 
       const existing = this.codeSessionObservations.find(
         (candidate) =>
           candidate.provider === observation.provider &&
+          normalizeT3SourceId(candidate.sourceId) === sourceId &&
           candidate.externalThreadId === observation.externalThreadId,
       );
       if (existing && existing.projectId !== observation.projectId) {
@@ -1902,27 +2093,13 @@ export class FactoryApplication {
         );
       }
       const project = this.requireProject(observation.projectId);
-      if (
-        project.t3ProjectId !== undefined &&
-        project.t3ProjectId !== observation.externalProjectId
-      ) {
-        throw new Error(
-          `T3 Project ${observation.externalProjectId} does not match Factory Project ${project.id}.`,
-        );
-      }
-      if (
-        project.workspaceRoot !== undefined &&
-        !sameWorkspaceRoot(project.workspaceRoot, observation.workspaceRoot)
-      ) {
-        throw new Error(
-          `T3 workspace does not match Factory Project ${project.id}.`,
-        );
-      }
+      this.validateT3ObservationProject(project, observation);
       if (existing && !this.isNewerObservation(observation, existing)) {
         existing.sourceCurrent = true;
         const linkedSession = this.codeSessions.find(
           (candidate) =>
             candidate.provider === observation.provider &&
+            normalizeT3SourceId(candidate.sourceId) === sourceId &&
             candidate.externalThreadId === observation.externalThreadId,
         );
         if (linkedSession) linkedSession.sourceCurrent = true;
@@ -1943,6 +2120,7 @@ export class FactoryApplication {
       const linkedSession = this.codeSessions.find(
         (candidate) =>
           candidate.provider === observation.provider &&
+          normalizeT3SourceId(candidate.sourceId) === sourceId &&
           candidate.externalThreadId === observation.externalThreadId,
       );
       if (linkedSession)
@@ -1952,32 +2130,51 @@ export class FactoryApplication {
         });
     }
 
-    for (const source of sourceUnavailable) projectIds.add(source.projectId);
-    for (const project of projectUnresolved) projectIds.add(project.projectId);
+    for (const source of normalizedSourceUnavailable) {
+      this.requireProject(source.projectId);
+      addScope(source.projectId, source.sourceId);
+    }
+    for (const project of normalizedProjectUnresolved) {
+      this.requireProject(project.projectId);
+      addScope(project.projectId, project.sourceId);
+    }
 
     for (const evidenceInput of evidence) {
-      const evidence = this.appendSessionEvidence(evidenceInput);
+      const evidence = this.appendSessionEvidence({
+        ...evidenceInput,
+        sourceId: normalizeT3SourceId(evidenceInput.sourceId),
+      });
       const observation = this.requireT3Observation(
         evidence.provider,
         evidence.externalThreadId,
+        evidence.sourceId,
       );
-      projectIds.add(observation.projectId);
+      addScope(observation.projectId, observation.sourceId);
     }
 
     for (const boundary of refreshedProjects) {
+      const sourceId = normalizeT3SourceId(boundary.sourceId);
       const incomingThreadIds = new Set(
-        observations
-          .filter((observation) => observation.projectId === boundary.projectId)
+        normalizedObservations
+          .filter(
+            (observation) =>
+              observation.projectId === boundary.projectId &&
+              normalizeT3SourceId(observation.sourceId) === sourceId,
+          )
           .map(
             (observation) =>
-              `${observation.provider}:${observation.externalThreadId}`,
+              `${observation.provider}:${normalizeT3SourceId(observation.sourceId)}:${observation.externalThreadId}`,
           ),
       );
       for (const observation of this.codeSessionObservations) {
-        if (observation.projectId !== boundary.projectId) continue;
+        if (
+          observation.projectId !== boundary.projectId ||
+          normalizeT3SourceId(observation.sourceId) !== sourceId
+        )
+          continue;
         if (
           incomingThreadIds.has(
-            `${observation.provider}:${observation.externalThreadId}`,
+            `${observation.provider}:${normalizeT3SourceId(observation.sourceId)}:${observation.externalThreadId}`,
           )
         ) {
           observation.sourceCurrent = true;
@@ -1988,6 +2185,7 @@ export class FactoryApplication {
           const linkedSession = this.codeSessions.find(
             (candidate) =>
               candidate.provider === observation.provider &&
+              normalizeT3SourceId(candidate.sourceId) === sourceId &&
               candidate.externalThreadId === observation.externalThreadId,
           );
           if (linkedSession) linkedSession.sourceCurrent = false;
@@ -1996,7 +2194,7 @@ export class FactoryApplication {
     }
 
     if (
-      observations.length > 0 ||
+      normalizedObservations.length > 0 ||
       evidence.length > 0 ||
       refreshedProjects.length > 0 ||
       sourceUnavailable.length > 0 ||
@@ -2005,29 +2203,38 @@ export class FactoryApplication {
       this.save();
 
     const findings: ReconciliationFinding[] = [];
-    for (const projectId of projectIds) {
-      findings.push(
-        ...this.reconcileT3Project({
-          projectId,
-          projectUnresolved: projectUnresolved.filter(
-            (project) => project.projectId === projectId,
-          ),
-          sourceUnavailable: sourceUnavailable.filter(
-            (source) => source.projectId === projectId,
-          ),
-        }),
-      );
+    for (const [projectId, sourceIds] of scopes) {
+      for (const sourceId of sourceIds) {
+        findings.push(
+          ...this.reconcileT3Project({
+            projectId,
+            projectUnresolved: normalizedProjectUnresolved.filter(
+              (project) =>
+                project.projectId === projectId &&
+                normalizeT3SourceId(project.sourceId) === sourceId,
+            ),
+            sourceId,
+            sourceUnavailable: normalizedSourceUnavailable.filter(
+              (source) =>
+                source.projectId === projectId &&
+                normalizeT3SourceId(source.sourceId) === sourceId,
+            ),
+          }),
+        );
+      }
     }
 
     return {
       findings,
       observations:
-        observations.length > 0
-          ? observations
+        normalizedObservations.length > 0
+          ? normalizedObservations
               .map((observation) =>
                 this.codeSessionObservations.find(
                   (candidate) =>
                     candidate.provider === observation.provider &&
+                    normalizeT3SourceId(candidate.sourceId) ===
+                      normalizeT3SourceId(observation.sourceId) &&
                     candidate.externalThreadId === observation.externalThreadId,
                 ),
               )
@@ -2053,10 +2260,13 @@ export class FactoryApplication {
     const observation = this.requireT3Observation(
       input.observation.provider,
       input.observation.externalThreadId,
+      input.observation.sourceId,
     );
     if (
       observation.projectId !== input.observation.projectId ||
-      observation.externalProjectId !== input.observation.externalProjectId
+      observation.externalProjectId !== input.observation.externalProjectId ||
+      normalizeT3SourceId(observation.sourceId) !==
+        normalizeT3SourceId(input.observation.sourceId)
     ) {
       throw new Error(
         "T3 thread observation does not match its stored Project.",
@@ -2071,6 +2281,8 @@ export class FactoryApplication {
     let codeSession = this.codeSessions.find(
       (candidate) =>
         candidate.provider === observation.provider &&
+        normalizeT3SourceId(candidate.sourceId) ===
+          normalizeT3SourceId(observation.sourceId) &&
         candidate.externalThreadId === observation.externalThreadId,
     );
     let run: Run;
@@ -2119,7 +2331,10 @@ export class FactoryApplication {
       } satisfies CodeSessionAssociation);
     if (!existingAssociation) this.codeSessionAssociations.push(association);
     this.save();
-    this.reconcileT3Project({ projectId: observation.projectId });
+    this.reconcileT3Project({
+      projectId: observation.projectId,
+      sourceId: observation.sourceId,
+    });
     return { association, codeSession, run };
   }
 
@@ -2131,10 +2346,12 @@ export class FactoryApplication {
     associationId,
     externalThreadId,
     provider = "t3",
+    sourceId,
   }: {
     associationId?: string;
     externalThreadId: string;
     provider?: "t3";
+    sourceId?: string;
   }): {
     association: CodeSessionAssociation;
     codeSession: CodeSession;
@@ -2144,6 +2361,8 @@ export class FactoryApplication {
     const codeSession = this.codeSessions.find(
       (candidate) =>
         candidate.provider === provider &&
+        normalizeT3SourceId(candidate.sourceId) ===
+          normalizeT3SourceId(sourceId) &&
         candidate.externalThreadId === externalThreadId,
     );
     if (!codeSession) {
@@ -2175,23 +2394,35 @@ export class FactoryApplication {
     );
     run.updatedAt = this.clock();
     this.save();
-    this.reconcileT3Project({ projectId: run.projectId });
+    this.reconcileT3Project({
+      projectId: run.projectId,
+      sourceId: codeSession.sourceId,
+    });
     return { association, codeSession, run };
   }
 
-  listProjectT3Activity(projectId: string): ProjectT3Activity[] {
+  listProjectT3Activity(
+    projectId: string,
+    sourceId?: string,
+  ): ProjectT3Activity[] {
     this.refreshFromPersistence();
     this.requireProject(projectId);
+    const normalizedSourceId =
+      sourceId === undefined ? undefined : normalizeT3SourceId(sourceId);
     return this.codeSessionObservations
       .filter(
         (observation) =>
           observation.projectId === projectId &&
+          (normalizedSourceId === undefined ||
+            normalizeT3SourceId(observation.sourceId) === normalizedSourceId) &&
           observation.sourceCurrent !== false,
       )
       .map((observation) => {
         const codeSession = this.codeSessions.find(
           (candidate) =>
             candidate.provider === observation.provider &&
+            normalizeT3SourceId(candidate.sourceId) ===
+              normalizeT3SourceId(observation.sourceId) &&
             candidate.externalThreadId === observation.externalThreadId,
         );
         const run = codeSession
@@ -2215,8 +2446,11 @@ export class FactoryApplication {
   ): ReconciliationMatch {
     this.refreshFromPersistence();
     const project = this.requireProject(observation.projectId);
+    this.validateT3ObservationProject(project, observation);
     const session: ReconciliationSession = {
       branch: observation.branch,
+      sourceId: observation.sourceId,
+      machineId: observation.machineId,
       externalProjectId: observation.externalProjectId,
       externalThreadId: observation.externalThreadId,
       hasPendingApprovals: observation.hasPendingApprovals,
@@ -2235,15 +2469,23 @@ export class FactoryApplication {
     };
     return matchReconciliationTarget(
       session,
-      this.reconciliationTargets(project),
+      this.reconciliationTargets(
+        project,
+        normalizeT3SourceId(observation.sourceId),
+      ),
     );
   }
 
-  getT3ThreadDetail(externalThreadId: string): ProjectT3Activity {
+  getT3ThreadDetail(
+    externalThreadId: string,
+    sourceId?: string,
+  ): ProjectT3Activity {
     this.refreshFromPersistence();
     const observation = this.codeSessionObservations.find(
       (candidate) =>
         candidate.provider === "t3" &&
+        normalizeT3SourceId(candidate.sourceId) ===
+          normalizeT3SourceId(sourceId) &&
         candidate.externalThreadId === externalThreadId,
     );
     if (!observation) {
@@ -2252,6 +2494,8 @@ export class FactoryApplication {
     const codeSession = this.codeSessions.find(
       (candidate) =>
         candidate.provider === observation.provider &&
+        normalizeT3SourceId(candidate.sourceId) ===
+          normalizeT3SourceId(observation.sourceId) &&
         candidate.externalThreadId === observation.externalThreadId,
     );
     const run = codeSession
@@ -2277,33 +2521,45 @@ export class FactoryApplication {
   }
 
   private appendSessionEvidence(input: SessionEvidenceInput): SessionEvidence {
-    this.requireT3Observation(input.provider, input.externalThreadId);
-    if (!input.digest.trim()) {
+    const normalizedInput = {
+      ...input,
+      sourceId: normalizeT3SourceId(input.sourceId),
+    };
+    this.requireT3Observation(
+      normalizedInput.provider,
+      normalizedInput.externalThreadId,
+      normalizedInput.sourceId,
+    );
+    if (!normalizedInput.digest.trim()) {
       throw new Error("T3 evidence digest must not be empty.");
     }
-    if (input.sourceStream !== undefined && !input.sourceStream.trim()) {
+    if (
+      normalizedInput.sourceStream !== undefined &&
+      !normalizedInput.sourceStream.trim()
+    ) {
       throw new Error("T3 evidence source stream must not be empty.");
     }
     if (
-      input.sourceSequence !== undefined &&
-      (!Number.isSafeInteger(input.sourceSequence) || input.sourceSequence < 0)
+      normalizedInput.sourceSequence !== undefined &&
+      (!Number.isSafeInteger(normalizedInput.sourceSequence) ||
+        normalizedInput.sourceSequence < 0)
     ) {
       throw new Error("T3 evidence source sequence must be non-negative.");
     }
-    if (Number.isNaN(input.observedAt.getTime())) {
+    if (Number.isNaN(normalizedInput.observedAt.getTime())) {
       throw new Error("T3 evidence timestamp must be a valid date.");
     }
     if (
-      !Array.isArray(input.turnIds) ||
-      !input.turnIds.every(
+      !Array.isArray(normalizedInput.turnIds) ||
+      !normalizedInput.turnIds.every(
         (turnId) => typeof turnId === "string" && turnId.trim(),
       )
     ) {
       throw new Error("T3 evidence turn IDs must be non-empty strings.");
     }
     if (
-      !Array.isArray(input.checkpointFiles) ||
-      !input.checkpointFiles.every(
+      !Array.isArray(normalizedInput.checkpointFiles) ||
+      !normalizedInput.checkpointFiles.every(
         (path) =>
           typeof path === "string" &&
           path.trim() &&
@@ -2316,65 +2572,85 @@ export class FactoryApplication {
       );
     }
     if (
-      input.changedFileCount !== undefined &&
-      (!Number.isSafeInteger(input.changedFileCount) ||
-        input.changedFileCount < 0)
+      normalizedInput.changedFileCount !== undefined &&
+      (!Number.isSafeInteger(normalizedInput.changedFileCount) ||
+        normalizedInput.changedFileCount < 0)
     ) {
       throw new Error("T3 evidence changed file count must be non-negative.");
     }
     const existing = this.sessionEvidence.find((candidate) => {
       if (
-        candidate.provider !== input.provider ||
-        candidate.externalThreadId !== input.externalThreadId
+        candidate.provider !== normalizedInput.provider ||
+        normalizeT3SourceId(candidate.sourceId) !== normalizedInput.sourceId ||
+        candidate.externalThreadId !== normalizedInput.externalThreadId
       ) {
         return false;
       }
       const sameStream =
         (candidate.sourceStream ?? "") === (input.sourceStream ?? "");
-      return input.sourceSequence !== undefined
-        ? sameStream && candidate.sourceSequence === input.sourceSequence
-        : sameStream && candidate.digest === input.digest;
+      return normalizedInput.sourceSequence !== undefined
+        ? sameStream &&
+            candidate.sourceSequence === normalizedInput.sourceSequence
+        : sameStream && candidate.digest === normalizedInput.digest;
     });
     if (existing) return existing;
 
     const evidence: SessionEvidence = {
-      ...input,
+      ...normalizedInput,
       id: this.idGenerator(),
-      turnIds: [...input.turnIds],
-      checkpointFiles: [...input.checkpointFiles],
+      turnIds: [...normalizedInput.turnIds],
+      checkpointFiles: [...normalizedInput.checkpointFiles],
     };
     this.sessionEvidence.push(evidence);
     return evidence;
   }
 
-  listSessionEvidence(externalThreadId: string): SessionEvidence[] {
+  listSessionEvidence(
+    externalThreadId: string,
+    sourceId?: string,
+  ): SessionEvidence[] {
     this.refreshFromPersistence();
     return this.sessionEvidence.filter(
       (evidence) =>
         evidence.provider === "t3" &&
+        normalizeT3SourceId(evidence.sourceId) ===
+          normalizeT3SourceId(sourceId) &&
         evidence.externalThreadId === externalThreadId,
     );
   }
 
-  listReconciliationFindings(projectId?: string): ReconciliationFinding[] {
+  listReconciliationFindings(
+    projectId?: string,
+    sourceId?: string,
+  ): ReconciliationFinding[] {
     this.refreshFromPersistence();
     return this.reconciliationFindings.filter(
-      (finding) => projectId === undefined || finding.projectId === projectId,
+      (finding) =>
+        (projectId === undefined || finding.projectId === projectId) &&
+        (sourceId === undefined ||
+          normalizeT3SourceId(finding.sourceId) ===
+            normalizeT3SourceId(sourceId)),
     );
   }
 
   reconcileT3Project({
     projectUnresolved = [],
     projectId,
+    sourceId,
     sourceUnavailable = [],
   }: {
     projectId: string;
+    sourceId?: string;
     projectUnresolved?: Array<{
+      sourceId?: string;
+      machineId?: string;
       projectId: string;
       observedAt: Date;
       explanation: string;
     }>;
     sourceUnavailable?: Array<{
+      sourceId?: string;
+      machineId?: string;
       projectId: string;
       observedAt: Date;
       explanation: string;
@@ -2382,12 +2658,16 @@ export class FactoryApplication {
   }): ReconciliationFinding[] {
     this.refreshFromPersistence();
     const project = this.requireProject(projectId);
+    const normalizedSourceId =
+      sourceId === undefined ? undefined : normalizeT3SourceId(sourceId);
     const sessions = this.codeSessionObservations.filter(
       (observation) =>
         observation.projectId === projectId &&
+        (normalizedSourceId === undefined ||
+          normalizeT3SourceId(observation.sourceId) === normalizedSourceId) &&
         observation.sourceCurrent !== false,
     );
-    const targets = this.reconciliationTargets(project);
+    const targets = this.reconciliationTargets(project, normalizedSourceId);
     const sessionsById = new Map(
       this.codeSessions.map((session) => [session.id, session]),
     );
@@ -2400,6 +2680,7 @@ export class FactoryApplication {
         if (!session || !run || run.projectId !== projectId) return [];
         return [
           {
+            sourceId: session.sourceId,
             externalThreadId: session.externalThreadId,
             provider: session.provider,
             taskId: association.taskId,
@@ -2411,18 +2692,43 @@ export class FactoryApplication {
       },
     );
 
+    const normalizedProjectUnresolved = projectUnresolved
+      .map((entry) => ({
+        ...entry,
+        sourceId: normalizeT3SourceId(entry.sourceId),
+      }))
+      .filter(
+        (entry) =>
+          normalizedSourceId === undefined ||
+          entry.sourceId === normalizedSourceId,
+      );
+    const normalizedSourceUnavailable = sourceUnavailable
+      .map((entry) => ({
+        ...entry,
+        sourceId: normalizeT3SourceId(entry.sourceId),
+      }))
+      .filter(
+        (entry) =>
+          normalizedSourceId === undefined ||
+          entry.sourceId === normalizedSourceId,
+      );
     const drafts = computeReconciliationFindings({
       links,
       now: this.clock(),
-      projectUnresolved,
+      projectUnresolved: normalizedProjectUnresolved,
       sessions,
-      sourceUnavailable,
+      sourceUnavailable: normalizedSourceUnavailable,
       targets,
     });
     const byKey = new Map(drafts.map((draft) => [draft.dedupeKey, draft]));
     const existingByKey = new Map(
       this.reconciliationFindings
-        .filter((finding) => finding.projectId === projectId)
+        .filter(
+          (finding) =>
+            finding.projectId === projectId &&
+            (normalizedSourceId === undefined ||
+              normalizeT3SourceId(finding.sourceId) === normalizedSourceId),
+        )
         .map((finding) => [finding.dedupeKey, finding]),
     );
 
@@ -2433,6 +2739,7 @@ export class FactoryApplication {
       } else {
         this.reconciliationFindings.push({
           ...draft,
+          sourceId: normalizeT3SourceId(draft.sourceId),
           createdAt: this.clock(),
           id: this.idGenerator(),
           status: "open",
@@ -2443,23 +2750,33 @@ export class FactoryApplication {
 
     // Successful refreshes resolve findings that no longer describe the
     // current normalized source. An unavailable source intentionally leaves
-    // existing findings open so stale data is never presented as resolved.
-    if (sourceUnavailable.length === 0) {
-      for (const finding of this.reconciliationFindings) {
-        if (
-          finding.projectId === projectId &&
-          finding.status === "open" &&
-          !byKey.has(finding.dedupeKey)
-        ) {
-          finding.status = "resolved";
-          finding.updatedAt = this.clock();
-        }
+    // findings for that source open so stale data is never presented as
+    // resolved; another source can still reconcile independently.
+    const unavailableSourceIds = new Set(
+      normalizedSourceUnavailable.map((source) =>
+        normalizeT3SourceId(source.sourceId),
+      ),
+    );
+    for (const finding of this.reconciliationFindings) {
+      if (
+        finding.projectId === projectId &&
+        (normalizedSourceId === undefined ||
+          normalizeT3SourceId(finding.sourceId) === normalizedSourceId) &&
+        finding.status === "open" &&
+        !unavailableSourceIds.has(normalizeT3SourceId(finding.sourceId)) &&
+        !byKey.has(finding.dedupeKey)
+      ) {
+        finding.status = "resolved";
+        finding.updatedAt = this.clock();
       }
     }
 
     this.save();
     return this.reconciliationFindings.filter(
-      (finding) => finding.projectId === projectId,
+      (finding) =>
+        finding.projectId === projectId &&
+        (normalizedSourceId === undefined ||
+          normalizeT3SourceId(finding.sourceId) === normalizedSourceId),
     );
   }
 
@@ -2514,6 +2831,7 @@ export class FactoryApplication {
       ...(project.workspaceRoot
         ? { workspaceRoot: project.workspaceRoot }
         : {}),
+      ...(project.t3Mappings ? { t3Mappings: project.t3Mappings } : {}),
       trackerLinks: this.trackerLinks.filter(
         (link) => link.projectId === projectId,
       ),
@@ -2726,13 +3044,104 @@ export class FactoryApplication {
     return run;
   }
 
+  private normalizeObservationInput(
+    input: CodeSessionObservationInput,
+  ): NormalizedCodeSessionObservationInput {
+    return {
+      ...input,
+      sourceId: normalizeT3SourceId(input.sourceId),
+    };
+  }
+
+  private projectT3Mapping(
+    project: Project,
+    sourceId: string,
+  ): T3ProjectMapping | undefined {
+    return project.t3Mappings?.find(
+      (mapping) => normalizeT3SourceId(mapping.sourceId) === sourceId,
+    );
+  }
+
+  private validateT3ObservationProject(
+    project: Project,
+    observation: CodeSessionObservationInput,
+  ): void {
+    const sourceId = normalizeT3SourceId(observation.sourceId);
+    const mapping = this.projectT3Mapping(project, sourceId);
+    const isLegacy = sourceId === LEGACY_T3_SOURCE_ID;
+    const expectedT3ProjectId =
+      mapping?.t3ProjectId ?? (isLegacy ? project.t3ProjectId : undefined);
+    const expectedWorkspaceRoot =
+      mapping?.workspaceRoot ?? (isLegacy ? project.workspaceRoot : undefined);
+
+    if (
+      expectedT3ProjectId !== undefined &&
+      expectedT3ProjectId !== observation.externalProjectId
+    ) {
+      throw new Error(
+        `T3 Project ${observation.externalProjectId} does not match Factory Project ${project.id} for source ${sourceId}.`,
+      );
+    }
+
+    const repositoryMatches =
+      project.gitOriginUrl !== undefined &&
+      observation.repositoryIdentity !== undefined &&
+      normalizeRepositoryIdentity(project.gitOriginUrl) ===
+        normalizeRepositoryIdentity(observation.repositoryIdentity);
+
+    // A source-specific workspace root is an explicit machine constraint. A
+    // global legacy root remains a historical hint and may differ when the
+    // portable repository identity proves that this is the same project.
+    if (
+      mapping?.workspaceRoot !== undefined &&
+      !sameWorkspaceRoot(expectedWorkspaceRoot, observation.workspaceRoot)
+    ) {
+      throw new Error(
+        `T3 workspace does not match Factory Project ${project.id} for source ${sourceId}.`,
+      );
+    }
+
+    if (repositoryMatches) return;
+    if (
+      expectedWorkspaceRoot !== undefined &&
+      !sameWorkspaceRoot(expectedWorkspaceRoot, observation.workspaceRoot)
+    ) {
+      throw new Error(
+        `T3 workspace does not match Factory Project ${project.id} for source ${sourceId}.`,
+      );
+    }
+
+    // Legacy observations retain the historical permissive behavior. For a
+    // new source, a portable repository identity is sufficient when the
+    // Factory Project has a remote; local/no-remote projects need an explicit
+    // source mapping so a second machine cannot be guessed into the project.
+    if (isLegacy || mapping !== undefined) return;
+    if (!project.gitOriginUrl) {
+      throw new Error(
+        `T3 source ${sourceId} requires an explicit Project source mapping for a repository without a Git origin.`,
+      );
+    }
+    if (
+      !observation.repositoryIdentity ||
+      normalizeRepositoryIdentity(project.gitOriginUrl) !==
+        normalizeRepositoryIdentity(observation.repositoryIdentity)
+    ) {
+      throw new Error(
+        `T3 source ${sourceId} repository identity does not match Factory Project ${project.id}; add an explicit source mapping for this source.`,
+      );
+    }
+  }
+
   private requireT3Observation(
     provider: "t3",
     externalThreadId: string,
+    sourceId?: string,
   ): CodeSessionObservation {
+    const normalizedSourceId = normalizeT3SourceId(sourceId);
     const observation = this.codeSessionObservations.find(
       (candidate) =>
         candidate.provider === provider &&
+        normalizeT3SourceId(candidate.sourceId) === normalizedSourceId &&
         candidate.externalThreadId === externalThreadId,
     );
     if (!observation) {
@@ -2836,51 +3245,75 @@ export class FactoryApplication {
     );
   }
 
-  private reconciliationTargets(project: Project): ReconciliationTarget[] {
+  private reconciliationTargets(
+    project: Project,
+    sourceId?: string,
+  ): ReconciliationTarget[] {
     const repositoryIdentity = normalizeRepositoryIdentity(
       project.gitOriginUrl,
     );
+    const sourceIds = new Set<string>([
+      LEGACY_T3_SOURCE_ID,
+      ...(project.t3Mappings ?? []).map((mapping) =>
+        normalizeT3SourceId(mapping.sourceId),
+      ),
+      ...this.codeSessionObservations
+        .filter((observation) => observation.projectId === project.id)
+        .map((observation) => normalizeT3SourceId(observation.sourceId)),
+    ]);
+    if (sourceId !== undefined) sourceIds.add(normalizeT3SourceId(sourceId));
     const targets: ReconciliationTarget[] = [];
-    for (const task of this.tasks) {
-      if (task.projectId !== project.id || task.archiveState !== undefined) {
-        continue;
-      }
-      const taskState = this.getEffectiveTaskWorkState(task);
-      targets.push({
-        projectId: project.id,
-        taskId: task.id,
-        taskName: task.name,
-        ...(task.branchName ? { branchName: task.branchName } : {}),
-        ...(task.pullRequestUrl ? { pullRequestUrl: task.pullRequestUrl } : {}),
-        ...(repositoryIdentity ? { repositoryIdentity } : {}),
-        ...(project.workspaceRoot
-          ? { workspaceRoot: project.workspaceRoot }
-          : {}),
-        workState: taskState,
-      });
-
-      for (const subtask of this.subtasks) {
-        if (subtask.taskId !== task.id || subtask.archiveState !== undefined) {
+    for (const currentSourceId of sourceIds) {
+      const mapping = this.projectT3Mapping(project, currentSourceId);
+      const workspaceRoot =
+        mapping?.workspaceRoot ??
+        (currentSourceId === LEGACY_T3_SOURCE_ID
+          ? project.workspaceRoot
+          : undefined);
+      for (const task of this.tasks) {
+        if (task.projectId !== project.id || task.archiveState !== undefined) {
           continue;
         }
-        const report = this.getCurrentStatusReport(subtask.id);
+        const taskState = this.getEffectiveTaskWorkState(task);
         targets.push({
+          sourceId: currentSourceId,
           projectId: project.id,
           taskId: task.id,
           taskName: task.name,
-          subtaskId: subtask.id,
-          subtaskName: subtask.name,
           ...(task.branchName ? { branchName: task.branchName } : {}),
-          ...(subtask.pullRequestUrl
-            ? { pullRequestUrl: subtask.pullRequestUrl }
+          ...(task.pullRequestUrl
+            ? { pullRequestUrl: task.pullRequestUrl }
             : {}),
           ...(repositoryIdentity ? { repositoryIdentity } : {}),
-          ...(project.workspaceRoot
-            ? { workspaceRoot: project.workspaceRoot }
-            : {}),
-          workState: this.getSubtaskEffectiveWorkState(subtask),
-          ...(report ? { latestReportAt: report.createdAt } : {}),
+          ...(workspaceRoot ? { workspaceRoot } : {}),
+          workState: taskState,
         });
+
+        for (const subtask of this.subtasks) {
+          if (
+            subtask.taskId !== task.id ||
+            subtask.archiveState !== undefined
+          ) {
+            continue;
+          }
+          const report = this.getCurrentStatusReport(subtask.id);
+          targets.push({
+            sourceId: currentSourceId,
+            projectId: project.id,
+            taskId: task.id,
+            taskName: task.name,
+            subtaskId: subtask.id,
+            subtaskName: subtask.name,
+            ...(task.branchName ? { branchName: task.branchName } : {}),
+            ...(subtask.pullRequestUrl
+              ? { pullRequestUrl: subtask.pullRequestUrl }
+              : {}),
+            ...(repositoryIdentity ? { repositoryIdentity } : {}),
+            ...(workspaceRoot ? { workspaceRoot } : {}),
+            workState: this.getSubtaskEffectiveWorkState(subtask),
+            ...(report ? { latestReportAt: report.createdAt } : {}),
+          });
+        }
       }
     }
     return targets;
@@ -2893,6 +3326,8 @@ export class FactoryApplication {
     finding.kind = draft.kind;
     finding.severity = draft.severity;
     finding.projectId = draft.projectId;
+    finding.sourceId = normalizeT3SourceId(draft.sourceId);
+    if (draft.machineId !== undefined) finding.machineId = draft.machineId;
     finding.externalThreadId = draft.externalThreadId;
     finding.taskId = draft.taskId;
     finding.subtaskId = draft.subtaskId;

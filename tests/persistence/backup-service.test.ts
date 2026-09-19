@@ -4,12 +4,14 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
@@ -116,8 +118,9 @@ describe("Factory app-owned backup service", () => {
       writeFileSync(snapshotPath, bytes);
       expect((await service.list())[0]).toMatchObject({
         id: backup.id,
-        integrity: "verified",
+        integrity: "corrupt",
       });
+      expect(service.status().stale).toBe(true);
       await expect(service.prepareRestore(backup.id)).rejects.toThrow(
         "Snapshot checksum does not match",
       );
@@ -151,6 +154,50 @@ describe("Factory app-owned backup service", () => {
     }
   });
 
+  test("does not prune a good older copy when a same-size scheduled copy is corrupt", async () => {
+    const { backupDirectory, databasePath, directory } = fixture();
+    const metadataPath = (id: string) =>
+      join(backupDirectory, id, "metadata.json");
+    const setCreatedAt = (id: string, createdAt: string) => {
+      const path = metadataPath(id);
+      const metadata = JSON.parse(readFileSync(path, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      metadata.createdAt = createdAt;
+      writeFileSync(path, `${JSON.stringify(metadata)}\n`);
+    };
+    try {
+      const service = createBackupService({
+        databasePath,
+        directory: backupDirectory,
+      });
+      await service.updateSettings({ keepRecent: 1, keepDaily: 2 });
+      service.stop();
+      const goodOlder = await service.create("scheduled");
+      setCreatedAt(goodOlder.id, "2026-09-15T00:00:00.000Z");
+      const corrupt = await service.create("scheduled");
+      setCreatedAt(corrupt.id, "2026-09-17T00:00:00.000Z");
+
+      const snapshotPath = join(backupDirectory, corrupt.id, "snapshot.sqlite");
+      const bytes = readFileSync(snapshotPath);
+      bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff;
+      writeFileSync(snapshotPath, bytes);
+
+      const latest = await service.create("scheduled");
+      const listed = await service.list();
+      expect(listed).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: goodOlder.id, integrity: "verified" }),
+          expect.objectContaining({ id: corrupt.id, integrity: "corrupt" }),
+          expect.objectContaining({ id: latest.id, integrity: "verified" }),
+        ]),
+      );
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   test("prepares a verified local restore copy and creates a mandatory pre-restore backup", async () => {
     const { backupDirectory, databasePath, directory } = fixture();
     try {
@@ -164,6 +211,9 @@ describe("Factory app-owned backup service", () => {
       expect(result.preRestoreId).not.toBe(source.id);
       expect(lstatSync(result.stagedDatabasePath).isFile()).toBe(true);
       expect(lstatSync(result.stagedManifestPath).isFile()).toBe(true);
+      await service.list();
+      expect(existsSync(result.stagedDatabasePath)).toBe(true);
+      expect(existsSync(result.stagedManifestPath)).toBe(true);
       expect(existsSync(databasePath)).toBe(true);
       expect(
         (await service.list()).filter(
@@ -337,6 +387,167 @@ describe("Factory app-owned backup service", () => {
         process.env.FACTORY_BACKUP_TEST_DELAY_MS = previousDelay;
         Bun.env.FACTORY_BACKUP_TEST_DELAY_MS = previousDelay;
       }
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  test("reclaims only marked dead worker artifacts after a killed staged operation", async () => {
+    const { backupDirectory, databasePath, directory } = fixture();
+    let child: ReturnType<typeof Bun.spawn> | undefined;
+    let liveStaging: string | undefined;
+    let liveLocal: string | undefined;
+    let killedLocal: string | undefined;
+    try {
+      const unrelated = join(
+        backupDirectory,
+        ".factory-backup-staging-unrelated",
+      );
+      mkdirSync(unrelated);
+      writeFileSync(join(unrelated, "keep.txt"), "unrelated");
+      const outside = join(directory, "outside-staging");
+      mkdirSync(outside);
+      const linked = join(backupDirectory, ".factory-backup-staging-linked");
+      symlinkSync(outside, linked);
+
+      const marker = (artifactPath: string, kind: "staging" | "local") => ({
+        artifactPath: resolve(artifactPath),
+        backupRoot: resolve(backupDirectory),
+        createdAt: new Date().toISOString(),
+        databasePath: resolve(databasePath),
+        format: "factory-backup-artifact",
+        kind,
+        pid: process.pid,
+        token: "0".repeat(32),
+        version: 1,
+      });
+      liveStaging = join(backupDirectory, ".factory-backup-staging-live");
+      mkdirSync(liveStaging);
+      writeFileSync(
+        join(liveStaging, ".factory-backup-owner.json"),
+        `${JSON.stringify(marker(liveStaging, "staging"))}\n`,
+      );
+      liveLocal = mkdtempSync(join(tmpdir(), "factory-backup-local-live-"));
+      writeFileSync(
+        join(liveLocal, ".factory-backup-owner.json"),
+        `${JSON.stringify(marker(liveLocal, "local"))}\n`,
+      );
+      const foreignStaging = join(
+        backupDirectory,
+        ".factory-backup-staging-foreign",
+      );
+      mkdirSync(foreignStaging);
+      writeFileSync(
+        join(foreignStaging, ".factory-backup-owner.json"),
+        `${JSON.stringify({
+          ...marker(foreignStaging, "staging"),
+          backupRoot: resolve(directory, "other-backups"),
+          databasePath: resolve(directory, "other.sqlite"),
+          pid: 99_999_999,
+        })}\n`,
+      );
+
+      child = Bun.spawn(
+        [
+          process.execPath,
+          "run",
+          fileURLToPath(new URL("../../src/backup-worker.ts", import.meta.url)),
+        ],
+        {
+          env: {
+            ...Bun.env,
+            FACTORY_BACKUP_TEST_DELAY_AFTER_STAGING_MS: "5000",
+          },
+          stderr: "pipe",
+          stdin: "pipe",
+          stdout: "pipe",
+        },
+      );
+      const childInput = child.stdin;
+      if (typeof childInput === "number" || !childInput)
+        throw new Error("Backup worker stdin is unavailable.");
+      childInput.write(
+        JSON.stringify({
+          databasePath,
+          directory: backupDirectory,
+          kind: "create",
+          requireNfs: false,
+          settings: {
+            enabled: true,
+            intervalMinutes: 30,
+            keepDaily: 30,
+            keepRecent: 336,
+          },
+          trigger: "manual",
+        }),
+      );
+      childInput.end();
+
+      let killedAfterStaging = false;
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const staging = readdirSync(backupDirectory).find((name) =>
+          name.startsWith(".factory-backup-staging-b-"),
+        );
+        const local = readdirSync(tmpdir())
+          .filter((name) => name.startsWith("factory-backup-local-"))
+          .map((name) => join(tmpdir(), name))
+          .find((candidate) => {
+            try {
+              const value = JSON.parse(
+                readFileSync(
+                  join(candidate, ".factory-backup-owner.json"),
+                  "utf8",
+                ),
+              ) as Record<string, unknown>;
+              return (
+                value.backupRoot === resolve(backupDirectory) &&
+                value.databasePath === resolve(databasePath) &&
+                value.pid !== process.pid
+              );
+            } catch {
+              return false;
+            }
+          });
+        if (
+          staging &&
+          local &&
+          existsSync(join(backupDirectory, staging, "snapshot.sqlite")) &&
+          existsSync(join(local, "snapshot.sqlite"))
+        ) {
+          child.kill("SIGKILL");
+          killedLocal = local;
+          killedAfterStaging = true;
+          break;
+        }
+        await Bun.sleep(10);
+      }
+      expect(killedAfterStaging).toBe(true);
+      await child.exited;
+
+      const cleanupService = createBackupService({
+        databasePath,
+        directory: backupDirectory,
+      });
+      await cleanupService.list();
+      cleanupService.stop();
+
+      expect(
+        readdirSync(backupDirectory).some((name) =>
+          name.startsWith(".factory-backup-staging-b-"),
+        ),
+      ).toBe(false);
+      expect(killedLocal).toBeDefined();
+      expect(existsSync(killedLocal as string)).toBe(false);
+      expect(existsSync(unrelated)).toBe(true);
+      expect(existsSync(join(unrelated, "keep.txt"))).toBe(true);
+      expect(existsSync(linked)).toBe(true);
+      expect(existsSync(liveStaging)).toBe(true);
+      expect(existsSync(liveLocal)).toBe(true);
+      expect(existsSync(foreignStaging)).toBe(true);
+    } finally {
+      if (child && child.exitCode === null) child.kill("SIGKILL");
+      if (child) await child.exited.catch(() => undefined);
+      if (killedLocal) rmSync(killedLocal, { force: true, recursive: true });
+      if (liveLocal) rmSync(liveLocal, { force: true, recursive: true });
       rmSync(directory, { force: true, recursive: true });
     }
   });
