@@ -68,3 +68,58 @@ proves explicit WebSocket close/reopen, not an infrastructure outage. T3 source
 checks, server restart, and a credential's successful authentication before
 revocation require separate live evidence. A rejected token alone does not
 prove the token was previously valid.
+
+## Live rehearsal results
+
+The private pilot deployed release `4b2a0b3f6e81d899c003845c9f6ea0ae941feaee`
+(the reviewed application tree from `0856a3d`). Dokploy deployment
+`oceD-Uiz05lOCFPOe4KMZ` completed; readiness and the Docker health check passed.
+
+- HTTPS reporting with `mac-mini` and `agent-ubuntu` credentials produced
+  reports `df044902-98d7-4d6f-b647-57e727fb6564` and
+  `6c313524-b0b8-434d-92f8-93b53661d7bb`. Concurrent retries returned the same
+  IDs. They remained present after restart and restore.
+- A command executed on Ubuntu produced report
+  `c46a4a64-10f7-4a18-91d3-f71d85e8ce64`; the Mac read it back with Ubuntu
+  attribution. Ubuntu used the private LAN URL because its current resolver
+  does not resolve the pilot's Tailscale hostname. Production client settings
+  were not changed.
+- Machine verification and backup administration were denied. The production
+  Mac credential was rejected by the pilot. Ubuntu was denied access to the
+  Mac T3 source. A disposable pilot credential authenticated successfully,
+  was revoked while the service was stopped, and was denied after restart
+  and restore.
+- Both T3 endpoints authenticated from Dokploy using version `0.0.42`.
+  Mac returned 10 Projects and 23 threads. Ubuntu returned zero Projects and
+  threads: its transport is `connected`, while Project matching is `unmatched`.
+  A first real Ubuntu T3 Project/session remains a human workflow check.
+- Temporarily pointing only the pilot's Ubuntu source at an unavailable local
+  endpoint produced `unreachable`; Mac stayed connected and reporting remained
+  available. The original registry was restored and Ubuntu reconnected.
+- Authenticated WebSocket snapshots succeeded after explicit reconnect and
+  after service restarts and restore.
+- Scheduled NAS backup `b-20260919T140336.845Z-19ece744` verified successfully.
+  Manual backup `b-20260919T140621.851Z-aca4d64a` restored in 3.22 seconds,
+  including recovery/status observation, with pre-restore safety copy
+  `b-20260919T140635.182Z-24867f0a`. The disposable post-backup report vanished;
+  all four earlier rehearsal reports remained. All 417 original reports and
+  42 original verifications retained their exact content hashes. This meets
+  the one-hour recovery target for the tested approximately 7 MB database.
+- Final backup settings remain enabled every 30 minutes, with 336 recent and
+  30 daily recovery points. Status showed no error and was not stale.
+
+Validation included 39 focused local tests, TypeScript, build, formatting and
+Linux image build checks. No GitHub checks were configured for the PR at review
+time. Duplicate-thread and identical-branch isolation are covered by automated
+source-isolation tests; Ubuntu's empty live source cannot demonstrate those
+cases with real sessions yet.
+
+## Human check and next gate
+
+On a phone connected to Tailscale, open
+`https://factory-pilot.tailb6a4be.ts.net`, confirm the PILOT label, sign in using
+the existing pilot operator secret, and inspect the copied records and the
+explicitly named rehearsal Task. Review `/backups` and its saved restore result.
+Any edits here remain test data. Accept ST-164 in the authoritative Mac dashboard
+only when satisfied. ST-165 still owns a fresh final copy, client switch, disabling
+the Mac writer, and production acceptance; none of those actions occurred here.
