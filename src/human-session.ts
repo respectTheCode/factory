@@ -22,6 +22,7 @@ export type HumanSessionStore = {
   create: (name: string) => string;
   get: (token: string | undefined) => HumanIdentity | null;
   delete: (token: string | undefined) => void;
+  invalidateAll: () => void;
   close: () => void;
 };
 
@@ -95,6 +96,10 @@ export function createHumanSessionStore({
       database
         .query("DELETE FROM factory_sessions WHERE token_hash = $tokenHash")
         .run({ $tokenHash: hashValue(token) });
+    },
+
+    invalidateAll() {
+      database.exec("DELETE FROM factory_sessions");
     },
 
     close() {
