@@ -3444,6 +3444,10 @@ function ConnectionIndicator({
 }) {
   const lastConnected = snapshot.lastSuccessfulConnection?.toLocaleTimeString();
   const websocketState = snapshot.state;
+  const lastConnectedLabel =
+    lastConnected && snapshot.state !== "connected"
+      ? `last connected ${lastConnected}`
+      : undefined;
   const t3Summary = summarizeT3Connections(t3Status);
   const t3Label = t3ConnectionLabel(t3Summary);
   const t3Health =
@@ -3458,7 +3462,7 @@ function ConnectionIndicator({
             : "partial";
   return (
     <div
-      aria-label={`${t3Label} · WebSocket ${websocketState}`}
+      aria-label={`${t3Label} · WebSocket ${websocketState}${lastConnectedLabel ? ` · ${lastConnectedLabel}` : ""}`}
       aria-live="polite"
       className={`connection ${snapshot.state}`}
       data-t3-connection-state={t3Summary.state}
@@ -3467,23 +3471,16 @@ function ConnectionIndicator({
         t3Summary.state === "ready" ? String(t3Summary.total) : undefined
       }
       data-websocket-state={websocketState}
+      title={`${t3Label} · WebSocket ${websocketState}${lastConnectedLabel ? ` · ${lastConnectedLabel}` : ""}`}
     >
       <span className="connection-service">
         <span aria-hidden="true" className="connection-dot t3-dot" />
         <span>{t3Label}</span>
       </span>
-      <span aria-hidden="true" className="connection-divider">
-        ·
-      </span>
       <span className="connection-service">
         <span aria-hidden="true" className="connection-dot websocket-dot" />
-        <span>WebSocket {websocketState}</span>
+        <span>WS</span>
       </span>
-      {lastConnected && snapshot.state !== "connected" && (
-        <span className="connection-last-connected">
-          last connected {lastConnected}
-        </span>
-      )}
     </div>
   );
 }
