@@ -1141,23 +1141,57 @@ button.danger {
   display: flex;
   font-size: 0.78rem;
   gap: 6px;
+  flex-wrap: wrap;
   padding: 6px 10px;
+  row-gap: 2px;
+}
+
+.connection-service {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
   white-space: nowrap;
 }
+
+.connection-divider {
+  color: var(--ink-faint);
+}
+
+.connection-last-connected {
+  color: var(--ink-dim);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
 .connection-dot {
   background: var(--sig-warn);
   border-radius: 50%;
   height: 9px;
   width: 9px;
 }
-.connection.connected .connection-dot {
+.connection[data-t3-health="healthy"] .t3-dot {
   background: var(--sig-ok);
 }
-.connection.reconnecting .connection-dot {
+.connection[data-t3-health="partial"] .t3-dot,
+.connection[data-t3-health="unknown"] .t3-dot {
+  background: var(--sig-warn);
+}
+.connection[data-t3-health="down"] .t3-dot {
+  background: var(--sig-down);
+}
+.connection[data-t3-health="empty"] .t3-dot {
+  background: var(--ink-faint);
+}
+
+.connection.connected .websocket-dot {
+  background: var(--sig-ok);
+}
+
+.connection.reconnecting .websocket-dot {
   background: var(--sig-warn);
 }
 
-.connection.disconnected .connection-dot {
+.connection.disconnected .websocket-dot {
   background: var(--sig-down);
 }
 
@@ -2253,15 +2287,32 @@ option {
   background: var(--sig-warn);
   filter: var(--glow-warn);
 }
-.connection.connected .connection-dot {
+.connection[data-t3-health="healthy"] .t3-dot {
   background: var(--sig-ok);
   filter: var(--glow-ok);
 }
-.connection.reconnecting .connection-dot {
+.connection[data-t3-health="partial"] .t3-dot,
+.connection[data-t3-health="unknown"] .t3-dot {
   background: var(--sig-warn);
   filter: var(--glow-warn);
 }
-.connection.disconnected .connection-dot {
+.connection[data-t3-health="down"] .t3-dot {
+  background: var(--sig-down);
+  filter: var(--glow-down);
+}
+.connection[data-t3-health="empty"] .t3-dot {
+  background: var(--ink-faint);
+  filter: var(--glow-accent);
+}
+.connection.connected .websocket-dot {
+  background: var(--sig-ok);
+  filter: var(--glow-ok);
+}
+.connection.reconnecting .websocket-dot {
+  background: var(--sig-warn);
+  filter: var(--glow-warn);
+}
+.connection.disconnected .websocket-dot {
   background: var(--sig-down);
   filter: var(--glow-down);
 }
