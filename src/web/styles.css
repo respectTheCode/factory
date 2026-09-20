@@ -219,6 +219,37 @@ h2 {
   padding: 10px;
 }
 
+.screenshot-proof-upload > summary,
+.screenshot-proof-metadata > summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 0.76rem;
+  list-style: none;
+}
+
+.screenshot-proof-upload > summary::-webkit-details-marker,
+.screenshot-proof-metadata > summary::-webkit-details-marker {
+  display: none;
+}
+
+.screenshot-proof-upload > summary::before,
+.screenshot-proof-metadata > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 5px;
+  transition: transform 120ms ease;
+}
+
+.screenshot-proof-upload[open] > summary::before,
+.screenshot-proof-metadata[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.screenshot-proof-upload .screenshot-proof-form,
+.screenshot-proof-metadata .screenshot-proof-form-grid {
+  margin-top: 8px;
+}
+
 .screenshot-proof-form-grid {
   display: grid;
   gap: 8px;
@@ -2987,6 +3018,11 @@ option {
   flex-basis: 100%;
 }
 
+.subtask.row-expanded > .screenshot-proof {
+  flex-basis: 100%;
+  width: 100%;
+}
+
 @media (max-width: 540px) {
   .thread-dot-popover {
     position: fixed;
@@ -3099,14 +3135,14 @@ option {
   }
 
   .subtask.row-expanded .subtask-copy {
-    grid-column: 3;
+    grid-column: 1 / -1;
     grid-row: 2;
   }
 
   .subtask.row-expanded
     .subtask-content:not(:has(.reorder-handle))
     .subtask-copy {
-    grid-column: 2 / -1;
+    grid-column: 1 / -1;
   }
 
   .subtask.row-expanded .subtask-actions {

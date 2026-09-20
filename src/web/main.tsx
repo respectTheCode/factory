@@ -3264,29 +3264,6 @@ function Dashboard() {
                                                       </div>
                                                     )}
                                                   </div>
-                                                  {subtaskRowExpanded && (
-                                                    <ScreenshotProof
-                                                      busy={busy}
-                                                      canMutate={
-                                                        snapshot.canMutate
-                                                      }
-                                                      onGet={getScreenshot}
-                                                      onUpload={(input) =>
-                                                        uploadScreenshot(
-                                                          {
-                                                            subtaskId:
-                                                              subtask.id,
-                                                          },
-                                                          input,
-                                                        )
-                                                      }
-                                                      ownerLabel={`Subtask ${subtask.simpleId}`}
-                                                      screenshots={
-                                                        subtask.screenshots ??
-                                                        []
-                                                      }
-                                                    />
-                                                  )}
                                                   <div className="subtask-actions">
                                                     <button
                                                       aria-label="Edit subtask"
@@ -3397,6 +3374,29 @@ function Dashboard() {
                                                       <SubtaskActionIcon action="delete" />
                                                     </button>
                                                   </div>
+                                                  {subtaskRowExpanded && (
+                                                    <ScreenshotProof
+                                                      busy={busy}
+                                                      canMutate={
+                                                        snapshot.canMutate
+                                                      }
+                                                      onGet={getScreenshot}
+                                                      onUpload={(input) =>
+                                                        uploadScreenshot(
+                                                          {
+                                                            subtaskId:
+                                                              subtask.id,
+                                                          },
+                                                          input,
+                                                        )
+                                                      }
+                                                      ownerLabel={`Subtask ${subtask.simpleId}`}
+                                                      screenshots={
+                                                        subtask.screenshots ??
+                                                        []
+                                                      }
+                                                    />
+                                                  )}
                                                   {history && (
                                                     <div className="history">
                                                       <strong>History</strong>

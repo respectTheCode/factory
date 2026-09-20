@@ -79,4 +79,29 @@ describe("screenshot proof dashboard", () => {
     expect(stylesheet).toContain(".screenshot-proof-form-grid {");
     expect(stylesheet).toContain("@media (max-width: 540px)");
   });
+
+  test("rejects oversized files before reading their bytes", () => {
+    const sizeCheck = proofSource.indexOf("file.size > MAX_SCREENSHOT_BYTES");
+    const arrayBufferRead = proofSource.indexOf("file.arrayBuffer()");
+    expect(proofSource).toContain("MAX_SCREENSHOT_BYTES");
+    expect(sizeCheck).toBeGreaterThanOrEqual(0);
+    expect(arrayBufferRead).toBeGreaterThan(sizeCheck);
+  });
+
+  test("keeps screenshot upload compact and places it below the subtask row", () => {
+    expect(proofSource).toContain('className="screenshot-proof-upload"');
+    expect(proofSource).toContain("<summary>Add screenshot</summary>");
+    expect(proofSource).toContain('className="screenshot-proof-metadata"');
+    expect(proofSource).toContain("<summary>Optional metadata</summary>");
+    expect(proofSource).toContain("<span>Comparison group</span>");
+    expect(proofSource).not.toContain("<span>Pair ID</span>");
+
+    const actions = mainSource.indexOf('className="subtask-actions"');
+    const subtaskScreenshot = mainSource.indexOf("ownerLabel={`Subtask");
+    expect(subtaskScreenshot).toBeGreaterThan(actions);
+    expect(stylesheet).toContain(".subtask.row-expanded > .screenshot-proof {");
+    expect(stylesheet).toContain(
+      ".subtask.row-expanded > .history {\n  flex-basis: 100%;",
+    );
+  });
 });
