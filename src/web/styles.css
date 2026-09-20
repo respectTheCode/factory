@@ -737,6 +737,133 @@ textarea {
   flex: 0 0 auto;
 }
 
+.status-with-thread-dots {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  min-width: 0;
+}
+
+.thread-dots {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-width: 8rem;
+}
+
+.thread-dot-disclosure {
+  display: inline-flex;
+  position: relative;
+}
+
+.thread-dot-disclosure > summary {
+  list-style: none;
+}
+
+.thread-dot-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.thread-dot-trigger {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  height: 24px;
+  justify-content: center;
+  padding: 4px;
+  width: 24px;
+}
+
+.thread-dot-trigger:hover,
+.thread-dot-disclosure[open] > .thread-dot-trigger {
+  background: var(--raised);
+  border-color: var(--rule);
+}
+
+.thread-dot-trigger:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--tint-accent);
+  outline-offset: 1px;
+}
+
+.thread-dot {
+  background: var(--ink-faint);
+  border-radius: 50%;
+  display: block;
+  height: 8px;
+  width: 8px;
+}
+
+.thread-dot-active .thread-dot {
+  background: var(--sig-info);
+  filter: var(--glow-info);
+}
+
+.thread-dot-attention .thread-dot {
+  background: var(--sig-warn);
+  filter: var(--glow-warn);
+}
+
+.thread-dot-error .thread-dot {
+  background: var(--sig-down);
+  filter: var(--glow-down);
+}
+
+.thread-dot-ready .thread-dot {
+  background: var(--sig-ok);
+  filter: var(--glow-ok);
+}
+
+.thread-dot-popover {
+  background: var(--raised);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: var(--shadow-overlay);
+  display: none;
+  gap: 4px;
+  left: 50%;
+  min-width: 210px;
+  padding: 9px;
+  position: absolute;
+  top: calc(100% + 5px);
+  transform: translateX(-50%);
+  z-index: 8;
+}
+
+.thread-dot-popover > strong,
+.thread-dot-popover > span,
+.thread-dot-popover > small {
+  overflow-wrap: anywhere;
+}
+
+.thread-dot-popover > span,
+.thread-dot-popover > small {
+  color: var(--ink-dim);
+  font-size: 0.72rem;
+}
+
+.thread-dot-disclosure:hover .thread-dot-popover,
+.thread-dot-disclosure:focus-within .thread-dot-popover,
+.thread-dot-disclosure[open] .thread-dot-popover {
+  display: grid;
+}
+
+.thread-dot-link {
+  background: var(--tint-accent);
+  border: 1px solid var(--accent);
+  color: var(--ink);
+  font-size: 0.74rem;
+  min-height: 34px;
+  padding: 5px 8px;
+  width: 100%;
+}
+
 .subtask-status-menu .status-menu-options {
   bottom: calc(100% + 5px);
   top: auto;
@@ -931,7 +1058,7 @@ option {
   display: contents;
 }
 
-.subtask-title-row > .subtask-status-menu {
+.subtask-title-row > .status-with-thread-dots {
   align-self: center;
   grid-column: 1;
   grid-row: 1;
@@ -954,7 +1081,7 @@ option {
   width: 100%;
 }
 
-.subtask:has(.subtask-edit-form) .subtask-title-row > .subtask-status-menu {
+.subtask:has(.subtask-edit-form) .subtask-title-row > .status-with-thread-dots {
   align-self: start;
 }
 
@@ -2822,7 +2949,7 @@ option {
   grid-row: 1;
 }
 
-.subtask.row-collapsed .subtask-title-row > .subtask-status-menu {
+.subtask.row-collapsed .subtask-title-row > .status-with-thread-dots {
   grid-column: 2;
   grid-row: 1;
 }
@@ -2835,7 +2962,7 @@ option {
 .subtask.row-collapsed
   .subtask-content:not(:has(.reorder-handle))
   .subtask-title-row
-  > .subtask-status-menu {
+  > .status-with-thread-dots {
   grid-column: 1;
 }
 
@@ -2861,6 +2988,17 @@ option {
 }
 
 @media (max-width: 540px) {
+  .thread-dot-popover {
+    position: fixed;
+    bottom: 12px;
+    left: 12px;
+    min-width: 0;
+    right: 12px;
+    top: auto;
+    transform: none;
+    width: auto;
+  }
+
   .task-row {
     padding: 4px 6px;
   }
@@ -2936,7 +3074,7 @@ option {
     grid-row: 1;
   }
 
-  .subtask-title-row > .subtask-status-menu {
+  .subtask-title-row > .status-with-thread-dots {
     grid-column: 2;
     grid-row: 1;
   }
@@ -2948,7 +3086,7 @@ option {
 
   .subtask-content:not(:has(.reorder-handle))
     .subtask-title-row
-    > .subtask-status-menu {
+    > .status-with-thread-dots {
     grid-column: 1;
   }
 
