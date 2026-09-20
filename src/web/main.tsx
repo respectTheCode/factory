@@ -12,7 +12,11 @@ import type {
 } from "../t3-coordinator";
 import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
 import { BackupsPage } from "./backups";
-import { formatHistoryReportAttribution } from "./history";
+import {
+  formatHistoryReportAttribution,
+  historyThreadsForTarget,
+} from "./history";
+import { HistoryThreadLinks } from "./history-thread-links";
 import {
   githubActionsSummaryLabel,
   summarizeGitHubActions,
@@ -870,6 +874,23 @@ function Dashboard() {
     const client = trpc.current;
     if (!client) return;
     const key = observedThreadKey(threadId, sourceId);
+    const observedPanel = document.querySelector<HTMLDetailsElement>(
+      '[data-observed-activity="true"]',
+    );
+    if (observedPanel) {
+      observedPanel.open = true;
+      window.requestAnimationFrame(() => {
+        const observedThread = Array.from(
+          observedPanel.querySelectorAll<HTMLElement>(
+            "[data-observed-thread-key]",
+          ),
+        ).find((candidate) => candidate.dataset.observedThreadKey === key);
+        observedThread?.scrollIntoView({
+          behavior: "smooth",
+          block: "nearest",
+        });
+      });
+    }
     setT3ThreadDetailLoadingIds((current) => {
       const next = new Set(current);
       next.add(key);
@@ -2288,6 +2309,10 @@ function Dashboard() {
                             ),
                           ]);
                           const progress = summarizeTaskProgress(task, status);
+                          const taskHistoryThreads = historyThreadsForTarget(
+                            t3Activity,
+                            task.id,
+                          );
                           const subtaskGroups = groupSubtasksByStatus(
                             task.subtasks.map((subtask, index) => ({
                               ...subtask,
@@ -2802,6 +2827,15 @@ function Dashboard() {
 
                               {taskRowExpanded && (
                                 <>
+                                  {taskHistoryThreads.length > 0 && (
+                                    <details className="task-details task-history">
+                                      <summary>History</summary>
+                                      <HistoryThreadLinks
+                                        onOpenThreadDetail={openT3ThreadDetail}
+                                        threads={taskHistoryThreads}
+                                      />
+                                    </details>
+                                  )}
                                   {taskDetail && (
                                     <ScreenshotProof
                                       busy={busy}
@@ -3341,6 +3375,15 @@ function Dashboard() {
                                                   {history && (
                                                     <div className="history">
                                                       <strong>History</strong>
+                                                      <HistoryThreadLinks
+                                                        onOpenThreadDetail={
+                                                          openT3ThreadDetail
+                                                        }
+                                                        threads={historyThreadsForTarget(
+                                                          t3Activity,
+                                                          subtask.id,
+                                                        )}
+                                                      />
                                                       {history.reports.map(
                                                         (report) => (
                                                           <p key={report.id}>
