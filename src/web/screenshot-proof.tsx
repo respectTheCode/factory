@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   ScreenshotContentType,
@@ -54,6 +54,32 @@ async function fileData(file: File): Promise<{
   return { contentType, dataBase64: btoa(binary) };
 }
 
+function screenshotObjectUrl(evidence: ScreenshotEvidence): string {
+  const binary = atob(evidence.dataBase64);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return URL.createObjectURL(new Blob([bytes], { type: evidence.contentType }));
+}
+
+export type ScreenshotUploadRequestState = {
+  key: string;
+  signature?: string;
+};
+
+export function screenshotUploadRequest(
+  current: ScreenshotUploadRequestState,
+  signature: string,
+  outcome: "retry" | "success" = "retry",
+  createKey: () => string = () => crypto.randomUUID(),
+): ScreenshotUploadRequestState {
+  if (outcome === "success") {
+    return { key: createKey() };
+  }
+  if (current.signature !== undefined && current.signature !== signature) {
+    return { key: createKey(), signature };
+  }
+  return { key: current.key, signature };
+}
+
 export function ScreenshotProof({
   busy,
   canMutate,
@@ -70,7 +96,15 @@ export function ScreenshotProof({
   const [pairId, setPairId] = useState("");
   const [label, setLabel] = useState<"" | "before" | "after">("");
   const [loaded, setLoaded] = useState<Record<string, ScreenshotEvidence>>({});
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const previewUrlsRef = useRef<Record<string, string>>({});
+  const uploadRequestRef = useRef<ScreenshotUploadRequestState>({
+    key: crypto.randomUUID(),
+    signature: undefined as string | undefined,
+  });
   const [error, setError] = useState<string | null>(null);
+  const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
+  const [retryVersion, setRetryVersion] = useState(0);
   const [uploading, setUploading] = useState(false);
   const screenshotIds = useMemo(
     () => screenshots.map((screenshot) => screenshot.id).join(","),
@@ -79,21 +113,51 @@ export function ScreenshotProof({
 
   useEffect(() => {
     let active = true;
-    const missing = screenshots.filter((screenshot) => !loaded[screenshot.id]);
+    const missing = screenshots.filter(
+      (screenshot) => !loaded[screenshot.id] && !loadErrors[screenshot.id],
+    );
     void Promise.all(
       missing.map(async (screenshot) => {
         try {
           return await onGet(screenshot.id);
-        } catch {
-          return undefined;
+        } catch (loadError) {
+          return {
+            error:
+              loadError instanceof Error
+                ? loadError.message
+                : "Unable to load screenshot.",
+            id: screenshot.id,
+          };
         }
       }),
     ).then((results) => {
       if (!active) return;
+      const successful = results.filter(
+        (result): result is ScreenshotEvidence => !("error" in result),
+      );
+      for (const result of successful) {
+        const objectUrl = screenshotObjectUrl(result);
+        previewUrlsRef.current[result.id] = objectUrl;
+      }
       setLoaded((current) => {
         const next = { ...current };
+        for (const result of successful) {
+          next[result.id] = result;
+        }
+        return next;
+      });
+      setPreviewUrls((current) => {
+        const next = { ...current };
+        for (const result of successful) {
+          next[result.id] = previewUrlsRef.current[result.id]!;
+        }
+        return next;
+      });
+      setLoadErrors((current) => {
+        const next = { ...current };
         for (const result of results) {
-          if (result) next[result.id] = result;
+          if ("error" in result) next[result.id] = result.error;
+          else delete next[result.id];
         }
         return next;
       });
@@ -103,15 +167,39 @@ export function ScreenshotProof({
     };
     // The callback is owned by the dashboard connection; IDs are the data dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screenshotIds]);
+  }, [retryVersion, screenshotIds]);
+
+  useEffect(
+    () => () => {
+      Object.values(previewUrlsRef.current).forEach((url) =>
+        URL.revokeObjectURL(url),
+      );
+    },
+    [],
+  );
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!file || !caption.trim()) return;
+    const form = event.currentTarget;
     setError(null);
     setUploading(true);
     try {
       const encoded = await fileData(file);
+      const signature = JSON.stringify({
+        captureContext: captureContext.trim(),
+        capturedAt,
+        caption: caption.trim(),
+        contentType: encoded.contentType,
+        data: `${file.name}:${file.size}:${file.lastModified}`,
+        label,
+        pairId: pairId.trim(),
+        testedRevision: testedRevision.trim(),
+      });
+      uploadRequestRef.current = screenshotUploadRequest(
+        uploadRequestRef.current,
+        signature,
+      );
       await onUpload({
         ...encoded,
         caption: caption.trim(),
@@ -126,8 +214,13 @@ export function ScreenshotProof({
           : {}),
         ...(pairId.trim() ? { pairId: pairId.trim() } : {}),
         ...(label ? { label } : {}),
-        requestKey: crypto.randomUUID(),
+        requestKey: uploadRequestRef.current.key,
       });
+      uploadRequestRef.current = screenshotUploadRequest(
+        uploadRequestRef.current,
+        signature,
+        "success",
+      );
       setFile(null);
       setCaption("");
       setCaptureContext("");
@@ -135,10 +228,7 @@ export function ScreenshotProof({
       setTestedRevision("");
       setPairId("");
       setLabel("");
-      const input =
-        event.currentTarget.querySelector<HTMLInputElement>(
-          'input[type="file"]',
-        );
+      const input = form.querySelector<HTMLInputElement>('input[type="file"]');
       if (input) input.value = "";
     } catch (uploadError) {
       setError(
@@ -152,10 +242,8 @@ export function ScreenshotProof({
   };
 
   const renderCard = (summary: ScreenshotEvidenceSummary) => {
-    const image = loaded[summary.id];
-    const src = image
-      ? `data:${image.contentType};base64,${image.dataBase64}`
-      : undefined;
+    const src = previewUrls[summary.id];
+    const loadError = loadErrors[summary.id];
     return (
       <article className="screenshot-proof-card" key={summary.id}>
         {src ? (
@@ -167,6 +255,23 @@ export function ScreenshotProof({
           >
             <img alt={summary.caption} loading="lazy" src={src} />
           </a>
+        ) : loadError ? (
+          <div className="screenshot-proof-loading" role="alert">
+            <span>{loadError}</span>
+            <button
+              onClick={() => {
+                setLoadErrors((current) => {
+                  const next = { ...current };
+                  delete next[summary.id];
+                  return next;
+                });
+                setRetryVersion((version) => version + 1);
+              }}
+              type="button"
+            >
+              Retry preview
+            </button>
+          </div>
         ) : (
           <span className="screenshot-proof-loading">Loading preview…</span>
         )}

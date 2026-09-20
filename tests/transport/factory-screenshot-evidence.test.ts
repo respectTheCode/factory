@@ -126,6 +126,24 @@ describe("screenshot evidence API", () => {
       const secondEvidence = second.body.result?.data as { id: string };
       expect(secondEvidence.id).toBe(firstEvidence.id);
 
+      const machineUpload = await apiRequest(server, "screenshots.upload", {
+        input: {
+          caption: "Machine proof",
+          contentType: "image/png",
+          dataBase64: PNG,
+          requestKey: "screenshot-machine-1",
+          taskId: allowedTask.id,
+        },
+        token: credential.token,
+      });
+      expect(machineUpload.response.status).toBe(200);
+      expect(machineUpload.body.result?.data).toEqual(
+        expect.objectContaining({
+          uploader: "mac-mini",
+          uploaderKind: "machine",
+        }),
+      );
+
       const listed = await queryRequest(
         server,
         "screenshots.list",
@@ -133,12 +151,18 @@ describe("screenshot evidence API", () => {
         { token: credential.token },
       );
       expect(listed.response.status).toBe(200);
-      expect(listed.body.result?.data).toEqual([
-        expect.objectContaining({
-          caption: "Desktop proof",
-          testedRevision: "6158623",
-        }),
-      ]);
+      expect(listed.body.result?.data).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            caption: "Desktop proof",
+            testedRevision: "6158623",
+          }),
+          expect.objectContaining({
+            caption: "Machine proof",
+            uploaderKind: "machine",
+          }),
+        ]),
+      );
       expect(JSON.stringify(listed.body.result?.data)).not.toContain(PNG);
 
       const fetched = await queryRequest(
@@ -173,7 +197,7 @@ describe("screenshot evidence API", () => {
       expect(invalid.response.status).toBe(400);
       expect(
         application.listScreenshotEvidence({ taskId: allowedTask.id }),
-      ).toHaveLength(1);
+      ).toHaveLength(2);
       expect(application.getTaskStatus(allowedTask.id).taskState).toBe(
         "planned",
       );
