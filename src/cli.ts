@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { normalizeWorkspaceRoot, sameWorkspaceRoot } from "./workspace";
 
 import {
@@ -34,6 +35,11 @@ import {
   type T3Source,
 } from "./t3-sources";
 import type { T3ProjectMapping } from "./t3-source-identity";
+import {
+  MAX_SCREENSHOT_BYTES,
+  SCREENSHOT_CONTENT_TYPES,
+  type ScreenshotContentType,
+} from "./screenshot-evidence";
 import { createMachineCredentialStore } from "./machine-credential";
 import {
   createRemoteFactoryClient,
@@ -76,6 +82,9 @@ type FactoryBackend = Pick<
   | "updateProject"
   | "updateSubtask"
   | "updateTask"
+  | "getScreenshotEvidence"
+  | "listScreenshotEvidence"
+  | "uploadScreenshotEvidence"
 >;
 
 type ParsedArgs = {
@@ -251,6 +260,18 @@ function requestKeyFlag(
     );
   }
   return requestKey;
+}
+
+function screenshotContentTypeFlag(
+  flags: Map<string, string>,
+): ScreenshotContentType {
+  const value = requiredFlag(flags, "content-type");
+  if (!(SCREENSHOT_CONTENT_TYPES as readonly string[]).includes(value)) {
+    throw new Error(
+      `--content-type must be one of ${SCREENSHOT_CONTENT_TYPES.join(", ")}.`,
+    );
+  }
+  return value as ScreenshotContentType;
 }
 
 function archiveStateFlag(flags: Map<string, string>): ArchiveState {
@@ -733,6 +754,16 @@ function createLocalBackend(application: FactoryApplication): FactoryBackend {
     updateProject: async (input) => application.updateProject(input),
     updateSubtask: async (input) => application.updateSubtask(input),
     updateTask: async (input) => application.updateTask(input),
+    uploadScreenshotEvidence: async (input) =>
+      application.addScreenshotEvidence({
+        ...input,
+        uploader: Bun.env.FACTORY_REPORTER?.trim() || "local",
+        uploaderKind: "machine",
+      }),
+    listScreenshotEvidence: async (input) =>
+      application.listScreenshotEvidence(input),
+    getScreenshotEvidence: async (screenshotId) =>
+      application.getScreenshotEvidence(screenshotId),
   };
 }
 
@@ -1461,6 +1492,59 @@ async function main(args: string[]): Promise<void> {
     return;
   }
 
+  if (resource === "screenshot" && action === "upload") {
+    const taskId = parsed.flags.get("task-id")?.trim();
+    const subtaskId = parsed.flags.get("subtask-id")?.trim();
+    if (Boolean(taskId) === Boolean(subtaskId)) {
+      throw new Error("Provide exactly one of --task-id or --subtask-id.");
+    }
+    const filePath = requiredFlag(parsed.flags, "file");
+    const bytes = readFileSync(filePath);
+    if (bytes.length > MAX_SCREENSHOT_BYTES) {
+      throw new Error(
+        `Screenshot must be no larger than ${MAX_SCREENSHOT_BYTES} bytes.`,
+      );
+    }
+    const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
+    const evidence = await application.uploadScreenshotEvidence({
+      capturedAt: parsed.flags.get("captured-at")?.trim() || undefined,
+      captureContext: parsed.flags.get("capture-context")?.trim() || undefined,
+      caption: requiredFlag(parsed.flags, "caption"),
+      contentType: screenshotContentTypeFlag(parsed.flags),
+      dataBase64: bytes.toString("base64"),
+      label: parsed.flags.get("label") as "before" | "after" | undefined,
+      pairId: parsed.flags.get("pair-id")?.trim() || undefined,
+      ...(subtaskId ? { subtaskId } : { taskId: taskId! }),
+      testedRevision: parsed.flags.get("tested-revision")?.trim() || undefined,
+      ...(requestKey === undefined ? {} : { requestKey }),
+    });
+    output({ screenshot: evidence });
+    return;
+  }
+
+  if (resource === "screenshot" && action === "list") {
+    const taskId = parsed.flags.get("task-id")?.trim();
+    const subtaskId = parsed.flags.get("subtask-id")?.trim();
+    if (Boolean(taskId) === Boolean(subtaskId)) {
+      throw new Error("Provide exactly one of --task-id or --subtask-id.");
+    }
+    output({
+      screenshots: await application.listScreenshotEvidence(
+        subtaskId ? { subtaskId } : { taskId: taskId! },
+      ),
+    });
+    return;
+  }
+
+  if (resource === "screenshot" && action === "get") {
+    output({
+      screenshot: await application.getScreenshotEvidence(
+        requiredFlag(parsed.flags, "screenshot-id"),
+      ),
+    });
+    return;
+  }
+
   if (resource === "subtask" && action === "create") {
     const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
     const subtask = await application.createSubtask({
@@ -1607,7 +1691,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   throw new Error(
-    "Usage: doctor, credential create|list|revoke, database backup|check, project create|update|list|context|brief|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|state|resume-rollup|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify",
+    "Usage: doctor, credential create|list|revoke, database backup|check, project create|update|list|context|brief|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|state|resume-rollup|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify, screenshot upload|list|get",
   );
 }
 

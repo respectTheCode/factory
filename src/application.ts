@@ -31,6 +31,13 @@ import {
   normalizeT3SourceId,
   type T3ProjectMapping,
 } from "./t3-source-identity";
+import {
+  normalizeScreenshotEvidence,
+  screenshotSummary,
+  type CreateScreenshotEvidenceInput,
+  type ScreenshotEvidence,
+  type ScreenshotEvidenceSummary,
+} from "./screenshot-evidence";
 
 export type FactoryClock = () => Date;
 export type FactoryIdGenerator = () => string;
@@ -342,6 +349,10 @@ export type FactoryState = {
   statusReports: StatusReport[];
   verifications: Verification[];
   trackerLinks?: TrackerLink[];
+  // Evidence bytes stay in the existing SQLite JSON snapshot for bounded,
+  // portable backups. The 5 MiB per-image limit keeps this simple store from
+  // becoming an unbounded media system; each mutation rewrites the snapshot.
+  screenshotEvidence?: ScreenshotEvidence[];
   runs?: Run[];
   codeSessions?: CodeSession[];
   codeSessionAssociations?: CodeSessionAssociation[];
@@ -699,6 +710,7 @@ export type ProjectHierarchy = {
       taskId: string;
       description?: string;
       evidence?: string;
+      screenshots?: ScreenshotEvidenceSummary[];
       pullRequestUrl?: string;
       workState?: WorkState;
       stateReason?: string;
@@ -748,6 +760,7 @@ export type TaskDetail = {
   archiveState?: ArchiveState;
   revision: number;
   trackerLinks: TrackerLink[];
+  screenshots?: ScreenshotEvidenceSummary[];
 };
 
 export type ProjectMetadata = {
@@ -786,6 +799,7 @@ export class FactoryApplication {
   private readonly statusReports: StatusReport[];
   private readonly verifications: Verification[];
   private readonly trackerLinks: TrackerLink[];
+  private readonly screenshotEvidence: ScreenshotEvidence[];
   private readonly runs: Run[];
   private readonly codeSessions: CodeSession[];
   private readonly codeSessionAssociations: CodeSessionAssociation[];
@@ -818,6 +832,7 @@ export class FactoryApplication {
     this.statusReports = normalizedState?.statusReports ?? [];
     this.verifications = normalizedState?.verifications ?? [];
     this.trackerLinks = normalizedState?.trackerLinks ?? [];
+    this.screenshotEvidence = normalizedState?.screenshotEvidence ?? [];
     const executionState = normalizeExecutionState(normalizedState);
     this.runs = executionState.runs;
     this.codeSessions = executionState.codeSessions;
@@ -1946,6 +1961,12 @@ export class FactoryApplication {
                     ? { description: subtask.description }
                     : {}),
                   ...(subtask.evidence ? { evidence: subtask.evidence } : {}),
+                  ...(() => {
+                    const screenshots = this.screenshotEvidence
+                      .filter((evidence) => evidence.subtaskId === subtask.id)
+                      .map(screenshotSummary);
+                    return screenshots.length > 0 ? { screenshots } : {};
+                  })(),
                 };
               }),
           };
@@ -2838,6 +2859,76 @@ export class FactoryApplication {
     };
   }
 
+  addScreenshotEvidence(
+    input: Omit<CreateScreenshotEvidenceInput, "id" | "projectId">,
+  ): ScreenshotEvidenceSummary {
+    this.refreshFromPersistence();
+    const target = this.resolveScreenshotTarget(input);
+    const evidence = normalizeScreenshotEvidence({
+      ...input,
+      id: this.idGenerator(),
+      projectId: target.projectId,
+      ...(target.taskId ? { taskId: target.taskId } : {}),
+      ...(target.subtaskId ? { subtaskId: target.subtaskId } : {}),
+    });
+    this.screenshotEvidence.push(evidence);
+    this.save();
+    return screenshotSummary(evidence);
+  }
+
+  listScreenshotEvidence(input: {
+    taskId?: string;
+    subtaskId?: string;
+  }): ScreenshotEvidenceSummary[] {
+    this.refreshFromPersistence();
+    const target = this.resolveScreenshotTarget(input);
+    return this.screenshotEvidence
+      .filter(
+        (evidence) =>
+          evidence.projectId === target.projectId &&
+          (target.taskId === undefined || evidence.taskId === target.taskId) &&
+          (target.subtaskId === undefined ||
+            evidence.subtaskId === target.subtaskId),
+      )
+      .map(screenshotSummary);
+  }
+
+  getScreenshotEvidence(screenshotId: string): ScreenshotEvidence {
+    this.refreshFromPersistence();
+    const evidence = this.screenshotEvidence.find(
+      (candidate) => candidate.id === screenshotId,
+    );
+    if (!evidence) {
+      throw new Error(`Screenshot evidence ${screenshotId} does not exist.`);
+    }
+    return evidence;
+  }
+
+  getProjectIdForScreenshot(screenshotId: string): string {
+    return this.getScreenshotEvidence(screenshotId).projectId;
+  }
+
+  private resolveScreenshotTarget(input: {
+    taskId?: string;
+    subtaskId?: string;
+  }): { projectId: string; taskId?: string; subtaskId?: string } {
+    const hasTask = typeof input.taskId === "string" && input.taskId.trim();
+    const hasSubtask =
+      typeof input.subtaskId === "string" && input.subtaskId.trim();
+    if (Boolean(hasTask) === Boolean(hasSubtask)) {
+      throw new Error("Screenshot must target exactly one Task or Subtask.");
+    }
+    if (hasTask) {
+      const task = this.requireTask(input.taskId!);
+      return { projectId: task.projectId, taskId: task.id };
+    }
+    const subtask = this.requireSubtask(input.subtaskId!);
+    return {
+      projectId: this.getProjectIdForTask(subtask.taskId),
+      subtaskId: subtask.id,
+    };
+  }
+
   getTaskDetail(taskId: string): TaskDetail {
     this.refreshFromPersistence();
     return this.getTaskDetailFromCurrentState(taskId);
@@ -2847,6 +2938,9 @@ export class FactoryApplication {
     const task = this.requireTask(taskId);
     const currentWorkState = this.getEffectiveTaskWorkState(task);
     const taskStateReason = this.getTaskStateReason(task, currentWorkState);
+    const screenshots = this.screenshotEvidence
+      .filter((evidence) => evidence.taskId === task.id)
+      .map(screenshotSummary);
     return {
       id: task.id,
       simpleId: requiredSimpleId(task, "Task"),
@@ -2869,6 +2963,7 @@ export class FactoryApplication {
       ...(task.archiveState ? { archiveState: task.archiveState } : {}),
       revision: normalizeRevision(task.revision),
       trackerLinks: this.trackerLinks.filter((link) => link.taskId === task.id),
+      ...(screenshots.length > 0 ? { screenshots } : {}),
     };
   }
 
@@ -2880,10 +2975,14 @@ export class FactoryApplication {
     revision: number;
     description?: string;
     evidence?: string;
+    screenshots?: ScreenshotEvidenceSummary[];
     pullRequestUrl?: string;
   } {
     this.refreshFromPersistence();
     const subtask = this.requireSubtask(subtaskId);
+    const screenshots = this.screenshotEvidence
+      .filter((evidence) => evidence.subtaskId === subtask.id)
+      .map(screenshotSummary);
     return {
       id: subtask.id,
       simpleId: requiredSimpleId(subtask, "Subtask"),
@@ -2894,6 +2993,7 @@ export class FactoryApplication {
         ? { description: subtask.description }
         : {}),
       ...(subtask.evidence !== undefined ? { evidence: subtask.evidence } : {}),
+      ...(screenshots.length > 0 ? { screenshots } : {}),
       ...(subtask.pullRequestUrl
         ? { pullRequestUrl: subtask.pullRequestUrl }
         : {}),
@@ -3722,6 +3822,11 @@ export class FactoryApplication {
       this.trackerLinks.length,
       ...(normalizedState.trackerLinks ?? []),
     );
+    this.screenshotEvidence.splice(
+      0,
+      this.screenshotEvidence.length,
+      ...(normalizedState.screenshotEvidence ?? []),
+    );
     const executionState = normalizeExecutionState(normalizedState);
     this.runs.splice(0, this.runs.length, ...executionState.runs);
     this.codeSessions.splice(
@@ -3765,6 +3870,7 @@ export class FactoryApplication {
       tasks: this.tasks,
       verifications: this.verifications,
       trackerLinks: this.trackerLinks,
+      screenshotEvidence: this.screenshotEvidence,
       runs: this.runs,
       codeSessions: this.codeSessions,
       codeSessionAssociations: this.codeSessionAssociations,
@@ -4049,6 +4155,7 @@ function assertFactoryStateSnapshot(
 
   for (const field of [
     "trackerLinks",
+    "screenshotEvidence",
     "runs",
     "codeSessions",
     "codeSessionAssociations",
@@ -4120,6 +4227,24 @@ function assertFactoryStateSnapshot(
     requireString("verification.verifier", verification.verifier);
     requireDate("verification.createdAt", verification.createdAt);
   }
+  const screenshotEvidence = (record.screenshotEvidence ?? []) as unknown[];
+  for (const item of screenshotEvidence) {
+    const evidence = requireRecord("screenshotEvidence", item);
+    requireString("screenshotEvidence.id", evidence.id);
+    requireString("screenshotEvidence.projectId", evidence.projectId);
+    requireString("screenshotEvidence.contentType", evidence.contentType);
+    requireString("screenshotEvidence.dataBase64", evidence.dataBase64);
+    requireString("screenshotEvidence.caption", evidence.caption);
+    requireString("screenshotEvidence.uploader", evidence.uploader);
+    requireOneOf("screenshotEvidence.uploaderKind", evidence.uploaderKind, [
+      "human",
+      "machine",
+    ]);
+    requireDate("screenshotEvidence.uploadedAt", evidence.uploadedAt);
+    if (evidence.capturedAt !== undefined) {
+      requireDate("screenshotEvidence.capturedAt", evidence.capturedAt);
+    }
+  }
 }
 
 function hydrateState(state: FactoryState): FactoryState {
@@ -4148,6 +4273,15 @@ function hydrateState(state: FactoryState): FactoryState {
       createdAt: new Date(verification.createdAt),
     })),
     trackerLinks: state.trackerLinks ?? [],
+    screenshotEvidence: (state.screenshotEvidence ?? []).map((evidence) =>
+      normalizeScreenshotEvidence({
+        ...evidence,
+        uploadedAt: new Date(evidence.uploadedAt),
+        ...(evidence.capturedAt
+          ? { capturedAt: new Date(evidence.capturedAt) }
+          : {}),
+      }),
+    ),
     runs: (state.runs ?? []).map((run) => ({
       ...run,
       createdAt: new Date(run.createdAt),

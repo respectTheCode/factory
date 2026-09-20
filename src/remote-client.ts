@@ -26,6 +26,11 @@ import type {
 import { FACTORY_API_VERSION } from "./api-version";
 import type { T3ProjectMapping } from "./t3-source-identity";
 import type { FactoryRouter } from "./server";
+import type {
+  ScreenshotContentType,
+  ScreenshotEvidence,
+  ScreenshotEvidenceSummary,
+} from "./screenshot-evidence";
 
 export const MAX_FACTORY_ACCESS_TOKEN_BYTES = 16 * 1024;
 export const FACTORY_REMOTE_TIMEOUT_MS = 10_000;
@@ -188,6 +193,25 @@ export type FactoryRemoteClient = {
   getSubtaskVerificationHistory: (subtaskId: string) => Promise<Verification[]>;
   taskGithubStatus: (taskId: string) => Promise<unknown>;
   subtaskGithubStatus: (subtaskId: string) => Promise<unknown>;
+  uploadScreenshotEvidence: (
+    input: {
+      capturedAt?: string;
+      captureContext?: string;
+      caption: string;
+      contentType: ScreenshotContentType;
+      dataBase64: string;
+      label?: "before" | "after";
+      pairId?: string;
+      subtaskId?: string;
+      taskId?: string;
+      testedRevision?: string;
+    } & FactoryRequestKeyInput,
+  ) => Promise<ScreenshotEvidenceSummary>;
+  listScreenshotEvidence: (input: {
+    taskId?: string;
+    subtaskId?: string;
+  }) => Promise<ScreenshotEvidenceSummary[]>;
+  getScreenshotEvidence: (screenshotId: string) => Promise<ScreenshotEvidence>;
 };
 
 export function createRemoteFactoryClient(
@@ -493,6 +517,18 @@ export function createRemoteFactoryClient(
       invoke(() => client.tasks.githubStatus.query({ taskId })),
     subtaskGithubStatus: (subtaskId) =>
       invoke(() => client.subtasks.githubStatus.query({ subtaskId })),
+    uploadScreenshotEvidence: (input) =>
+      invokeMutation(
+        async () =>
+          coerce<ScreenshotEvidenceSummary>(
+            unwrapDashboard(await client.screenshots.upload.mutate(input)),
+          ),
+        input.requestKey,
+      ),
+    listScreenshotEvidence: (input) =>
+      invoke(() => client.screenshots.list.query(input)),
+    getScreenshotEvidence: (screenshotId) =>
+      invoke(() => client.screenshots.get.query({ screenshotId })),
   };
 }
 
