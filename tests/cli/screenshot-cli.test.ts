@@ -140,6 +140,19 @@ describe("screenshot CLI reads", () => {
       expect(downloaded.exitCode).toBe(0);
       expect(readFileSync(outputPath)).toEqual(PNG);
       expect(downloaded.stdout).toContain(outputPath);
+
+      const existingOutput = await runCli([
+        "screenshot",
+        "get",
+        "--screenshot-id",
+        firstPayload.screenshots[0]!.id,
+        "--output",
+        outputPath,
+        "--database",
+        databasePath,
+      ]);
+      expect(existingOutput.exitCode).not.toBe(0);
+      expect(existingOutput.stderr).toContain("already exists");
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }
