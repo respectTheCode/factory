@@ -2819,6 +2819,7 @@ option {
 
 @media (max-width: 540px) {
   .thread-dot-popover {
+    position: fixed;
     bottom: 12px;
     left: 12px;
     min-width: 0;
