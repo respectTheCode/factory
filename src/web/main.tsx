@@ -12,6 +12,7 @@ import type {
 } from "../t3-coordinator";
 import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
 import { BackupsPage } from "./backups";
+import { formatHistoryReportAttribution } from "./history";
 import {
   githubActionsSummaryLabel,
   summarizeGitHubActions,
@@ -54,6 +55,7 @@ import {
   type ObservedTarget,
   type ObservedThreadDetail,
 } from "./observed-activity";
+import { summarizeT3Connections, t3ConnectionLabel } from "./t3-connection";
 import "./styles.css";
 
 type ProjectSummary = { id: string; name: string };
@@ -199,6 +201,7 @@ type SubtaskHistory = {
     id: string;
     reportedState: string;
     reporter: string;
+    machineId?: string;
     evidence?: string;
   }>;
   verifications: Array<{
@@ -236,6 +239,7 @@ type DeploymentEnvironment = "pilot" | "production" | "development";
 
 const DEFAULT_DOCUMENT_TITLE = "Software Factory";
 const PILOT_DOCUMENT_TITLE = "PILOT — Software Factory";
+const T3_STATUS_POLL_INTERVAL_MS = 30_000;
 
 function isDeploymentEnvironment(
   value: unknown,
@@ -520,6 +524,9 @@ function Dashboard() {
   >({});
   const [t3Activity, setT3Activity] =
     useState<ObservedActivityViewModel | null>(null);
+  const [t3Status, setT3Status] = useState<T3StatusResult | undefined>(
+    undefined,
+  );
   const [t3Busy, setT3Busy] = useState(false);
   const [t3ThreadDetails, setT3ThreadDetails] = useState<
     Record<string, ObservedThreadDetail>
@@ -542,6 +549,8 @@ function Dashboard() {
   const trpc = useRef<TRPCClient | null>(null);
   const subscriptionCleanup = useRef<(() => void) | null>(null);
   const t3RefreshGeneration = useRef(0);
+  const t3StatusGeneration = useRef(0);
+  const t3StatusRequest = useRef<symbol | null>(null);
   const webSocketGenerationRef = useRef(webSocketGeneration);
   webSocketGenerationRef.current = webSocketGeneration;
 
@@ -590,6 +599,27 @@ function Dashboard() {
     };
   }, []);
 
+  const refreshT3Status = async (client: TRPCClient) => {
+    if (t3StatusRequest.current) return;
+    const request = Symbol("t3-status");
+    t3StatusRequest.current = request;
+    const generation = ++t3StatusGeneration.current;
+    try {
+      const result = await client.t3.status.query({});
+      if (trpc.current !== client || t3StatusGeneration.current !== generation)
+        return;
+      setT3Status(result);
+    } catch {
+      if (trpc.current !== client || t3StatusGeneration.current !== generation)
+        return;
+      setT3Status(undefined);
+    } finally {
+      if (t3StatusRequest.current === request) {
+        t3StatusRequest.current = null;
+      }
+    }
+  };
+
   useEffect(() => {
     let active = true;
     void fetch("/session", { credentials: "same-origin" })
@@ -626,6 +656,8 @@ function Dashboard() {
       onClose: () => {
         if (webSocketGenerationRef.current !== generation) return;
         t3RefreshGeneration.current += 1;
+        t3StatusGeneration.current += 1;
+        t3StatusRequest.current = null;
         subscriptionCleanup.current?.();
         subscriptionCleanup.current = null;
         connection.markDisconnected();
@@ -640,14 +672,18 @@ function Dashboard() {
         setSubtaskHistories({});
         setGithubStatuses({});
         setT3Activity(null);
+        setT3Status(undefined);
         setT3Busy(false);
         setT3ThreadDetails({});
         setT3ThreadDetailLoadingIds(new Set());
         setSnapshot(connection.snapshot());
       },
       onOpen: () => {
+        if (webSocketGenerationRef.current !== generation) return;
         connection.markConnected(new Date());
         setSnapshot(connection.snapshot());
+        const client = trpc.current;
+        if (client) void refreshT3Status(client);
         void Promise.all([
           trpc.current?.projects.list.query(),
           trpc.current?.projects.portfolio.query(),
@@ -668,9 +704,30 @@ function Dashboard() {
     });
 
     return () => {
+      t3StatusGeneration.current += 1;
+      t3StatusRequest.current = null;
+      setT3Status(undefined);
       subscriptionCleanup.current?.();
       subscriptionCleanup.current = null;
       void client.close();
+    };
+  }, [connection, human, sessionLoading, webSocketGeneration]);
+
+  useEffect(() => {
+    if (sessionLoading || !human) return;
+    let active = true;
+    const pollT3Status = () => {
+      if (!active || connection.snapshot().state !== "connected") return;
+      const client = trpc.current;
+      if (client) void refreshT3Status(client);
+    };
+    const interval = window.setInterval(
+      pollT3Status,
+      T3_STATUS_POLL_INTERVAL_MS,
+    );
+    return () => {
+      active = false;
+      window.clearInterval(interval);
     };
   }, [connection, human, sessionLoading, webSocketGeneration]);
 
@@ -1538,7 +1595,10 @@ function Dashboard() {
               </button>
             </div>
           ) : null}
-          <ConnectionIndicator snapshot={snapshot} />
+          <ConnectionIndicator
+            snapshot={snapshot}
+            t3Status={snapshot.state === "connected" ? t3Status : undefined}
+          />
         </div>
       </header>
 
@@ -3214,7 +3274,10 @@ function Dashboard() {
                                                             {
                                                               report.reportedState
                                                             }{" "}
-                                                            by {report.reporter}
+                                                            by{" "}
+                                                            {formatHistoryReportAttribution(
+                                                              report,
+                                                            )}
                                                             {report.evidence
                                                               ? " · " +
                                                                 report.evidence
@@ -3372,22 +3435,51 @@ function Dashboard() {
   );
 }
 
-function ConnectionIndicator({ snapshot }: { snapshot: ConnectionSnapshot }) {
+function ConnectionIndicator({
+  snapshot,
+  t3Status,
+}: {
+  snapshot: ConnectionSnapshot;
+  t3Status: T3StatusResult | undefined;
+}) {
   const lastConnected = snapshot.lastSuccessfulConnection?.toLocaleTimeString();
+  const websocketState = snapshot.state;
+  const lastConnectedLabel =
+    lastConnected && snapshot.state !== "connected"
+      ? `last connected ${lastConnected}`
+      : undefined;
+  const t3Summary = summarizeT3Connections(t3Status);
+  const t3Label = t3ConnectionLabel(t3Summary);
+  const t3Health =
+    t3Summary.state === "unknown"
+      ? "unknown"
+      : t3Summary.total === 0
+        ? "empty"
+        : t3Summary.connected === 0
+          ? "down"
+          : t3Summary.connected === t3Summary.total
+            ? "healthy"
+            : "partial";
   return (
-    <div aria-live="polite" className={`connection ${snapshot.state}`}>
-      <span aria-hidden="true" className="connection-dot" />
-      <span>
-        {snapshot.state === "connected"
-          ? "Connected"
-          : snapshot.state === "reconnecting"
-            ? "Reconnecting"
-            : snapshot.state === "disconnected"
-              ? "Disconnected"
-              : "Connecting"}
-        {lastConnected && snapshot.state !== "connected"
-          ? ` · last connected ${lastConnected}`
-          : ""}
+    <div
+      aria-label={`${t3Label} · WebSocket ${websocketState}${lastConnectedLabel ? ` · ${lastConnectedLabel}` : ""}`}
+      aria-live="polite"
+      className={`connection ${snapshot.state}`}
+      data-t3-connection-state={t3Summary.state}
+      data-t3-health={t3Health}
+      data-t3-total={
+        t3Summary.state === "ready" ? String(t3Summary.total) : undefined
+      }
+      data-websocket-state={websocketState}
+      title={`${t3Label} · WebSocket ${websocketState}${lastConnectedLabel ? ` · ${lastConnectedLabel}` : ""}`}
+    >
+      <span className="connection-service">
+        <span aria-hidden="true" className="connection-dot t3-dot" />
+        <span>{t3Label}</span>
+      </span>
+      <span className="connection-service">
+        <span aria-hidden="true" className="connection-dot websocket-dot" />
+        <span>WS</span>
       </span>
     </div>
   );
