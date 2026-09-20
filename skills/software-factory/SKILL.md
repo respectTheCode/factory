@@ -78,7 +78,7 @@ Agent-facing CLI reads are bounded. Prefer `project context --compact` and `task
 --summary` when selecting work, then expand only the fields needed for the next decision. The
 bounded list reads accept `--limit` (up to the route cap), and a returned `--cursor` continues
 the same route and target. The current caps are: project list 50, project context Tasks 50,
-portfolio Projects 50, attention 100, Task/Subtask status Subtasks 100, T3 status sources 20,
+portfolio Projects 50, attention 100, credential records 50, Task/Subtask status Subtasks 100, T3 status sources 20,
 GitHub check/workflow runs 50 each, session-detail findings 50, and Subtask history reports 100. A page that omits rows includes `truncated: true`, a non-null `nextCursor`, and a stderr
 warning; page it before treating the read as complete. Exact-cap pages are complete and report
 `truncated: false` when `--limit` was supplied. Cursors are scoped to the command and record
@@ -93,6 +93,10 @@ for acceptance criteria, dependencies, repository links, and tracker links while
 long values. `project context --compact` keeps project identity, Task/Subtask IDs, names,
 states, reasons, and criteria/link counts while omitting long descriptions, evidence, and
 tracker-link values.
+
+`session detail` findings use the same cap/cursor contract; the T3 thread payload's turns and
+checkpoint data remain bounded by the existing `--turn-limit` transport guard (maximum 10), so
+they are not an unbounded Factory list.
 
 For coding work, resolve the current checkout before reading or reporting Factory work. First
 resolve the Project without a branch filter and inspect its existing Tasks. Then use the branch

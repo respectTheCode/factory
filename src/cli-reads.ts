@@ -25,6 +25,7 @@ type HistoryCursor = {
 
 export const CLI_READ_CAPS = {
   attention: 100,
+  credentials: 50,
   githubRuns: 50,
   history: 100,
   projectContextTasks: 50,

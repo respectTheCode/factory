@@ -78,7 +78,8 @@ bun run src/cli.ts session unlink --thread-id THREAD_ID --association-id ASSOCIA
 Agent-facing read bounds:
 
 - `project list` caps Projects at 50; `project context` caps Tasks at 50;
-  `project portfolio` caps Projects at 50; and `project attention` caps items at 100.
+  `project portfolio` caps Projects at 50; `project attention` caps items at 100; and
+  local-only `credential list` caps credential records at 50 without exposing token values.
 - `task status` and `subtask status` cap Subtask rows at 100; `project t3-status` caps sources
   at 20; GitHub check/workflow runs cap at 50 each; and session-detail findings cap at 50.
 - `subtask history` caps reports at 100 and accepts `--tail N` or `--since ISO_TIMESTAMP`.

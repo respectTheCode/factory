@@ -934,7 +934,18 @@ async function main(args: string[]): Promise<void> {
         return;
       }
       if (action === "list") {
-        output({ credentials: store.list() });
+        const page = paginateOffset(
+          store.list(),
+          parseReadLimit(parsed.flags, CLI_READ_CAPS.credentials),
+          readCursorFlag(parsed.flags),
+          "credential-list",
+        );
+        warnIfTruncated("credential list", page);
+        const metadata = includePageMetadata(
+          page,
+          parsed.flags.has("limit") || parsed.flags.has("cursor"),
+        );
+        output({ credentials: page.items, ...(metadata ?? {}) });
         return;
       }
       if (action === "revoke") {
