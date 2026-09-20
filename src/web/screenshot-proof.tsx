@@ -5,6 +5,7 @@ import type {
   ScreenshotEvidence,
   ScreenshotEvidenceSummary,
 } from "../screenshot-evidence";
+import { MAX_SCREENSHOT_BYTES } from "../screenshot-evidence";
 
 type ScreenshotProofProps = {
   canMutate: boolean;
@@ -44,6 +45,11 @@ async function fileData(file: File): Promise<{
     contentType !== "image/webp"
   ) {
     throw new Error("Choose a PNG, JPEG, or WebP screenshot.");
+  }
+  if (file.size > MAX_SCREENSHOT_BYTES) {
+    throw new Error(
+      `Screenshot must be no larger than ${MAX_SCREENSHOT_BYTES} bytes.`,
+    );
   }
   const buffer = await file.arrayBuffer();
   const bytes = new Uint8Array(buffer);
@@ -340,87 +346,93 @@ export function ScreenshotProof({
         </div>
       )}
       {canMutate && (
-        <form
-          className="screenshot-proof-form"
-          onSubmit={(event) => void submit(event)}
-        >
-          <label>
-            <span>Screenshot file</span>
-            <input
-              accept="image/png,image/jpeg,image/webp"
-              disabled={busy || uploading}
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-              type="file"
-            />
-          </label>
-          <label>
-            <span>Caption</span>
-            <input
-              disabled={busy || uploading}
-              onChange={(event) => setCaption(event.target.value)}
-              placeholder="What this proves"
-              value={caption}
-            />
-          </label>
-          <div className="screenshot-proof-form-grid">
-            <label>
-              <span>Pair label</span>
-              <select
-                disabled={busy || uploading}
-                onChange={(event) =>
-                  setLabel(event.target.value as "" | "before" | "after")
-                }
-                value={label}
-              >
-                <option value="">Unlabeled</option>
-                <option value="before">Before</option>
-                <option value="after">After</option>
-              </select>
-            </label>
-            <label>
-              <span>Pair ID</span>
-              <input
-                disabled={busy || uploading}
-                onChange={(event) => setPairId(event.target.value)}
-                placeholder="Optional comparison group"
-                value={pairId}
-              />
-            </label>
-            <label>
-              <span>Tested revision</span>
-              <input
-                disabled={busy || uploading}
-                onChange={(event) => setTestedRevision(event.target.value)}
-                placeholder="Optional commit"
-                value={testedRevision}
-              />
-            </label>
-          </div>
-          <label>
-            <span>Capture context</span>
-            <input
-              disabled={busy || uploading}
-              onChange={(event) => setCaptureContext(event.target.value)}
-              placeholder="Optional device or viewport"
-              value={captureContext}
-            />
-          </label>
-          <label>
-            <span>Captured at</span>
-            <input
-              disabled={busy || uploading}
-              onChange={(event) => setCapturedAt(event.target.value)}
-              type="datetime-local"
-              value={capturedAt}
-            />
-          </label>
-          <button
-            disabled={busy || uploading || !file || !caption.trim()}
-            type="submit"
+        <details className="screenshot-proof-upload">
+          <summary>Add screenshot</summary>
+          <form
+            className="screenshot-proof-form"
+            onSubmit={(event) => void submit(event)}
           >
-            {uploading ? "Uploading…" : "Attach screenshot"}
-          </button>
-        </form>
+            <label>
+              <span>Screenshot file</span>
+              <input
+                accept="image/png,image/jpeg,image/webp"
+                disabled={busy || uploading}
+                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                type="file"
+              />
+            </label>
+            <label>
+              <span>Caption</span>
+              <input
+                disabled={busy || uploading}
+                onChange={(event) => setCaption(event.target.value)}
+                placeholder="What this proves"
+                value={caption}
+              />
+            </label>
+            <details className="screenshot-proof-metadata">
+              <summary>Optional metadata</summary>
+              <div className="screenshot-proof-form-grid">
+                <label>
+                  <span>Comparison side</span>
+                  <select
+                    disabled={busy || uploading}
+                    onChange={(event) =>
+                      setLabel(event.target.value as "" | "before" | "after")
+                    }
+                    value={label}
+                  >
+                    <option value="">No comparison</option>
+                    <option value="before">Before</option>
+                    <option value="after">After</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Comparison group</span>
+                  <input
+                    disabled={busy || uploading}
+                    onChange={(event) => setPairId(event.target.value)}
+                    placeholder="Optional group name"
+                    value={pairId}
+                  />
+                </label>
+                <label>
+                  <span>Tested revision</span>
+                  <input
+                    disabled={busy || uploading}
+                    onChange={(event) => setTestedRevision(event.target.value)}
+                    placeholder="Optional commit"
+                    value={testedRevision}
+                  />
+                </label>
+                <label>
+                  <span>Capture context</span>
+                  <input
+                    disabled={busy || uploading}
+                    onChange={(event) => setCaptureContext(event.target.value)}
+                    placeholder="Optional device or viewport"
+                    value={captureContext}
+                  />
+                </label>
+                <label>
+                  <span>Captured at</span>
+                  <input
+                    disabled={busy || uploading}
+                    onChange={(event) => setCapturedAt(event.target.value)}
+                    type="datetime-local"
+                    value={capturedAt}
+                  />
+                </label>
+              </div>
+            </details>
+            <button
+              disabled={busy || uploading || !file || !caption.trim()}
+              type="submit"
+            >
+              {uploading ? "Uploading…" : "Attach screenshot"}
+            </button>
+          </form>
+        </details>
       )}
       {error && (
         <p className="screenshot-proof-error" role="alert">
