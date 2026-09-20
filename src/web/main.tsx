@@ -56,6 +56,7 @@ import {
   type ObservedThreadDetail,
 } from "./observed-activity";
 import { summarizeT3Connections, t3ConnectionLabel } from "./t3-connection";
+import { ThreadDots } from "./thread-dots";
 import "./styles.css";
 
 type ProjectSummary = { id: string; name: string };
@@ -852,6 +853,23 @@ function Dashboard() {
     const client = trpc.current;
     if (!client) return;
     const key = observedThreadKey(threadId, sourceId);
+    const observedPanel = document.querySelector<HTMLDetailsElement>(
+      '[data-observed-activity="true"]',
+    );
+    if (observedPanel) {
+      observedPanel.open = true;
+      window.requestAnimationFrame(() => {
+        const observedThread = Array.from(
+          observedPanel.querySelectorAll<HTMLElement>(
+            "[data-observed-thread-key]",
+          ),
+        ).find((candidate) => candidate.dataset.observedThreadKey === key);
+        observedThread?.scrollIntoView({
+          behavior: "smooth",
+          block: "nearest",
+        });
+      });
+    }
     setT3ThreadDetailLoadingIds((current) => {
       const next = new Set(current);
       next.add(key);
@@ -2326,35 +2344,46 @@ function Dashboard() {
                                 )}
                                 <div className="task-summary">
                                   <div className="task-summary-heading">
-                                    <TaskStatusMenu
-                                      onResumeRollup={
-                                        task.archiveState
-                                          ? undefined
-                                          : () =>
-                                              void mutateAndRefresh(() =>
-                                                trpc.current!.tasks.resumeRollup.mutate(
-                                                  { taskId: task.id },
-                                                ),
-                                              )
-                                      }
-                                      onDisposition={(archiveState) =>
-                                        void mutateAndRefresh(() =>
-                                          trpc.current!.tasks.archive.mutate({
-                                            archiveState,
-                                            taskId: task.id,
-                                          }),
-                                        )
-                                      }
-                                      onState={(nextState, reason) =>
-                                        void setTaskWorkState(
-                                          task.id,
-                                          nextState,
-                                          reason,
-                                        )
-                                      }
-                                      state={currentTaskState}
-                                      taskName={task.name}
-                                    />
+                                    <div className="status-with-thread-dots">
+                                      <TaskStatusMenu
+                                        onResumeRollup={
+                                          task.archiveState
+                                            ? undefined
+                                            : () =>
+                                                void mutateAndRefresh(() =>
+                                                  trpc.current!.tasks.resumeRollup.mutate(
+                                                    { taskId: task.id },
+                                                  ),
+                                                )
+                                        }
+                                        onDisposition={(archiveState) =>
+                                          void mutateAndRefresh(() =>
+                                            trpc.current!.tasks.archive.mutate({
+                                              archiveState,
+                                              taskId: task.id,
+                                            }),
+                                          )
+                                        }
+                                        onState={(nextState, reason) =>
+                                          void setTaskWorkState(
+                                            task.id,
+                                            nextState,
+                                            reason,
+                                          )
+                                        }
+                                        state={currentTaskState}
+                                        taskName={task.name}
+                                      />
+                                      <ThreadDots
+                                        activity={t3Activity}
+                                        onOpenThread={openT3ThreadDetail}
+                                        target={{
+                                          id: task.id,
+                                          kind: "task",
+                                          label: task.name,
+                                        }}
+                                      />
+                                    </div>
                                     <h3
                                       className="visually-hidden"
                                       id={`task-${task.id}-title`}
@@ -2902,52 +2931,65 @@ function Dashboard() {
                                                           }
                                                         />
                                                       )}
-                                                      <ReportStatusMenu
-                                                        disabled={
-                                                          !snapshot.canMutate ||
-                                                          busy ||
-                                                          subtaskArchived
-                                                        }
-                                                        onSelect={(
-                                                          reportedState,
-                                                        ) =>
-                                                          void reportSubtask(
-                                                            subtask.id,
+                                                      <div className="status-with-thread-dots">
+                                                        <ReportStatusMenu
+                                                          disabled={
+                                                            !snapshot.canMutate ||
+                                                            busy ||
+                                                            subtaskArchived
+                                                          }
+                                                          onSelect={(
                                                             reportedState,
-                                                            subtask.evidence ??
-                                                              subtaskStatus?.evidence,
-                                                          )
-                                                        }
-                                                        onSelectWithReason={(
-                                                          reportedState,
-                                                          reason,
-                                                        ) =>
-                                                          void reportSubtask(
-                                                            subtask.id,
+                                                          ) =>
+                                                            void reportSubtask(
+                                                              subtask.id,
+                                                              reportedState,
+                                                              subtask.evidence ??
+                                                                subtaskStatus?.evidence,
+                                                            )
+                                                          }
+                                                          onSelectWithReason={(
                                                             reportedState,
-                                                            subtask.evidence ??
-                                                              subtaskStatus?.evidence,
                                                             reason,
-                                                          )
-                                                        }
-                                                        state={
-                                                          subtaskWorkStatus
-                                                        }
-                                                        onDisposition={(
-                                                          archiveState,
-                                                        ) =>
-                                                          void mutateAndRefresh(
-                                                            () =>
-                                                              trpc.current!.subtasks.archive.mutate(
-                                                                {
-                                                                  archiveState,
-                                                                  subtaskId:
-                                                                    subtask.id,
-                                                                },
-                                                              ),
-                                                          )
-                                                        }
-                                                      />
+                                                          ) =>
+                                                            void reportSubtask(
+                                                              subtask.id,
+                                                              reportedState,
+                                                              subtask.evidence ??
+                                                                subtaskStatus?.evidence,
+                                                              reason,
+                                                            )
+                                                          }
+                                                          state={
+                                                            subtaskWorkStatus
+                                                          }
+                                                          onDisposition={(
+                                                            archiveState,
+                                                          ) =>
+                                                            void mutateAndRefresh(
+                                                              () =>
+                                                                trpc.current!.subtasks.archive.mutate(
+                                                                  {
+                                                                    archiveState,
+                                                                    subtaskId:
+                                                                      subtask.id,
+                                                                  },
+                                                                ),
+                                                            )
+                                                          }
+                                                        />
+                                                        <ThreadDots
+                                                          activity={t3Activity}
+                                                          onOpenThread={
+                                                            openT3ThreadDetail
+                                                          }
+                                                          target={{
+                                                            id: subtask.id,
+                                                            kind: "subtask",
+                                                            label: `${task.name} / ${subtask.name}`,
+                                                          }}
+                                                        />
+                                                      </div>
                                                       {subtaskEdit ? (
                                                         <form
                                                           className="subtask-edit-form"
