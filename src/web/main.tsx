@@ -56,6 +56,7 @@ import {
   type ObservedThreadDetail,
 } from "./observed-activity";
 import { summarizeT3Connections, t3ConnectionLabel } from "./t3-connection";
+import { ScreenshotProof } from "./screenshot-proof";
 import "./styles.css";
 
 type ProjectSummary = { id: string; name: string };
@@ -118,6 +119,22 @@ type ProjectDetail = {
       taskId: string;
       description?: string;
       evidence?: string;
+      screenshots?: Array<{
+        id: string;
+        projectId: string;
+        subtaskId?: string;
+        contentType: "image/png" | "image/jpeg" | "image/webp";
+        sizeBytes: number;
+        caption: string;
+        uploader: string;
+        uploaderKind: "human" | "machine";
+        uploadedAt: string | Date;
+        capturedAt?: string | Date;
+        captureContext?: string;
+        testedRevision?: string;
+        pairId?: string;
+        label?: "before" | "after";
+      }>;
       pullRequestUrl?: string;
       sortOrder?: number;
       workState?: WorkStatus;
@@ -185,6 +202,7 @@ type TaskDetail = {
     title?: string;
     url: string;
   }>;
+  screenshots?: ProjectDetail["tasks"][number]["subtasks"][number]["screenshots"];
 };
 type TaskEditValues = {
   title: string;
@@ -989,6 +1007,23 @@ function Dashboard() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const uploadScreenshot = async (
+    target: { taskId?: string; subtaskId?: string },
+    input: Parameters<
+      NonNullable<React.ComponentProps<typeof ScreenshotProof>["onUpload"]>
+    >[0],
+  ): Promise<void> => {
+    if (!trpc.current) return;
+    await mutateAndRefresh(() =>
+      trpc.current!.screenshots.upload.mutate({ ...target, ...input }),
+    );
+  };
+
+  const getScreenshot = async (screenshotId: string) => {
+    if (!trpc.current) throw new Error("Factory connection is unavailable.");
+    return trpc.current.screenshots.get.query({ screenshotId });
   };
 
   const taskWorkState = (
@@ -2767,6 +2802,21 @@ function Dashboard() {
 
                               {taskRowExpanded && (
                                 <>
+                                  {taskDetail && (
+                                    <ScreenshotProof
+                                      busy={busy}
+                                      canMutate={snapshot.canMutate}
+                                      onGet={getScreenshot}
+                                      onUpload={(input) =>
+                                        uploadScreenshot(
+                                          { taskId: task.id },
+                                          input,
+                                        )
+                                      }
+                                      ownerLabel={`Task ${task.simpleId}`}
+                                      screenshots={taskDetail.screenshots ?? []}
+                                    />
+                                  )}
                                   <div className="subtask-list">
                                     {subtaskGroups.map((subtaskGroup) => (
                                       <section
@@ -3155,6 +3205,29 @@ function Dashboard() {
                                                       </div>
                                                     )}
                                                   </div>
+                                                  {subtaskRowExpanded && (
+                                                    <ScreenshotProof
+                                                      busy={busy}
+                                                      canMutate={
+                                                        snapshot.canMutate
+                                                      }
+                                                      onGet={getScreenshot}
+                                                      onUpload={(input) =>
+                                                        uploadScreenshot(
+                                                          {
+                                                            subtaskId:
+                                                              subtask.id,
+                                                          },
+                                                          input,
+                                                        )
+                                                      }
+                                                      ownerLabel={`Subtask ${subtask.simpleId}`}
+                                                      screenshots={
+                                                        subtask.screenshots ??
+                                                        []
+                                                      }
+                                                    />
+                                                  )}
                                                   <div className="subtask-actions">
                                                     <button
                                                       aria-label="Edit subtask"

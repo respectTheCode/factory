@@ -131,6 +131,116 @@ h2 {
   padding: 16px;
 }
 
+.screenshot-proof {
+  border-top: 1px solid var(--rule);
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.screenshot-proof-heading,
+.screenshot-proof-heading > div {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.screenshot-proof-heading span,
+.screenshot-proof-heading small,
+.screenshot-proof-meta {
+  color: var(--ink-faint);
+  font-size: 0.68rem;
+}
+
+.screenshot-proof-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.screenshot-proof-comparison {
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  display: grid;
+  gap: 8px;
+  grid-column: 1 / -1;
+  padding: 8px;
+}
+
+.screenshot-proof-comparison-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.screenshot-proof-card {
+  background: var(--raised);
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+}
+
+.screenshot-proof-card img {
+  aspect-ratio: 16 / 10;
+  background: var(--canvas);
+  border-radius: 4px;
+  display: block;
+  object-fit: contain;
+  width: 100%;
+}
+
+.screenshot-proof-loading {
+  align-items: center;
+  aspect-ratio: 16 / 10;
+  background: var(--canvas);
+  color: var(--ink-faint);
+  display: flex;
+  justify-content: center;
+}
+
+.screenshot-proof-meta {
+  display: grid;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
+
+.screenshot-proof-form {
+  background: var(--canvas);
+  border: 1px solid var(--rule);
+  border-radius: 7px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.screenshot-proof-form-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.screenshot-proof-form label {
+  display: grid;
+  gap: 4px;
+}
+
+.screenshot-proof-form label > span {
+  color: var(--ink-dim);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.screenshot-proof-error {
+  color: var(--sig-down);
+  font-size: 0.75rem;
+}
+
 .detail-heading,
 .task-card-header {
   align-items: flex-start;
@@ -3307,6 +3417,14 @@ option {
 }
 
 @media (max-width: 540px) {
+  .screenshot-proof-comparison-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .screenshot-proof-form-grid {
+    grid-template-columns: 1fr;
+  }
+
   header {
     align-items: flex-start;
     flex-direction: column;
