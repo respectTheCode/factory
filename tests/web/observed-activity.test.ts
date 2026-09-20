@@ -81,6 +81,7 @@ describe("observed activity presentation", () => {
     expect(source).toContain("Remove");
     expect(source).toContain("association.links.map");
     expect(source).toContain("threadDetailLoadingIds");
+    expect(source).toContain("data-observed-thread-key={threadKey}");
     expect(source).toContain("candidateLabels");
     expect(source).toContain("candidateIds");
     expect(source).toContain("Link suggested target");
@@ -169,6 +170,8 @@ describe("observed activity presentation", () => {
       "onRefresh={() => refreshT3Project(projectDetail.id)}",
     );
     expect(mainSource).toContain("client.t3.threadDetail.query");
+    expect(mainSource).toContain("observedPanel.open = true");
+    expect(mainSource).toContain("scrollIntoView");
   });
 
   test("keeps link and unlink actions explicit and maps Factory target kinds", () => {

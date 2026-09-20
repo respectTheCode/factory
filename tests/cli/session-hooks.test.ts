@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,11 +35,54 @@ function runHook(
   payload: string,
   environment: Record<string, string>,
 ) {
-  return spawnSync("bash", [hookScript, client], {
-    env: { ...process.env, ...environment },
-    input: payload,
-    encoding: "utf8",
-  });
+  const toolDirectory = mkdtempSync(
+    join(tmpdir(), "factory-session-hook-test-tools-"),
+  );
+  const isolatedHome = mkdtempSync(
+    join(tmpdir(), "factory-session-hook-test-home-"),
+  );
+  const hostPath = (process.env.PATH ?? "").split(":").filter(Boolean);
+  for (const command of [
+    "bash",
+    "cat",
+    "dirname",
+    "git",
+    "python3",
+    "realpath",
+  ]) {
+    const target = hostPath
+      .map((directory) => join(directory, command))
+      .find((candidate) => existsSync(candidate));
+    if (target) {
+      symlinkSync(target, join(toolDirectory, command));
+    }
+  }
+  symlinkSync(process.execPath, join(toolDirectory, "bun"));
+
+  try {
+    return spawnSync("bash", [hookScript, client], {
+      // Keep fixture tests independent of an operator's installed CLI and
+      // config. Explicit per-test settings are applied after the isolation
+      // defaults so the remote and local hook paths remain covered.
+      env: {
+        ...process.env,
+        FACTORY_CLI: "",
+        // Use a unique empty HOME so only a fixture's explicit HOME can opt
+        // into its own config file.
+        HOME: isolatedHome,
+        FACTORY_ENV_FILE: "",
+        FACTORY_URL: "",
+        FACTORY_ACCESS_TOKEN_FILE: "",
+        PATH: toolDirectory,
+        ...environment,
+      },
+      input: payload,
+      encoding: "utf8",
+    });
+  } finally {
+    rmSync(toolDirectory, { force: true, recursive: true });
+    rmSync(isolatedHome, { force: true, recursive: true });
+  }
 }
 
 function runInstaller(args: string[]) {
