@@ -38,6 +38,9 @@ function runHook(
   const toolDirectory = mkdtempSync(
     join(tmpdir(), "factory-session-hook-test-tools-"),
   );
+  const isolatedHome = mkdtempSync(
+    join(tmpdir(), "factory-session-hook-test-home-"),
+  );
   const hostPath = (process.env.PATH ?? "").split(":").filter(Boolean);
   for (const command of [
     "bash",
@@ -64,9 +67,9 @@ function runHook(
       env: {
         ...process.env,
         FACTORY_CLI: "",
-        // Use a nonexistent default HOME so only a fixture's explicit HOME
-        // can opt into its own config file.
-        HOME: join(tmpdir(), "factory-session-hook-test-home"),
+        // Use a unique empty HOME so only a fixture's explicit HOME can opt
+        // into its own config file.
+        HOME: isolatedHome,
         FACTORY_ENV_FILE: "",
         FACTORY_URL: "",
         FACTORY_ACCESS_TOKEN_FILE: "",
@@ -78,6 +81,7 @@ function runHook(
     });
   } finally {
     rmSync(toolDirectory, { force: true, recursive: true });
+    rmSync(isolatedHome, { force: true, recursive: true });
   }
 }
 

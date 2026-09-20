@@ -43,6 +43,8 @@ import {
 } from "./remote-client";
 import {
   CLI_READ_CAPS,
+  decodeGithubStatusCursor,
+  encodeGithubStatusCursor,
   includePageMetadata,
   paginateHistory,
   paginateOffset,
@@ -490,15 +492,6 @@ function compactProjectContextTask(task: ProjectContextTask) {
   return {
     ...taskSummary(task),
     subtaskCount: task.subtasks.length,
-    subtasks: task.subtasks.map((subtask) => ({
-      id: subtask.id,
-      simpleId: subtask.simpleId,
-      name: subtask.name,
-      taskId: subtask.taskId,
-      ...(subtask.workState ? { workState: subtask.workState } : {}),
-      ...(subtask.stateReason ? { stateReason: subtask.stateReason } : {}),
-      ...(subtask.archiveState ? { archiveState: subtask.archiveState } : {}),
-    })),
   };
 }
 
@@ -518,7 +511,7 @@ function compactProjectContext(
   };
 }
 
-function capGithubStatus(
+export function capGithubStatus(
   value: unknown,
   flags: Map<string, string>,
   scope: string,
@@ -527,22 +520,51 @@ function capGithubStatus(
   const status = value as Record<string, unknown>;
   const result = { ...status };
   let anyTruncated = false;
-  let firstNextCursor: string | null = null;
+  const genericCursor = flags.get("cursor")?.trim() || undefined;
+  const genericFields = decodeGithubStatusCursor(genericCursor, scope);
+  if (
+    genericCursor !== undefined &&
+    (flags.has("check-runs-cursor") || flags.has("workflow-runs-cursor"))
+  ) {
+    throw new Error(
+      "Use either --cursor or a field-specific GitHub status cursor, not both.",
+    );
+  }
+  const nextFields: {
+    checkRuns: string | null;
+    workflowRuns: string | null;
+  } = {
+    checkRuns: null,
+    workflowRuns: null,
+  };
   for (const field of ["checkRuns", "workflowRuns"] as const) {
     const items = status[field];
     if (!Array.isArray(items)) continue;
     const fieldCursorName = `${field === "checkRuns" ? "check-runs" : "workflow-runs"}-cursor`;
-    const cursor =
-      flags.get(fieldCursorName)?.trim() ||
-      flags.get("cursor")?.trim() ||
-      undefined;
-    const page = paginateOffset(
-      items,
-      parseReadLimit(flags, CLI_READ_CAPS.githubRuns),
-      cursor,
-      `${scope}:${field}`,
-    );
-    warnIfTruncated(`GitHub ${field}`, page);
+    const fieldCursor =
+      genericFields?.[field] ??
+      (flags.get(fieldCursorName)?.trim() || undefined);
+    const page =
+      genericFields?.[field] === null
+        ? {
+            items: [],
+            nextCursor: null,
+            totalCount: items.length,
+            truncated: false,
+          }
+        : paginateOffset(
+            items,
+            parseReadLimit(flags, CLI_READ_CAPS.githubRuns),
+            fieldCursor,
+            `${scope}:${field}`,
+          );
+    if (page.truncated) {
+      nextFields[field] = page.nextCursor;
+      anyTruncated = true;
+      if (genericCursor === undefined && flags.has(fieldCursorName)) {
+        warnIfTruncated(`GitHub ${field}`, page, `--${fieldCursorName}`);
+      }
+    }
     result[field] = page.items;
     const metadata = includePageMetadata(
       page,
@@ -553,15 +575,14 @@ function capGithubStatus(
       result[`${field}NextCursor`] = metadata.nextCursor;
       result[`${field}TotalCount`] = metadata.totalCount;
     }
-    if (page.truncated) {
-      anyTruncated = true;
-      firstNextCursor ??= page.nextCursor;
-    }
   }
   if (anyTruncated) {
     result.truncated = true;
-    result.nextCursor = firstNextCursor;
-  } else if (flags.has("limit")) {
+    result.nextCursor = encodeGithubStatusCursor(scope, nextFields);
+    console.error(
+      `[Factory] Warning: GitHub status output truncated; continue with --cursor ${result.nextCursor}.`,
+    );
+  } else if (flags.has("limit") || genericCursor !== undefined) {
     result.truncated = false;
     result.nextCursor = null;
   }
@@ -867,6 +888,7 @@ function createLocalBackend(application: FactoryApplication): FactoryBackend {
         ...(hierarchy.workspaceRoot
           ? { workspaceRoot: hierarchy.workspaceRoot }
           : {}),
+        ...(hierarchy.t3Mappings ? { t3Mappings: hierarchy.t3Mappings } : {}),
         trackerLinks: projectDetail.trackerLinks,
         tasks,
       };

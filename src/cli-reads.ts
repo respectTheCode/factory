@@ -19,6 +19,17 @@ type HistoryCursor = {
   direction: "backward" | "forward";
   id: string;
   kind: "history";
+  since: string | null;
+  scope: string;
+  version: 1;
+};
+
+type GithubStatusCursor = {
+  fields: {
+    checkRuns: string | null;
+    workflowRuns: string | null;
+  };
+  kind: "github-status";
   scope: string;
   version: 1;
 };
@@ -36,7 +47,9 @@ export const CLI_READ_CAPS = {
   t3Sources: 20,
 } as const;
 
-function encode(value: OffsetCursor | HistoryCursor): string {
+function encode(
+  value: OffsetCursor | HistoryCursor | GithubStatusCursor,
+): string {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 }
 
@@ -138,6 +151,7 @@ function historyCursor(
   value: string | undefined,
   expectedDirection: HistoryCursor["direction"],
   expectedScope: string,
+  expectedSince: string | null,
 ): HistoryCursor | undefined {
   if (value === undefined) return undefined;
   const decoded = decode(value);
@@ -148,12 +162,53 @@ function historyCursor(
     (decoded as Partial<HistoryCursor>).scope !== expectedScope ||
     (decoded as Partial<HistoryCursor>).version !== 1 ||
     (decoded as Partial<HistoryCursor>).direction !== expectedDirection ||
+    (decoded as Partial<HistoryCursor>).since !== expectedSince ||
     typeof (decoded as Partial<HistoryCursor>).createdAt !== "string" ||
     typeof (decoded as Partial<HistoryCursor>).id !== "string"
   ) {
     throw new Error("--cursor is not valid for this history read.");
   }
   return decoded as HistoryCursor;
+}
+
+export function decodeGithubStatusCursor(
+  value: string | undefined,
+  expectedScope: string,
+): GithubStatusCursor["fields"] | undefined {
+  if (value === undefined) return undefined;
+  const decoded = decode(value);
+  if (
+    !decoded ||
+    typeof decoded !== "object" ||
+    (decoded as Partial<GithubStatusCursor>).kind !== "github-status" ||
+    (decoded as Partial<GithubStatusCursor>).scope !== expectedScope ||
+    (decoded as Partial<GithubStatusCursor>).version !== 1
+  ) {
+    throw new Error("--cursor is not valid for this GitHub status read.");
+  }
+  const fields = (decoded as Partial<GithubStatusCursor>).fields as
+    | Partial<GithubStatusCursor["fields"]>
+    | undefined;
+  const validFieldCursor = (field: unknown): field is string | null =>
+    field === null || typeof field === "string";
+  if (
+    !fields ||
+    !validFieldCursor(fields.checkRuns) ||
+    !validFieldCursor(fields.workflowRuns)
+  ) {
+    throw new Error("--cursor is not valid for this GitHub status read.");
+  }
+  return {
+    checkRuns: fields.checkRuns,
+    workflowRuns: fields.workflowRuns,
+  };
+}
+
+export function encodeGithubStatusCursor(
+  scope: string,
+  fields: GithubStatusCursor["fields"],
+): string {
+  return encode({ fields, kind: "github-status", scope, version: 1 });
 }
 
 export function paginateHistory<
@@ -168,17 +223,17 @@ export function paginateHistory<
     scope: string;
   },
 ): ReadPage<T> {
+  const since = options.since === undefined ? null : historyDate(options.since);
   const cursor = historyCursor(
     options.cursor,
     options.direction,
     options.scope,
+    since,
   );
-  const since =
-    options.since === undefined ? undefined : historyDate(options.since);
   const sorted = [...items].sort(compareHistoryKey);
   const candidates = sorted.filter((item) => {
     const key = { createdAt: historyDate(item.createdAt), id: item.id };
-    if (since !== undefined && key.createdAt <= since) return false;
+    if (since !== null && key.createdAt <= since) return false;
     if (cursor === undefined) return true;
     const cursorKey = {
       createdAt: cursor.createdAt,
@@ -205,6 +260,7 @@ export function paginateHistory<
             direction: options.direction,
             id: cursorItem.id,
             kind: "history",
+            since,
             scope: options.scope,
             version: 1,
           })
@@ -214,10 +270,14 @@ export function paginateHistory<
   };
 }
 
-export function warnIfTruncated(label: string, page: ReadPage<unknown>): void {
+export function warnIfTruncated(
+  label: string,
+  page: ReadPage<unknown>,
+  cursorFlag = "--cursor",
+): void {
   if (!page.truncated || page.nextCursor === null) return;
   console.error(
-    `[Factory] Warning: ${label} output truncated at ${page.items.length} of ${page.totalCount}; continue with --cursor ${page.nextCursor}.`,
+    `[Factory] Warning: ${label} output truncated at ${page.items.length} of ${page.totalCount}; continue with ${cursorFlag} ${page.nextCursor}.`,
   );
 }
 

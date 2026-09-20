@@ -82,17 +82,24 @@ portfolio Projects 50, attention 100, credential records 50, Task/Subtask status
 GitHub check/workflow runs 50 each, session-detail findings 50, and Subtask history reports 100. A page that omits rows includes `truncated: true`, a non-null `nextCursor`, and a stderr
 warning; page it before treating the read as complete. Exact-cap pages are complete and report
 `truncated: false` when `--limit` was supplied. Cursors are scoped to the command and record
-identity, so do not reuse one for another route or Task/Subtask.
+identity, so do not reuse one for another route or Task/Subtask. GitHub status returns one
+composite `--cursor` that advances check runs and workflow runs together; field-specific
+`--check-runs-cursor` and `--workflow-runs-cursor` continuations remain available and their
+warnings name the matching flag.
 
 Use `subtask history --tail N` for the newest N reports, or `--since ISO_TIMESTAMP` for reports
-strictly after a timestamp. Both support cursor paging; history cursors use `(createdAt, id)`
-so reports with equal timestamps are neither duplicated nor skipped. History keeps
+strictly after a timestamp. Both support cursor paging; history cursors bind the normalized
+`--since` filter and use `(createdAt, id)` so a cursor cannot be continued with a changed or
+missing filter, and reports with equal timestamps are neither duplicated nor skipped. History keeps
 verifications attached to the reports in the returned page and retains IDs, states, reasons,
 and counts. `task detail --summary` retains identity, state, reason, priority/owner, and counts
 for acceptance criteria, dependencies, repository links, and tracker links while omitting the
-long values. `project context --compact` keeps project identity, Task/Subtask IDs, names,
-states, reasons, and criteria/link counts while omitting long descriptions, evidence, and
-tracker-link values.
+long values. `project context --compact` keeps project identity, Task IDs, names, states, reasons,
+criteria/link counts, and each task's `subtaskCount` while omitting long descriptions, evidence,
+tracker-link values, and nested Subtask rows. Expand nested rows with bounded `task status
+--task-id` or `subtask status --task-id`. Full `project context` includes
+nested Subtask rows without a separate nested cap; use compact context plus the expansion reads
+when the project may contain many Subtasks.
 
 `session detail` findings use the same cap/cursor contract; the T3 thread payload's turns and
 checkpoint data remain bounded by the existing `--turn-limit` transport guard (maximum 10), so

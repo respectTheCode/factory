@@ -30,6 +30,7 @@ async function createHistoryFixture() {
   const setupApp = createFactoryApplication({ databasePath });
   const project = setupApp.createProject({
     name: "Compact reads",
+    t3Mappings: [{ sourceId: "legacy", workspaceRoot: directory }],
     workspaceRoot: directory,
   });
   const task = setupApp.createTask({
@@ -211,11 +212,39 @@ describe("compact bounded CLI reads", () => {
         ...base.slice(4),
       ]);
       const sincePayload = JSON.parse(since.stdout) as {
-        history: { reports: Array<{ id: string }>; truncated: boolean };
+        history: {
+          nextCursor: string;
+          reports: Array<{ id: string }>;
+          truncated: boolean;
+        };
       };
       expect(since.exitCode).toBe(0);
       expect(sincePayload.history.reports).toHaveLength(2);
       expect(sincePayload.history.truncated).toBe(true);
+
+      const changedSince = await runCli([
+        ...base.slice(0, 4),
+        "--since",
+        new Date(Date.now() - 30_000).toISOString(),
+        "--limit",
+        "2",
+        "--cursor",
+        sincePayload.history.nextCursor,
+        ...base.slice(4),
+      ]);
+      expect(changedSince.exitCode).toBe(1);
+      expect(changedSince.stderr).toContain("not valid for this history read");
+
+      const missingSince = await runCli([
+        ...base.slice(0, 4),
+        "--limit",
+        "2",
+        "--cursor",
+        sincePayload.history.nextCursor,
+        ...base.slice(4),
+      ]);
+      expect(missingSince.exitCode).toBe(1);
+      expect(missingSince.stderr).toContain("not valid for this history read");
 
       const tail = await runCli([
         ...base.slice(0, 4),
@@ -424,11 +453,12 @@ describe("compact bounded CLI reads", () => {
         id: fixture.task.id,
         subtaskCount: 2,
       });
+      expect(JSON.parse(compact.stdout).context.t3Mappings).toEqual([
+        { sourceId: "legacy", workspaceRoot: fixture.directory },
+      ]);
       expect(compactTask).not.toHaveProperty("objective");
       expect(compactTask).not.toHaveProperty("acceptanceCriteria");
-      expect(
-        (compactTask.subtasks as Array<Record<string, unknown>>)[0],
-      ).not.toHaveProperty("description");
+      expect(compactTask).not.toHaveProperty("subtasks");
     } finally {
       rmSync(fixture.directory, { force: true, recursive: true });
     }
