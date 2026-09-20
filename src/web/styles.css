@@ -394,6 +394,7 @@ textarea {
   line-height: 1.4;
   margin-top: 7px;
   max-width: 760px;
+  overflow-wrap: anywhere;
 }
 
 .task-preview-meta {
@@ -863,26 +864,76 @@ option {
   font-size: 0.78rem;
   line-height: 1.4;
   margin-top: 4px;
+  overflow-wrap: anywhere;
 }
 
 .evidence {
   color: var(--ink-dim);
   font-size: 0.78rem;
   margin-top: 6px;
+  overflow-wrap: anywhere;
 }
 
 .history {
   background: var(--panel);
+  box-sizing: border-box;
   border-radius: 8px;
   color: var(--ink-dim);
   font-size: 0.74rem;
   margin-top: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
   padding: 8px;
   width: 100%;
 }
 
 .history p {
+  line-height: 1.4;
   margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+
+.history-threads {
+  margin-top: 7px;
+}
+
+.history-thread-list {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 5px 0 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.history-thread-item {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.history-thread-link {
+  background: transparent;
+  color: var(--accent);
+  font-size: inherit;
+  font-weight: 700;
+  min-height: 32px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 2px 0;
+  text-align: left;
+}
+
+.history-thread-ownership,
+.history-thread-source {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.history-thread-source {
+  color: var(--ink-faint);
 }
 
 .subtask-actions {
@@ -2469,6 +2520,7 @@ option {
   font-size: 0.78rem;
   line-height: 1.4;
   margin-top: 8px;
+  overflow-wrap: anywhere;
   padding: 7px 9px;
 }
 .task-group-backlog .task-group-heading,
@@ -2688,6 +2740,14 @@ option {
 .subtask.row-collapsed .subtask-actions,
 .subtask.row-collapsed > .history {
   display: none;
+}
+
+.subtask.row-expanded {
+  flex-wrap: wrap;
+}
+
+.subtask.row-expanded > .history {
+  flex-basis: 100%;
 }
 
 @media (max-width: 540px) {
