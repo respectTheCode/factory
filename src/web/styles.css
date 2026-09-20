@@ -3135,14 +3135,14 @@ option {
   }
 
   .subtask.row-expanded .subtask-copy {
-    grid-column: 3;
+    grid-column: 1 / -1;
     grid-row: 2;
   }
 
   .subtask.row-expanded
     .subtask-content:not(:has(.reorder-handle))
     .subtask-copy {
-    grid-column: 2 / -1;
+    grid-column: 1 / -1;
   }
 
   .subtask.row-expanded .subtask-actions {
