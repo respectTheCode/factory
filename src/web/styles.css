@@ -947,7 +947,7 @@ option {
   display: contents;
 }
 
-.subtask-title-row > .subtask-status-menu {
+.subtask-title-row > .status-with-thread-dots {
   align-self: center;
   grid-column: 1;
   grid-row: 1;
@@ -970,7 +970,7 @@ option {
   width: 100%;
 }
 
-.subtask:has(.subtask-edit-form) .subtask-title-row > .subtask-status-menu {
+.subtask:has(.subtask-edit-form) .subtask-title-row > .status-with-thread-dots {
   align-self: start;
 }
 
@@ -2787,7 +2787,7 @@ option {
   grid-row: 1;
 }
 
-.subtask.row-collapsed .subtask-title-row > .subtask-status-menu {
+.subtask.row-collapsed .subtask-title-row > .status-with-thread-dots {
   grid-column: 2;
   grid-row: 1;
 }
@@ -2800,7 +2800,7 @@ option {
 .subtask.row-collapsed
   .subtask-content:not(:has(.reorder-handle))
   .subtask-title-row
-  > .subtask-status-menu {
+  > .status-with-thread-dots {
   grid-column: 1;
 }
 
@@ -2904,7 +2904,7 @@ option {
     grid-row: 1;
   }
 
-  .subtask-title-row > .subtask-status-menu {
+  .subtask-title-row > .status-with-thread-dots {
     grid-column: 2;
     grid-row: 1;
   }
@@ -2916,7 +2916,7 @@ option {
 
   .subtask-content:not(:has(.reorder-handle))
     .subtask-title-row
-    > .subtask-status-menu {
+    > .status-with-thread-dots {
     grid-column: 1;
   }
 

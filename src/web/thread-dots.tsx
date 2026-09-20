@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   observedThreadKey,
   type ObservedActivityViewModel,
+  type ObservedActivitySource,
   type ObservedConnection,
   type ObservedTarget,
   type ObservedThread,
@@ -71,18 +72,41 @@ function threadStateLabel(thread: ObservedThread): string {
   return "state not reported";
 }
 
-function sourceConnectionState(
+function sourceForThread(
   activity: ThreadDotsActivity,
   thread: ObservedThread,
-): string {
-  if (thread.sourceId === undefined) return activity.connection.state;
-  return (
-    activity.sources?.find((source) => source.sourceId === thread.sourceId)
-      ?.connection.state ??
-    (activity.sources && activity.sources.length > 0
-      ? "unknown"
-      : activity.connection.state)
-  );
+): ObservedActivitySource | undefined {
+  if (thread.sourceId === undefined || !activity.sources?.length) {
+    return undefined;
+  }
+  return activity.sources.find((source) => source.sourceId === thread.sourceId);
+}
+
+function observationProblem(
+  activity: ThreadDotsActivity,
+  thread: ObservedThread,
+): string | undefined {
+  if (activity.connection.state !== "connected") {
+    return "observation unavailable";
+  }
+  if (activity.connection.warning || activity.connection.error) {
+    return "project matching needs review";
+  }
+  if (thread.sourceId === undefined || !activity.sources?.length) {
+    return undefined;
+  }
+  const source = sourceForThread(activity, thread);
+  if (!source) return "source matching needs review";
+  if (
+    source.connection.state !== "connected" ||
+    source.connection.warning ||
+    source.connection.error ||
+    source.error ||
+    source.status !== "ok"
+  ) {
+    return "source matching needs review";
+  }
+  return undefined;
 }
 
 function sourceFreshness(
@@ -94,14 +118,9 @@ function sourceFreshness(
     ObservedConnection,
     "lastSuccessfulFetchAt" | "observedAt"
   > =
-    thread.sourceId === undefined
+    thread.sourceId === undefined || !activity.sources?.length
       ? activity.connection
-      : (activity.sources?.find(
-          (candidate) => candidate.sourceId === thread.sourceId,
-        )?.connection ??
-        (activity.sources && activity.sources.length > 0
-          ? {}
-          : activity.connection));
+      : (sourceForThread(activity, thread)?.connection ?? {});
   const value = source.lastSuccessfulFetchAt ?? source.observedAt;
   if (!value) return "unknown";
   const fetchedAt = new Date(value);
@@ -116,12 +135,12 @@ export function threadDotState(
   thread: ObservedThread,
   now: Date = new Date(),
 ): ThreadDotState {
-  const unavailable = sourceConnectionState(activity, thread) !== "connected";
+  const problem = observationProblem(activity, thread);
   const freshness = sourceFreshness(activity, thread, now);
   const stale = freshness === "stale";
-  if (unavailable) {
+  if (problem) {
     return {
-      label: "observation unavailable",
+      label: problem,
       stale,
       tone: "neutral",
       unknown: false,
@@ -190,11 +209,26 @@ export function getThreadDots(
     }));
 }
 
-function threadDotElementId(target: ObservedTarget, key: string): string {
-  return `thread-dot-${target.kind}-${target.id}-${key}`.replace(
-    /[^a-z0-9_-]+/gi,
-    "-",
+function encodeIdPart(value: string): string {
+  const codePoints = Array.from(value, (character) =>
+    character.codePointAt(0)!.toString(16).padStart(6, "0"),
   );
+  return `${codePoints.length}_${codePoints.join("")}`;
+}
+
+export function threadDotElementId(
+  target: ObservedTarget,
+  thread: Pick<ObservedThread, "sourceId" | "threadId">,
+): string {
+  return [
+    "thread-dot",
+    target.kind,
+    target.id,
+    thread.sourceId ?? "legacy",
+    thread.threadId,
+  ]
+    .map(encodeIdPart)
+    .join("-");
 }
 
 export function ThreadDots({
@@ -218,7 +252,7 @@ export function ThreadDots({
     >
       {dots.map((dot) => {
         const title = dot.thread.title || "Untitled T3 thread";
-        const detailId = threadDotElementId(target, dot.key);
+        const detailId = threadDotElementId(target, dot.thread);
         const state = dot.state;
         return (
           <details
