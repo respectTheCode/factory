@@ -2,11 +2,27 @@
 set -euo pipefail
 
 # This script runs on the Dokploy host, outside the Factory container. It is
-# intentionally limited to the ST-162 pilot Compose project. A deployment is
-# allowed to proceed only after the app publishes and verifies a fresh backup on its configured share.
+# intentionally limited to the two fixed ST-162 pilot and ST-165 production
+# deployment profiles on the existing Compose project. A deployment is allowed
+# to proceed only after the app publishes and verifies a fresh backup on its
+# configured share.
 
 readonly COMPOSE_PROJECT="factory-pilot-st162-ewgahg"
 readonly COMPOSE_SERVICE="factory"
+
+selected_environment="${FACTORY_DEPLOY_ENVIRONMENT:-pilot}"
+case "$selected_environment" in
+  pilot)
+    expected_environment="pilot"
+    ;;
+  production)
+    expected_environment="production"
+    ;;
+  *)
+    echo "pilot-predeploy-backup: FACTORY_DEPLOY_ENVIRONMENT must be pilot or production." >&2
+    exit 1
+    ;;
+esac
 
 die() {
   echo "pilot-predeploy-backup: $1" >&2
@@ -37,27 +53,28 @@ done <<<"$running_factory_listing"
 factory_container="${factory_containers[0]}"
 
 health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$factory_container" 2>/dev/null)" ||
-  die "could not inspect the pilot factory health."
+  die "could not inspect the ${expected_environment} factory health."
 [[ "$health_status" == "healthy" ]] ||
-  die "pilot factory is not healthy."
+  die "${expected_environment} factory is not healthy."
 
 # The endpoint is checked from inside the running service so this remains valid
 # when the Compose service shares its network namespace with the Tailscale sidecar.
-current_sha="$(docker exec "$factory_container" bun -e '
+current_sha="$(docker exec --env "FACTORY_EXPECTED_ENVIRONMENT=${expected_environment}" "$factory_container" bun -e '
   const response = await fetch("http://127.0.0.1:3000/version");
   if (!response.ok) throw new Error("version endpoint failed");
   const payload = await response.json();
-  if (payload?.environment !== "pilot") throw new Error("wrong environment");
+  if (payload?.environment !== Bun.env.FACTORY_EXPECTED_ENVIRONMENT) throw new Error("wrong environment");
   if (typeof payload?.revision !== "string" || !/^[0-9a-f]{40}$/i.test(payload.revision)) {
     throw new Error("invalid revision");
   }
   process.stdout.write(payload.revision.toLowerCase());
-' 2>/dev/null)" || die "pilot /version could not be verified."
-[[ "$current_sha" =~ ^[0-9a-f]{40}$ ]] || die "pilot /version did not report a commit SHA."
+' 2>/dev/null)" || die "${expected_environment} /version could not be verified."
+[[ "$current_sha" =~ ^[0-9a-f]{40}$ ]] || die "${expected_environment} /version did not report a commit SHA."
 expected_running_sha="${FACTORY_PILOT_EXPECTED_RUNNING_SHA:-}"
 if [[ -n "$expected_running_sha" ]]; then
   [[ "$expected_running_sha" =~ ^[0-9a-f]{40}$ ]] || die "expected running SHA was invalid."
-  [[ "$current_sha" == "${expected_running_sha,,}" ]] || die "pilot revision changed during the backup gate."
+  expected_running_sha_lower="$(printf '%s' "$expected_running_sha" | tr '[:upper:]' '[:lower:]')"
+  [[ "$current_sha" == "$expected_running_sha_lower" ]] || die "${expected_environment} revision changed during the backup gate."
 fi
 
 # Use the same human-authenticated application operation as the dashboard. The

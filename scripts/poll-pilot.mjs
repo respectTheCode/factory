@@ -7,12 +7,28 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
-const GITHUB_REF_URL = new URL(
-  "https://api.github.com/repos/respectTheCode/factory/git/ref/heads/deploy%2Ffactory-pilot",
-);
-const PILOT_VERSION_URL = new URL("http://192.168.5.50:3101/version");
-const PILOT_BRANCH_REF = "refs/heads/deploy/factory-pilot";
-const STATE_FILE = ".factory-pilot-last-request.json";
+const DEPLOY_PROFILES = Object.freeze({
+  pilot: Object.freeze({
+    environment: "pilot",
+    githubRefUrl: new URL(
+      "https://api.github.com/repos/respectTheCode/factory/git/ref/heads/deploy%2Ffactory-pilot",
+    ),
+    versionUrl: new URL("http://192.168.5.50:3101/version"),
+    branchRef: "refs/heads/deploy/factory-pilot",
+    stateFile: ".factory-pilot-last-request.json",
+    webhookLabel: "pilot deployment webhook",
+  }),
+  production: Object.freeze({
+    environment: "production",
+    githubRefUrl: new URL(
+      "https://api.github.com/repos/respectTheCode/factory/git/ref/heads/deploy%2Ffactory-production",
+    ),
+    versionUrl: new URL("http://192.168.5.50:3101/version"),
+    branchRef: "refs/heads/deploy/factory-production",
+    stateFile: ".factory-production-last-request.json",
+    webhookLabel: "production deployment webhook",
+  }),
+});
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_RESPONSE_BYTES = 256 * 1024;
@@ -32,12 +48,22 @@ function requireSha(value, label) {
   return candidate.toLowerCase();
 }
 
+function selectDeployProfile(environment) {
+  const selected = environment.FACTORY_DEPLOY_ENVIRONMENT?.trim() || "pilot";
+  if (!Object.hasOwn(DEPLOY_PROFILES, selected)) {
+    throw new Error("FACTORY_DEPLOY_ENVIRONMENT must be pilot or production.");
+  }
+  return DEPLOY_PROFILES[selected];
+}
+
 export function validateWebhookUrl(value) {
   let url;
   try {
     url = new URL(value);
   } catch {
-    throw new Error("FACTORY_PILOT_WEBHOOK_FILE contains an invalid webhook URL.");
+    throw new Error(
+      "FACTORY_PILOT_WEBHOOK_FILE contains an invalid webhook URL.",
+    );
   }
 
   if (
@@ -48,7 +74,9 @@ export function validateWebhookUrl(value) {
     url.hash ||
     !/^\/api\/deploy\/compose\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname)
   ) {
-    throw new Error("FACTORY_PILOT_WEBHOOK_FILE URL is outside the allowed pilot endpoint.");
+    throw new Error(
+      "FACTORY_PILOT_WEBHOOK_FILE URL is outside the allowed pilot endpoint.",
+    );
   }
 
   return url;
@@ -144,8 +172,8 @@ function requestText(url, options = {}) {
   });
 }
 
-async function readGitHubRevision(request) {
-  const response = await request(GITHUB_REF_URL, {
+async function readGitHubRevision(request, profile) {
+  const response = await request(profile.githubRefUrl, {
     label: "GitHub ref request",
     headers: {
       accept: "application/vnd.github+json",
@@ -164,24 +192,33 @@ async function readGitHubRevision(request) {
   return requireSha(payload?.object?.sha, "GitHub ref response");
 }
 
-async function readPilotRevision(request) {
-  const response = await request(PILOT_VERSION_URL, {
-    label: "pilot version request",
+async function readRunningRevision(request, profile) {
+  const response = await request(profile.versionUrl, {
+    label: `${profile.environment} version request`,
   });
   if (response.status !== 200) {
-    throw new Error(`Pilot version request returned HTTP ${response.status}.`);
+    throw new Error(
+      `${profile.environment} version request returned HTTP ${response.status}.`,
+    );
   }
 
   let payload;
   try {
     payload = JSON.parse(response.body);
   } catch {
-    throw new Error("Pilot version request returned invalid JSON.");
+    throw new Error(
+      `${profile.environment} version request returned invalid JSON.`,
+    );
   }
-  if (payload?.environment !== "pilot") {
-    throw new Error("Pilot version endpoint did not report the pilot environment.");
+  if (payload?.environment !== profile.environment) {
+    throw new Error(
+      `${profile.environment} version endpoint did not report the ${profile.environment} environment.`,
+    );
   }
-  return requireSha(payload?.revision, "Pilot version response");
+  return requireSha(
+    payload?.revision,
+    `${profile.environment} version response`,
+  );
 }
 
 async function readLastRequestedSha(statePath) {
@@ -239,10 +276,15 @@ async function writeLastRequestedSha(statePath, sha, now) {
 export async function runPredeployBackup(options = {}) {
   const cwd = options.cwd ?? process.cwd();
   const environment = options.environment ?? process.env;
+  const profile = selectDeployProfile(environment);
   const scriptPath = fileURLToPath(
     new URL("./pilot-predeploy-backup.sh", import.meta.url),
   );
-  const childEnvironment = { ...process.env, ...environment };
+  const childEnvironment = {
+    ...process.env,
+    ...environment,
+    FACTORY_DEPLOY_ENVIRONMENT: profile.environment,
+  };
   if (options.runningSha) {
     childEnvironment.FACTORY_PILOT_EXPECTED_RUNNING_SHA = options.runningSha;
   }
@@ -263,17 +305,22 @@ export async function runPredeployBackup(options = {}) {
 
 export async function pollPilot(options = {}) {
   const environment = options.environment ?? process.env;
+  const profile = selectDeployProfile(environment);
+  const selectedEnvironment = {
+    ...environment,
+    FACTORY_DEPLOY_ENVIRONMENT: profile.environment,
+  };
   const cwd = options.cwd ?? process.cwd();
   const request = options.request ?? requestText;
   const now = options.now ?? (() => new Date());
 
-  const releaseSha = await readGitHubRevision(request);
-  const runningSha = await readPilotRevision(request);
+  const releaseSha = await readGitHubRevision(request, profile);
+  const runningSha = await readRunningRevision(request, profile);
   if (releaseSha === runningSha) {
     return { status: "no-op", sha: releaseSha };
   }
 
-  const statePath = join(cwd, STATE_FILE);
+  const statePath = join(cwd, profile.stateFile);
   const lastRequestedSha = await readLastRequestedSha(statePath);
   if (lastRequestedSha === releaseSha) {
     return { status: "already_requested", sha: releaseSha };
@@ -281,9 +328,15 @@ export async function pollPilot(options = {}) {
 
   const webhookUrl = await readWebhookUrl(environment);
   const backup = options.backup ?? runPredeployBackup;
-  await backup({ cwd, environment, releaseSha, runningSha });
+  await backup({
+    cwd,
+    environment: selectedEnvironment,
+    profile,
+    releaseSha,
+    runningSha,
+  });
   const body = JSON.stringify({
-    ref: PILOT_BRANCH_REF,
+    ref: profile.branchRef,
     after: releaseSha,
     head_commit: {
       id: releaseSha,
@@ -292,7 +345,7 @@ export async function pollPilot(options = {}) {
     commits: [],
   });
   const response = await request(webhookUrl, {
-    label: "pilot deployment webhook",
+    label: profile.webhookLabel,
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -301,7 +354,9 @@ export async function pollPilot(options = {}) {
     body,
   });
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(`Pilot deployment webhook returned HTTP ${response.status}.`);
+    throw new Error(
+      `${profile.environment} deployment webhook returned HTTP ${response.status}.`,
+    );
   }
 
   await writeLastRequestedSha(statePath, releaseSha, now);
