@@ -78,9 +78,10 @@ bun run src/cli.ts session unlink --thread-id THREAD_ID --association-id ASSOCIA
 Screenshot proof is scoped to one Task or Subtask. Uploads retain a caller-supplied
 `--request-key` in remote mode so a retry after an uncertain response is idempotent; reuse
 the same key for the same file and metadata, and choose a new key for a changed upload.
-Uploads accept PNG, JPEG, and WebP bytes up to 5 MiB. `screenshot list` returns metadata only,
+Uploads accept PNG, JPEG, and static WebP images up to 5 MiB; animated WebP is unsupported. `screenshot list` returns metadata only,
 is bounded by `--limit` (maximum 100), and continues with its returned `--cursor`. `screenshot
-get` also returns metadata only unless `--output` is explicitly supplied for the image bytes:
+get` also returns metadata only unless `--output` is explicitly supplied for the image bytes.
+
 The upload check verifies supported container integrity, dimensions, lengths, and checksums; it
 does not decode pixels. Treat an image as visual proof only after the dashboard preview loads;
 preview failures are shown explicitly and can be retried.
