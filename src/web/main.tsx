@@ -2274,6 +2274,10 @@ function Dashboard() {
                             ),
                           ]);
                           const progress = summarizeTaskProgress(task, status);
+                          const taskHistoryThreads = historyThreadsForTarget(
+                            t3Activity,
+                            task.id,
+                          );
                           const subtaskGroups = groupSubtasksByStatus(
                             task.subtasks.map((subtask, index) => ({
                               ...subtask,
@@ -2788,6 +2792,15 @@ function Dashboard() {
 
                               {taskRowExpanded && (
                                 <>
+                                  {taskHistoryThreads.length > 0 && (
+                                    <details className="task-details task-history">
+                                      <summary>History</summary>
+                                      <HistoryThreadLinks
+                                        onOpenThreadDetail={openT3ThreadDetail}
+                                        threads={taskHistoryThreads}
+                                      />
+                                    </details>
+                                  )}
                                   <div className="subtask-list">
                                     {subtaskGroups.map((subtaskGroup) => (
                                       <section

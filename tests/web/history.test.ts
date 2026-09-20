@@ -16,6 +16,10 @@ const stylesheet = readFileSync(
   join(import.meta.dir, "../../src/web/styles.css"),
   "utf8",
 );
+const mainSource = readFileSync(
+  join(import.meta.dir, "../../src/web/main.tsx"),
+  "utf8",
+);
 
 describe("status report history attribution", () => {
   test("shows machine identity beside the reporter when present", () => {
@@ -75,6 +79,11 @@ describe("status report history attribution", () => {
         (thread) => `${thread.sourceId ?? "legacy"}:${thread.threadId}`,
       ),
     ).toEqual(["legacy:thread-1"]);
+    expect(
+      historyThreadsForTarget({ threads }, "task-1").map(
+        (thread) => `${thread.sourceId ?? "legacy"}:${thread.threadId}`,
+      ),
+    ).toEqual(["ubuntu:thread-1"]);
     expect(historyThreadsForTarget({ threads }, "missing")).toEqual([]);
   });
 
@@ -84,6 +93,17 @@ describe("status report history attribution", () => {
     expect(historyThreadSource).toContain("targetKindLabel(target.kind)");
     expect(historyThreadSource).toContain("${target.label}");
     expect(historyThreadSource).toContain("thread.sourceId");
+  });
+
+  test("wires task-target threads into the expanded Task History disclosure", () => {
+    expect(mainSource).toContain(
+      "const taskHistoryThreads = historyThreadsForTarget(",
+    );
+    expect(mainSource).toContain("t3Activity,");
+    expect(mainSource).toContain("task.id,");
+    expect(mainSource).toContain('className="task-details task-history"');
+    expect(mainSource).toContain("threads={taskHistoryThreads}");
+    expect(mainSource).toContain("openT3ThreadDetail");
   });
 
   test("places expanded History below the row and wraps long values", () => {
