@@ -989,6 +989,14 @@ export class FactoryApplication {
     this.projects.splice(projectIndex, 1);
     removeMatching(this.tasks, (task) => taskIds.has(task.id));
     removeMatching(this.subtasks, (subtask) => subtaskIds.has(subtask.id));
+    removeMatching(
+      this.screenshotEvidence,
+      (evidence) =>
+        evidence.projectId === projectId ||
+        (evidence.taskId !== undefined && taskIds.has(evidence.taskId)) ||
+        (evidence.subtaskId !== undefined &&
+          subtaskIds.has(evidence.subtaskId)),
+    );
     removeMatching(this.statusReports, (report) => reportIds.has(report.id));
     removeMatching(this.verifications, (verification) =>
       reportIds.has(verification.reportId),
@@ -1040,6 +1048,13 @@ export class FactoryApplication {
 
     removeMatching(this.tasks, (task) => task.id === resolvedTaskId);
     removeMatching(this.subtasks, (subtask) => subtaskIds.has(subtask.id));
+    removeMatching(
+      this.screenshotEvidence,
+      (evidence) =>
+        evidence.taskId === resolvedTaskId ||
+        (evidence.subtaskId !== undefined &&
+          subtaskIds.has(evidence.subtaskId)),
+    );
     removeMatching(this.statusReports, (report) => reportIds.has(report.id));
     removeMatching(this.verifications, (verification) =>
       reportIds.has(verification.reportId),
@@ -1088,6 +1103,10 @@ export class FactoryApplication {
     removeMatching(
       this.subtasks,
       (candidate) => candidate.id === resolvedSubtaskId,
+    );
+    removeMatching(
+      this.screenshotEvidence,
+      (evidence) => evidence.subtaskId === resolvedSubtaskId,
     );
     removeMatching(this.statusReports, (report) => reportIds.has(report.id));
     removeMatching(this.verifications, (verification) =>
@@ -2900,6 +2919,34 @@ export class FactoryApplication {
     );
     if (!evidence) {
       throw new Error(`Screenshot evidence ${screenshotId} does not exist.`);
+    }
+    if (!this.projects.some((project) => project.id === evidence.projectId)) {
+      throw new Error(
+        `Screenshot evidence ${screenshotId} targets a deleted Project.`,
+      );
+    }
+    if (evidence.taskId !== undefined) {
+      const task = this.tasks.find(
+        (candidate) => candidate.id === evidence.taskId,
+      );
+      if (!task || task.projectId !== evidence.projectId) {
+        throw new Error(
+          `Screenshot evidence ${screenshotId} targets a deleted Task.`,
+        );
+      }
+    }
+    if (evidence.subtaskId !== undefined) {
+      const subtask = this.subtasks.find(
+        (candidate) => candidate.id === evidence.subtaskId,
+      );
+      const task = subtask
+        ? this.tasks.find((candidate) => candidate.id === subtask.taskId)
+        : undefined;
+      if (!subtask || !task || task.projectId !== evidence.projectId) {
+        throw new Error(
+          `Screenshot evidence ${screenshotId} targets a deleted Subtask.`,
+        );
+      }
     }
     return evidence;
   }

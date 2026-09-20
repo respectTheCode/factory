@@ -24,6 +24,9 @@ import {
   verifyFactorySnapshot,
 } from "../../src/backup-snapshot";
 
+const PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAABAAAAAQBPJcTWAAAADElEQVR4nGP8x8AAAAMCAQBFsWYPAAAAAElFTkSuQmCC";
+
 describe("Factory online backup snapshots", () => {
   test("preserves durable IDs and full report/verification history without manifest secrets", () => {
     const directory = mkdtempSync(join(tmpdir(), "factory-backup-snapshot-"));
@@ -44,6 +47,14 @@ describe("Factory online backup snapshots", () => {
       const subtask = application.createSubtask({
         name: "Snapshot subtask",
         taskId: task.id,
+      });
+      const screenshot = application.addScreenshotEvidence({
+        caption: "Snapshot proof",
+        contentType: "image/png",
+        dataBase64: PNG,
+        subtaskId: subtask.id,
+        uploader: "snapshot-host",
+        uploaderKind: "machine",
       });
       const report = application.reportSubtaskStatus({
         evidence: "The snapshot contains the complete report history.",
@@ -110,6 +121,12 @@ describe("Factory online backup snapshots", () => {
         ids: [verification.id],
       });
       expect(
+        backup.manifest.state.collections.screenshotEvidence,
+      ).toMatchObject({
+        count: 1,
+        ids: [screenshot.id],
+      });
+      expect(
         backup.manifest.protectedTables.factory_machine_credentials,
       ).toMatchObject({ count: 1, present: true });
       expect(backup.manifest.protectedTables.factory_sessions).toMatchObject({
@@ -136,6 +153,9 @@ describe("Factory online backup snapshots", () => {
         expect(
           restored.getSubtaskVerificationHistory(subtask.id),
         ).toMatchObject([{ id: verification.id, decision: "accepted" }]);
+        expect(restored.getScreenshotEvidence(screenshot.id).dataBase64).toBe(
+          PNG,
+        );
       } finally {
         restored.close();
       }

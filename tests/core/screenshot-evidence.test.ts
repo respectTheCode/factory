@@ -9,10 +9,11 @@ import {
   createFactoryApplication,
 } from "../../src/application";
 
-const PNG = Buffer.from(
-  "89504e470d0a1a0a0000000d4948445200000001000000010806000000",
-  "hex",
-).toString("base64");
+const PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAABAAAAAQBPJcTWAAAADElEQVR4nGP8x8AAAAMCAQBFsWYPAAAAAElFTkSuQmCC";
+const JPEG =
+  "/9j/4AAQSkZJRgABAgAAAQABAAD//gAPTGF2YzYzLjEuMTAxAP/bAEMACAQEBAQEBQUFBQUFBgYGBgYGBgYGBgYGBgcHBwgICAcHBwYGBwcICAgICQkJCAgICAkJCgoKDAwLCw4ODhERFP/EAEwAAQEAAAAAAAAAAAAAAAAAAAAHAQEBAAAAAAAAAAAAAAAAAAAFBxABAAAAAAAAAAAAAAAAAAAAABEBAAAAAAAAAAAAAAAAAAAAAP/AABEIAAEAAQMBIgACEQADEQD/2gAMAwEAAhEDEQA/AI4Av4p//9k=";
+const WEBP = "UklGRhwAAABXRUJQVlA4TA8AAAAvAAAAAAcQ9Y/+ByKi/wEA";
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "factory-screenshot-proof-"));
@@ -101,7 +102,7 @@ describe("screenshot evidence", () => {
           uploader: "human",
           uploaderKind: "human",
         }),
-      ).toThrow("do not match");
+      ).toThrow("structurally valid image");
       expect(() =>
         application.addScreenshotEvidence({
           caption: "Ambiguous target",
@@ -113,6 +114,127 @@ describe("screenshot evidence", () => {
           uploaderKind: "human",
         }),
       ).toThrow("exactly one");
+      expect(() =>
+        application.addScreenshotEvidence({
+          caption: "Truncated JPEG",
+          contentType: "image/jpeg",
+          dataBase64: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64"),
+          taskId: task.id,
+          uploader: "human",
+          uploaderKind: "human",
+        }),
+      ).toThrow("structurally valid image");
+      expect(() =>
+        application.addScreenshotEvidence({
+          caption: "Truncated WebP",
+          contentType: "image/webp",
+          dataBase64: Buffer.from("524946460400000057454250", "hex").toString(
+            "base64",
+          ),
+          taskId: task.id,
+          uploader: "human",
+          uploaderKind: "human",
+        }),
+      ).toThrow("structurally valid image");
+      expect(() =>
+        application.addScreenshotEvidence({
+          caption: "Truncated PNG",
+          contentType: "image/png",
+          dataBase64: Buffer.from(PNG, "base64")
+            .subarray(0, 24)
+            .toString("base64"),
+          taskId: task.id,
+          uploader: "human",
+          uploaderKind: "human",
+        }),
+      ).toThrow("structurally valid image");
+      const corruptPng = Buffer.from(PNG, "base64");
+      corruptPng[29] = (corruptPng[29] ?? 0) ^ 0xff;
+      expect(() =>
+        application.addScreenshotEvidence({
+          caption: "Corrupt PNG CRC",
+          contentType: "image/png",
+          dataBase64: corruptPng.toString("base64"),
+          taskId: task.id,
+          uploader: "human",
+          uploaderKind: "human",
+        }),
+      ).toThrow("structurally valid image");
+      expect(
+        application.addScreenshotEvidence({
+          caption: "JPEG fixture",
+          contentType: "image/jpeg",
+          dataBase64: JPEG,
+          taskId: task.id,
+          uploader: "human",
+          uploaderKind: "human",
+        }),
+      ).toMatchObject({ contentType: "image/jpeg" });
+      expect(
+        application.addScreenshotEvidence({
+          caption: "WebP fixture",
+          contentType: "image/webp",
+          dataBase64: WEBP,
+          taskId: task.id,
+          uploader: "human",
+          uploaderKind: "human",
+        }),
+      ).toMatchObject({ contentType: "image/webp" });
+    } finally {
+      application.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  test("cascades evidence bytes when its Project, Task, or Subtask is deleted", () => {
+    const { application, directory, project, subtask, task } = fixture();
+    try {
+      const taskEvidence = application.addScreenshotEvidence({
+        caption: "Task deletion proof",
+        contentType: "image/png",
+        dataBase64: PNG,
+        taskId: task.id,
+        uploader: "human",
+        uploaderKind: "human",
+      });
+      const subtaskEvidence = application.addScreenshotEvidence({
+        caption: "Subtask deletion proof",
+        contentType: "image/png",
+        dataBase64: PNG,
+        subtaskId: subtask.id,
+        uploader: "human",
+        uploaderKind: "human",
+      });
+
+      application.removeSubtask(subtask.id);
+      expect(() =>
+        application.getScreenshotEvidence(subtaskEvidence.id),
+      ).toThrow("does not exist");
+      expect(
+        application.getScreenshotEvidence(taskEvidence.id).dataBase64,
+      ).toBe(PNG);
+
+      application.removeTask(task.id);
+      expect(() => application.getScreenshotEvidence(taskEvidence.id)).toThrow(
+        "does not exist",
+      );
+
+      const projectTask = application.createTask({
+        name: "Project deletion task",
+        projectId: project.id,
+      });
+      const projectEvidence = application.addScreenshotEvidence({
+        caption: "Project deletion proof",
+        contentType: "image/png",
+        dataBase64: PNG,
+        taskId: projectTask.id,
+        uploader: "human",
+        uploaderKind: "human",
+      });
+      application.removeProject(project.id);
+      expect(() =>
+        application.getScreenshotEvidence(projectEvidence.id),
+      ).toThrow("does not exist");
     } finally {
       application.close();
       rmSync(directory, { force: true, recursive: true });
