@@ -74,6 +74,26 @@ capped at 6000 characters by default with a truncation notice when the cap is re
 truncated brief is never a complete record; run `task detail` for the full Task record. The
 brief is a starting point, not a substitute for the loop below.
 
+Agent-facing CLI reads are bounded. Prefer `project context --compact` and `task detail
+--summary` when selecting work, then expand only the fields needed for the next decision. The
+bounded list reads accept `--limit` (up to the route cap), and a returned `--cursor` continues
+the same route and target. The current caps are: project list 50, project context Tasks 50,
+portfolio Projects 50, attention 100, Task/Subtask status Subtasks 100, T3 status sources 20,
+GitHub check/workflow runs 50 each, session-detail findings 50, and Subtask history reports 100. A page that omits rows includes `truncated: true`, a non-null `nextCursor`, and a stderr
+warning; page it before treating the read as complete. Exact-cap pages are complete and report
+`truncated: false` when `--limit` was supplied. Cursors are scoped to the command and record
+identity, so do not reuse one for another route or Task/Subtask.
+
+Use `subtask history --tail N` for the newest N reports, or `--since ISO_TIMESTAMP` for reports
+strictly after a timestamp. Both support cursor paging; history cursors use `(createdAt, id)`
+so reports with equal timestamps are neither duplicated nor skipped. History keeps
+verifications attached to the reports in the returned page and retains IDs, states, reasons,
+and counts. `task detail --summary` retains identity, state, reason, priority/owner, and counts
+for acceptance criteria, dependencies, repository links, and tracker links while omitting the
+long values. `project context --compact` keeps project identity, Task/Subtask IDs, names,
+states, reasons, and criteria/link counts while omitting long descriptions, evidence, and
+tracker-link values.
+
 For coding work, resolve the current checkout before reading or reporting Factory work. First
 resolve the Project without a branch filter and inspect its existing Tasks. Then use the branch
 filter when it identifies the work. The CLI

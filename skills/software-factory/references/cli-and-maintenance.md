@@ -75,6 +75,23 @@ bun run src/cli.ts session unlink --thread-id THREAD_ID --association-id ASSOCIA
   --json --database "$FACTORY_DB"
 ```
 
+Agent-facing read bounds:
+
+- `project list` caps Projects at 50; `project context` caps Tasks at 50;
+  `project portfolio` caps Projects at 50; and `project attention` caps items at 100.
+- `task status` and `subtask status` cap Subtask rows at 100; `project t3-status` caps sources
+  at 20; GitHub check/workflow runs cap at 50 each; and session-detail findings cap at 50.
+- `subtask history` caps reports at 100 and accepts `--tail N` or `--since ISO_TIMESTAMP`.
+  Use the returned `--cursor` to continue a page. History cursors use the timestamp and report
+  ID together, so equal timestamps remain stable.
+
+All bounded list reads accept `--limit` up to their route cap and emit `truncated: true`, a
+non-null `nextCursor`, and a stderr warning when rows were omitted. `--limit` exact-cap and
+empty reads are complete and report `truncated: false` with `nextCursor: null`. Cursors are
+scoped to their command and Task/Subtask target. `task detail --summary` and
+`project context --compact` retain IDs, states, reasons, and count fields while omitting long
+free-text values and expanded link/history content.
+
 Tasks and Subtasks expose both an internal UUID `id` and a durable human-readable `simpleId`.
 Tasks use `T-<number>` and Subtasks use `ST-<number>`. Every `--task-id`, `--subtask-id`,
 `--task-ids`, and `--subtask-ids` flag accepts either form; prefer the simple reference when
@@ -159,4 +176,3 @@ describing the blocker or the verification check. A complete report remains
 noninteractive CLI intentionally refuses verification so an agent cannot
 self-approve its work; rejected or deferred verification reasons remain a
 human-only PWA concern.
-

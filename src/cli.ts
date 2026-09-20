@@ -41,6 +41,14 @@ import {
   type FactoryRemoteBriefData,
   type FactoryRemoteClient,
 } from "./remote-client";
+import {
+  CLI_READ_CAPS,
+  includePageMetadata,
+  paginateHistory,
+  paginateOffset,
+  parseReadLimit,
+  warnIfTruncated,
+} from "./cli-reads";
 
 const SCHEMA_VERSION = 1 as const;
 
@@ -94,7 +102,13 @@ function parseArgs(args: string[]): ParsedArgs {
       const flag = value.slice(2);
       const next = args[index + 1];
       if (next === undefined || next.startsWith("--")) {
-        if (flag === "confirm" || flag === "json" || flag === "overwrite") {
+        if (
+          flag === "compact" ||
+          flag === "confirm" ||
+          flag === "json" ||
+          flag === "overwrite" ||
+          flag === "summary"
+        ) {
           flags.set(flag, "true");
           continue;
         }
@@ -403,6 +417,155 @@ function firstReportLine(report: {
 
 function isoDate(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
+}
+
+function readCursorFlag(flags: Map<string, string>): string | undefined {
+  const value = flags.get("cursor")?.trim();
+  if (flags.has("cursor") && !value) {
+    throw new Error("--cursor must not be empty.");
+  }
+  return value;
+}
+
+function historySinceFlag(flags: Map<string, string>): string | undefined {
+  const value = flags.get("since")?.trim();
+  if (value === undefined) return undefined;
+  if (!value || Number.isNaN(new Date(value).getTime())) {
+    throw new Error("--since must be a valid ISO timestamp.");
+  }
+  return new Date(value).toISOString();
+}
+
+function historyTailFlag(flags: Map<string, string>): number | undefined {
+  const configured = flags.get("tail");
+  if (configured === undefined) return undefined;
+  if (flags.has("since")) {
+    throw new Error("Use either --tail or --since, not both.");
+  }
+  const value = Number(configured);
+  if (
+    !/^\d+$/.test(configured) ||
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > CLI_READ_CAPS.history
+  ) {
+    throw new Error(
+      `--tail must be an integer from 1 through ${CLI_READ_CAPS.history}.`,
+    );
+  }
+  if (flags.has("limit")) {
+    throw new Error("Use either --tail or --limit, not both.");
+  }
+  return value;
+}
+
+function taskSummary(task: TaskDetail) {
+  return {
+    id: task.id,
+    simpleId: task.simpleId,
+    name: task.name,
+    projectId: task.projectId,
+    ...(task.branchName ? { branchName: task.branchName } : {}),
+    ...(task.pullRequestUrl ? { pullRequestUrl: task.pullRequestUrl } : {}),
+    ...(task.priority ? { priority: task.priority } : {}),
+    ...(task.owner ? { owner: task.owner } : {}),
+    ...(task.workState ? { workState: task.workState } : {}),
+    ...(task.workStateSource ? { workStateSource: task.workStateSource } : {}),
+    ...(task.stateReason ? { stateReason: task.stateReason } : {}),
+    ...(task.sortOrder === undefined ? {} : { sortOrder: task.sortOrder }),
+    ...(task.archiveState ? { archiveState: task.archiveState } : {}),
+    revision: task.revision,
+    acceptanceCriteriaCount: task.acceptanceCriteria.length,
+    dependencyCount: task.dependencies.length,
+    repositoryLinkCount: task.repositoryLinks.length,
+    trackerLinkCount: task.trackerLinks.length,
+  };
+}
+
+type ProjectContextTask = Awaited<
+  ReturnType<FactoryRemoteClient["getProjectContext"]>
+>["tasks"][number];
+
+function compactProjectContextTask(task: ProjectContextTask) {
+  return {
+    ...taskSummary(task),
+    subtaskCount: task.subtasks.length,
+    subtasks: task.subtasks.map((subtask) => ({
+      id: subtask.id,
+      simpleId: subtask.simpleId,
+      name: subtask.name,
+      taskId: subtask.taskId,
+      ...(subtask.workState ? { workState: subtask.workState } : {}),
+      ...(subtask.stateReason ? { stateReason: subtask.stateReason } : {}),
+      ...(subtask.archiveState ? { archiveState: subtask.archiveState } : {}),
+    })),
+  };
+}
+
+function compactProjectContext(
+  context: Awaited<ReturnType<FactoryRemoteClient["getProjectContext"]>>,
+  tasks: ProjectContextTask[],
+) {
+  return {
+    id: context.id,
+    name: context.name,
+    ...(context.gitOriginUrl ? { gitOriginUrl: context.gitOriginUrl } : {}),
+    ...(context.t3Mappings ? { t3Mappings: context.t3Mappings } : {}),
+    ...(context.workspaceRoot ? { workspaceRoot: context.workspaceRoot } : {}),
+    trackerLinkCount: context.trackerLinks.length,
+    taskCount: context.tasks.length,
+    tasks: tasks.map(compactProjectContextTask),
+  };
+}
+
+function capGithubStatus(
+  value: unknown,
+  flags: Map<string, string>,
+  scope: string,
+): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const status = value as Record<string, unknown>;
+  const result = { ...status };
+  let anyTruncated = false;
+  let firstNextCursor: string | null = null;
+  for (const field of ["checkRuns", "workflowRuns"] as const) {
+    const items = status[field];
+    if (!Array.isArray(items)) continue;
+    const fieldCursorName = `${field === "checkRuns" ? "check-runs" : "workflow-runs"}-cursor`;
+    const cursor =
+      flags.get(fieldCursorName)?.trim() ||
+      flags.get("cursor")?.trim() ||
+      undefined;
+    const page = paginateOffset(
+      items,
+      parseReadLimit(flags, CLI_READ_CAPS.githubRuns),
+      cursor,
+      `${scope}:${field}`,
+    );
+    warnIfTruncated(`GitHub ${field}`, page);
+    result[field] = page.items;
+    const metadata = includePageMetadata(
+      page,
+      flags.has(fieldCursorName) || flags.has("cursor"),
+    );
+    if (metadata) {
+      result[`${field}Truncated`] = metadata.truncated;
+      result[`${field}NextCursor`] = metadata.nextCursor;
+      result[`${field}TotalCount`] = metadata.totalCount;
+    }
+    if (page.truncated) {
+      anyTruncated = true;
+      firstNextCursor ??= page.nextCursor;
+    }
+  }
+  if (anyTruncated) {
+    result.truncated = true;
+    result.nextCursor = firstNextCursor;
+  } else if (flags.has("limit")) {
+    result.truncated = false;
+    result.nextCursor = null;
+  }
+  return result;
 }
 
 async function makeBriefInput({
@@ -1012,7 +1175,21 @@ async function main(args: string[]): Promise<void> {
     const projects = gitOriginUrl
       ? await projectsMatchingGitOrigin(application, gitOriginUrl)
       : await application.listProjects();
-    output({ projects: projects.map(projectSummary) });
+    const page = paginateOffset(
+      projects.map(projectSummary),
+      parseReadLimit(parsed.flags, CLI_READ_CAPS.projectList),
+      readCursorFlag(parsed.flags),
+      `project-list:${gitOriginUrl ?? "all"}`,
+    );
+    warnIfTruncated("project list", page);
+    const metadata = includePageMetadata(
+      page,
+      parsed.flags.has("limit") || parsed.flags.has("cursor"),
+    );
+    output({
+      projects: page.items,
+      ...(metadata ?? {}),
+    });
     return;
   }
 
@@ -1053,11 +1230,27 @@ async function main(args: string[]): Promise<void> {
       throw new Error("--branch-name must not be empty.");
     }
 
+    const context = await application.getProjectContext({
+      ...(branchName === undefined ? {} : { branchName }),
+      projectId: project.id,
+    });
+    const page = paginateOffset(
+      context.tasks,
+      parseReadLimit(parsed.flags, CLI_READ_CAPS.projectContextTasks),
+      readCursorFlag(parsed.flags),
+      `project-context:${project.id}:${branchName ?? "all"}`,
+    );
+    warnIfTruncated("project context tasks", page);
+    const compact = parsed.flags.get("compact") === "true";
+    const compacted = compactProjectContext(context, page.items);
+    const metadata = includePageMetadata(
+      page,
+      parsed.flags.has("limit") || parsed.flags.has("cursor"),
+    );
     output({
-      context: await application.getProjectContext({
-        ...(branchName === undefined ? {} : { branchName }),
-        projectId: project.id,
-      }),
+      context: compact
+        ? { ...compacted, ...(metadata ?? {}) }
+        : { ...context, tasks: page.items, ...(metadata ?? {}) },
     });
     return;
   }
@@ -1188,7 +1381,25 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "project" && action === "portfolio") {
-    output({ portfolio: await application.getPortfolioStatus() });
+    const portfolio = await application.getPortfolioStatus();
+    const page = paginateOffset(
+      portfolio.projects,
+      parseReadLimit(parsed.flags, CLI_READ_CAPS.portfolioProjects),
+      readCursorFlag(parsed.flags),
+      "project-portfolio",
+    );
+    warnIfTruncated("project portfolio projects", page);
+    const metadata = includePageMetadata(
+      page,
+      parsed.flags.has("limit") || parsed.flags.has("cursor"),
+    );
+    output({
+      portfolio: {
+        ...portfolio,
+        projects: page.items,
+        ...(metadata ?? {}),
+      },
+    });
     return;
   }
 
@@ -1206,13 +1417,23 @@ async function main(args: string[]): Promise<void> {
             ).map((project) => project.id),
           )
         : undefined;
-    output({
-      attention: (await application.getAttentionProjection()).filter(
-        (item) =>
-          matchingProjectIds === undefined ||
-          matchingProjectIds.has(item.projectId),
-      ),
-    });
+    const attention = (await application.getAttentionProjection()).filter(
+      (item) =>
+        matchingProjectIds === undefined ||
+        matchingProjectIds.has(item.projectId),
+    );
+    const page = paginateOffset(
+      attention,
+      parseReadLimit(parsed.flags, CLI_READ_CAPS.attention),
+      readCursorFlag(parsed.flags),
+      `project-attention:${gitOriginUrl ?? ""}:${workspaceRoot ?? ""}`,
+    );
+    warnIfTruncated("project attention", page);
+    const metadata = includePageMetadata(
+      page,
+      parsed.flags.has("limit") || parsed.flags.has("cursor"),
+    );
+    output({ attention: page.items, ...(metadata ?? {}) });
     return;
   }
 
@@ -1230,23 +1451,64 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "project" && action === "t3-status") {
     const sourceId = sourceIdFlag(parsed.flags);
+    const projectId = requiredFlag(parsed.flags, "project-id");
+    const status = (await t3Coordinator.status(projectId, sourceId)) as {
+      sources: unknown[];
+      [key: string]: unknown;
+    };
+    const page = paginateOffset(
+      status.sources,
+      parseReadLimit(parsed.flags, CLI_READ_CAPS.t3Sources),
+      readCursorFlag(parsed.flags),
+      `project-t3-status:${projectId}:${sourceId ?? "all"}`,
+    );
+    warnIfTruncated("project T3 status sources", page);
+    const metadata = includePageMetadata(
+      page,
+      parsed.flags.has("limit") || parsed.flags.has("cursor"),
+    );
     output({
-      status: await t3Coordinator.status(
-        requiredFlag(parsed.flags, "project-id"),
-        sourceId,
-      ),
+      status: { ...status, sources: page.items, ...(metadata ?? {}) },
     });
     return;
   }
 
   if (resource === "session" && action === "detail") {
     const sourceId = sourceIdFlag(parsed.flags);
+    const threadId = requiredFlag(parsed.flags, "thread-id");
+    const session = await t3Coordinator.threadDetail(
+      threadId,
+      turnLimitFlag(parsed.flags),
+      sourceId,
+    );
+    const sessionRecord =
+      session && typeof session === "object" && !Array.isArray(session)
+        ? (session as Record<string, unknown>)
+        : undefined;
+    const findings = sessionRecord?.findings;
+    if (Array.isArray(findings)) {
+      const page = paginateOffset(
+        findings,
+        parseReadLimit(parsed.flags, CLI_READ_CAPS.sessionFindings),
+        readCursorFlag(parsed.flags),
+        `session-detail:${threadId}:${sourceId ?? "all"}`,
+      );
+      warnIfTruncated("session detail findings", page);
+      const metadata = includePageMetadata(
+        page,
+        parsed.flags.has("limit") || parsed.flags.has("cursor"),
+      );
+      output({
+        session: {
+          ...sessionRecord,
+          findings: page.items,
+          ...(metadata ?? {}),
+        },
+      });
+      return;
+    }
     output({
-      session: await t3Coordinator.threadDetail(
-        requiredFlag(parsed.flags, "thread-id"),
-        turnLimitFlag(parsed.flags),
-        sourceId,
-      ),
+      session,
     });
     return;
   }
@@ -1327,10 +1589,11 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "task" && action === "detail") {
+    const task = await application.getTaskDetail(
+      requiredFlag(parsed.flags, "task-id"),
+    );
     output({
-      task: await application.getTaskDetail(
-        requiredFlag(parsed.flags, "task-id"),
-      ),
+      task: parsed.flags.get("summary") === "true" ? taskSummary(task) : task,
     });
     return;
   }
@@ -1415,10 +1678,21 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (resource === "task" && action === "status") {
+    const taskId = requiredFlag(parsed.flags, "task-id");
+    const status = await application.getTaskStatus(taskId);
+    const page = paginateOffset(
+      status.subtasks,
+      parseReadLimit(parsed.flags, CLI_READ_CAPS.statusSubtasks),
+      readCursorFlag(parsed.flags),
+      `task-status:${taskId}`,
+    );
+    warnIfTruncated("task status subtasks", page);
+    const metadata = includePageMetadata(
+      page,
+      parsed.flags.has("limit") || parsed.flags.has("cursor"),
+    );
     output({
-      status: await application.getTaskStatus(
-        requiredFlag(parsed.flags, "task-id"),
-      ),
+      status: { ...status, subtasks: page.items, ...(metadata ?? {}) },
     });
     return;
   }
@@ -1426,11 +1700,23 @@ async function main(args: string[]): Promise<void> {
   if (resource === "task" && action === "github-status") {
     const taskId = requiredFlag(parsed.flags, "task-id");
     if (remoteClient) {
-      output({ status: await remoteClient.taskGithubStatus(taskId) });
+      output({
+        status: capGithubStatus(
+          await remoteClient.taskGithubStatus(taskId),
+          parsed.flags,
+          `task-github-status:${taskId}`,
+        ),
+      });
       return;
     }
     const task = await application.getTaskDetail(taskId);
-    output({ status: await readGitHubStatus(task.pullRequestUrl) });
+    output({
+      status: capGithubStatus(
+        await readGitHubStatus(task.pullRequestUrl),
+        parsed.flags,
+        `task-github-status:${taskId}`,
+      ),
+    });
     return;
   }
 
@@ -1572,28 +1858,79 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "subtask" && action === "status") {
     const taskId = requiredFlag(parsed.flags, "task-id");
-    output({ status: await application.getTaskStatus(taskId) });
+    const status = await application.getTaskStatus(taskId);
+    const page = paginateOffset(
+      status.subtasks,
+      parseReadLimit(parsed.flags, CLI_READ_CAPS.statusSubtasks),
+      readCursorFlag(parsed.flags),
+      `subtask-status:${taskId}`,
+    );
+    warnIfTruncated("subtask status subtasks", page);
+    const metadata = includePageMetadata(
+      page,
+      parsed.flags.has("limit") || parsed.flags.has("cursor"),
+    );
+    output({
+      status: { ...status, subtasks: page.items, ...(metadata ?? {}) },
+    });
     return;
   }
 
   if (resource === "subtask" && action === "github-status") {
     const subtaskId = requiredFlag(parsed.flags, "subtask-id");
     if (remoteClient) {
-      output({ status: await remoteClient.subtaskGithubStatus(subtaskId) });
+      output({
+        status: capGithubStatus(
+          await remoteClient.subtaskGithubStatus(subtaskId),
+          parsed.flags,
+          `subtask-github-status:${subtaskId}`,
+        ),
+      });
       return;
     }
     const subtask = await application.getSubtaskDetail(subtaskId);
-    output({ status: await readGitHubStatus(subtask.pullRequestUrl) });
+    output({
+      status: capGithubStatus(
+        await readGitHubStatus(subtask.pullRequestUrl),
+        parsed.flags,
+        `subtask-github-status:${subtaskId}`,
+      ),
+    });
     return;
   }
 
   if (resource === "subtask" && action === "history") {
     const subtaskId = requiredFlag(parsed.flags, "subtask-id");
+    const tail = historyTailFlag(parsed.flags);
+    const since = historySinceFlag(parsed.flags);
+    const cursor = readCursorFlag(parsed.flags);
+    const reportHistory = await application.getSubtaskReportHistory(subtaskId);
+    const verificationHistory =
+      await application.getSubtaskVerificationHistory(subtaskId);
+    const reportPage = paginateHistory(reportHistory, {
+      cursor,
+      direction: tail === undefined ? "forward" : "backward",
+      limit: tail ?? parseReadLimit(parsed.flags, CLI_READ_CAPS.history),
+      scope: `subtask-history:${subtaskId}`,
+      since,
+    });
+    const reportIds = new Set(reportPage.items.map((report) => report.id));
+    const verifications = verificationHistory
+      .filter((verification) => reportIds.has(verification.reportId))
+      .sort(
+        (left, right) =>
+          isoDate(left.createdAt).localeCompare(isoDate(right.createdAt)) ||
+          left.id.localeCompare(right.id),
+      );
+    warnIfTruncated("subtask history reports", reportPage);
     output({
       history: {
-        reports: await application.getSubtaskReportHistory(subtaskId),
-        verifications:
-          await application.getSubtaskVerificationHistory(subtaskId),
+        nextCursor: reportPage.nextCursor,
+        reportCount: reportHistory.length,
+        reports: reportPage.items,
+        truncated: reportPage.truncated,
+        verificationCount: verificationHistory.length,
+        verifications,
       },
     });
     return;
