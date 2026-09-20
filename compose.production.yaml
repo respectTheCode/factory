@@ -1,0 +1,74 @@
+# ST-165 authoritative production service. The data volume is provisioned
+# separately and must be supplied explicitly before this project is started.
+name: factory-pilot-st162-ewgahg
+
+x-factory-image: &factory-image
+  image: ${FACTORY_IMAGE:-factory:production}
+  platform: linux/amd64
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      FACTORY_REVISION: ${FACTORY_REVISION:-}
+
+services:
+  tailscale:
+    image: tailscale/tailscale:v1.102.3@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680
+    hostname: factory-pilot
+    environment:
+      TS_HOSTNAME: factory-pilot
+      TS_AUTH_ONCE: "true"
+      TS_BOOT_TIMEOUT: 1h
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ../files/tailscale:/config:ro
+    ports:
+      - "${FACTORY_BIND_IP:?Set the private LAN address}:${FACTORY_PUBLIC_PORT:-3101}:3000"
+    restart: unless-stopped
+
+  factory:
+    <<: *factory-image
+    init: true
+    user: bun
+    network_mode: service:tailscale
+    depends_on:
+      tailscale:
+        condition: service_started
+    environment:
+      FACTORY_ENVIRONMENT: production
+      FACTORY_HOST: 0.0.0.0
+      FACTORY_PORT: "3000"
+      FACTORY_DB: /data/factory.sqlite
+      FACTORY_REQUIRE_EXISTING_DB: "true"
+      FACTORY_OPERATOR_NAME: kevin
+      FACTORY_OPERATOR_SECRET_FILE: /run/secrets/factory_operator
+      FACTORY_ALLOWED_ORIGINS: ${FACTORY_ALLOWED_ORIGINS:-}
+      FACTORY_T3_SOURCES_FILE: /run/factory-t3/sources.json
+      FACTORY_BACKUP_DIR: ${FACTORY_BACKUP_DIR:-/backups/production}
+      FACTORY_BACKUP_REQUIRE_NFS: "true"
+    volumes:
+      - factory-data:/data
+      - factory-backups:/backups
+      - ../files/secrets/production-operator-secret:/run/secrets/factory_operator:ro
+      - ../files/t3:/run/factory-t3:ro
+    restart: unless-stopped
+    stop_grace_period: 30s
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+
+volumes:
+  factory-backups:
+    name: factory-pilot-backups-nfs
+    # Provisioned NFS volume shared with the pilot; production uses its own
+    # /backups/production directory within the share.
+    external: true
+  factory-data:
+    name: ${FACTORY_DATA_VOLUME:?FACTORY_DATA_VOLUME must name the provisioned production volume}
+    external: true
+  tailscale-state:

@@ -32,6 +32,20 @@ Never print, echo, or paste the token into a handoff.
 
 ### Remote mode
 
+On machines with an installed client, load the operator-managed configuration before
+running Factory commands:
+
+```sh
+set -a
+. "$HOME/.config/factory/env"
+set +a
+"$FACTORY_CLI" doctor --json
+```
+
+Use that configured remote endpoint and token path; do not substitute a former
+host URL or add `--database`. The local database examples below apply only to
+explicitly authorized host maintenance, not routine work on a remote client.
+
 Agent machines that do not host the Factory service use the remote CLI instead of a local
 database. Set `FACTORY_URL` (the service on the local network, for example
 `http://192.168.1.20:3000`) and `FACTORY_ACCESS_TOKEN_FILE` (an absolute path to this machine's

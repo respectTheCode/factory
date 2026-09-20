@@ -1,11 +1,17 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
 // @ts-expect-error The poller is a deliberately dependency-light JavaScript entrypoint.
-import { pollPilot } from "../../scripts/poll-pilot.mjs";
+import { pollPilot, runPredeployBackup } from "../../scripts/poll-pilot.mjs";
 
 const RELEASE_SHA = "a".repeat(40);
 const RUNNING_SHA = "b".repeat(40);
@@ -19,16 +25,22 @@ function fixtureDirectory(): string {
 function requestFixture(
   events: string[],
   options: {
+    environment?: "pilot" | "production";
     releaseSha?: string;
     runningSha?: string;
     webhookStatus?: number;
+    webhookBodies?: string[];
   } = {},
 ) {
+  const environment = options.environment ?? "pilot";
   const releaseSha = options.releaseSha ?? RELEASE_SHA;
   const runningSha = options.runningSha ?? RUNNING_SHA;
   return async (url: URL, requestOptions: Record<string, unknown> = {}) => {
     const serialized = url.toString();
-    if (serialized.includes("api.github.com/repos/")) {
+    if (
+      serialized ===
+      `https://api.github.com/repos/respectTheCode/factory/git/ref/heads/deploy%2Ffactory-${environment}`
+    ) {
       events.push("github");
       return {
         status: 200,
@@ -39,11 +51,12 @@ function requestFixture(
       events.push("pilot");
       return {
         status: 200,
-        body: JSON.stringify({ environment: "pilot", revision: runningSha }),
+        body: JSON.stringify({ environment, revision: runningSha }),
       };
     }
     if (requestOptions.method === "POST") {
       events.push("webhook");
+      options.webhookBodies?.push(String(requestOptions.body ?? ""));
       return { status: options.webhookStatus ?? 202, body: "{}" };
     }
     throw new Error(`Unexpected fixture request: ${serialized}`);
@@ -51,6 +64,33 @@ function requestFixture(
 }
 
 describe("pilot release poller backup gate", () => {
+  test("rejects an unrecognized deployment environment before reading a ref", async () => {
+    const directory = fixtureDirectory();
+    const events: string[] = [];
+    try {
+      for (const selectedEnvironment of [
+        "staging",
+        "__proto__",
+        "constructor",
+      ]) {
+        await expect(
+          pollPilot({
+            cwd: directory,
+            environment: {
+              FACTORY_DEPLOY_ENVIRONMENT: selectedEnvironment,
+            },
+            request: requestFixture(events),
+          }),
+        ).rejects.toThrow(
+          "FACTORY_DEPLOY_ENVIRONMENT must be pilot or production",
+        );
+      }
+      expect(events).toEqual([]);
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   test("does not run a backup for a matching release", async () => {
     const directory = fixtureDirectory();
     const events: string[] = [];
@@ -170,5 +210,116 @@ describe("pilot release poller backup gate", () => {
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }
+  });
+
+  test("production mode uses its dedicated ref, identity, and state file", async () => {
+    const directory = fixtureDirectory();
+    const webhookFile = join(directory, "production-webhook");
+    const webhookBodies: string[] = [];
+    writeFileSync(webhookFile, `${WEBHOOK_URL}\n`, { mode: 0o600 });
+    const events: string[] = [];
+    try {
+      const result = await pollPilot({
+        cwd: directory,
+        environment: {
+          FACTORY_DEPLOY_ENVIRONMENT: "production",
+          FACTORY_PILOT_WEBHOOK_FILE: webhookFile,
+        },
+        request: requestFixture(events, {
+          environment: "production",
+          webhookBodies,
+        }),
+        backup: async ({ environment }: { environment: NodeJS.ProcessEnv }) => {
+          expect(environment.FACTORY_DEPLOY_ENVIRONMENT).toBe("production");
+        },
+      });
+
+      expect(result).toEqual({ status: "requested", sha: RELEASE_SHA });
+      expect(events).toEqual(["github", "pilot", "webhook"]);
+      expect(webhookBodies).toHaveLength(1);
+      expect(JSON.parse(webhookBodies[0]!)).toMatchObject({
+        ref: "refs/heads/deploy/factory-production",
+        after: RELEASE_SHA,
+      });
+      expect(
+        JSON.parse(
+          readFileSync(
+            join(directory, ".factory-production-last-request.json"),
+            "utf8",
+          ),
+        ),
+      ).toMatchObject({ sha: RELEASE_SHA });
+      expect(() =>
+        readFileSync(join(directory, ".factory-pilot-last-request.json")),
+      ).toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  test("production pre-deploy backup selects the fixed project and environment guard", async () => {
+    const directory = fixtureDirectory();
+    const binDirectory = join(directory, "bin");
+    const dockerLog = join(directory, "docker.log");
+    mkdirSync(binDirectory);
+    writeFileSync(
+      join(binDirectory, "docker"),
+      `#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+case "$1" in
+  ps) printf 'abc123\\n' ;;
+  inspect) printf 'healthy\\n' ;;
+  exec) printf '${RUNNING_SHA}\\n' ;;
+  *) exit 1 ;;
+esac
+`,
+      { mode: 0o700 },
+    );
+    try {
+      await runPredeployBackup({
+        cwd: directory,
+        environment: {
+          FACTORY_DEPLOY_ENVIRONMENT: "production",
+          PATH: `${binDirectory}:${Bun.env.PATH ?? ""}`,
+          FAKE_DOCKER_LOG: dockerLog,
+        },
+        runningSha: RUNNING_SHA,
+      });
+      const dockerCalls = readFileSync(dockerLog, "utf8");
+      expect(dockerCalls).toContain(
+        "--filter label=com.docker.compose.project=factory-pilot-st162-ewgahg",
+      );
+      expect(dockerCalls).toContain(
+        "--env FACTORY_EXPECTED_ENVIRONMENT=production",
+      );
+      expect(dockerCalls).toContain(
+        "--filter label=com.docker.compose.service=factory",
+      );
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  test("pre-deploy backup keeps the pilot default but rejects an invalid environment", async () => {
+    const scriptPath = join(
+      import.meta.dir,
+      "../../scripts/pilot-predeploy-backup.sh",
+    );
+    const child = Bun.spawn(["bash", scriptPath], {
+      env: {
+        FACTORY_DEPLOY_ENVIRONMENT: "staging",
+        PATH: Bun.env.PATH ?? "",
+      },
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    const [exitCode, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain(
+      "FACTORY_DEPLOY_ENVIRONMENT must be pilot or production",
+    );
   });
 });
