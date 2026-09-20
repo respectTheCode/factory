@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { normalizeWorkspaceRoot, sameWorkspaceRoot } from "./workspace";
 
 import {
@@ -38,6 +38,7 @@ import type { T3ProjectMapping } from "./t3-source-identity";
 import {
   MAX_SCREENSHOT_BYTES,
   SCREENSHOT_CONTENT_TYPES,
+  screenshotSummary,
   type ScreenshotContentType,
 } from "./screenshot-evidence";
 import { createMachineCredentialStore } from "./machine-credential";
@@ -1847,19 +1848,48 @@ async function main(args: string[]): Promise<void> {
     if (Boolean(taskId) === Boolean(subtaskId)) {
       throw new Error("Provide exactly one of --task-id or --subtask-id.");
     }
-    output({
-      screenshots: await application.listScreenshotEvidence(
-        subtaskId ? { subtaskId } : { taskId: taskId! },
-      ),
-    });
+    const target = subtaskId ? { subtaskId } : { taskId: taskId! };
+    const page = paginateOffset(
+      await application.listScreenshotEvidence(target),
+      parseReadLimit(parsed.flags, CLI_READ_CAPS.screenshotEvidence),
+      readCursorFlag(parsed.flags),
+      `screenshot-list:${subtaskId ?? taskId}`,
+    );
+    warnIfTruncated("screenshot evidence", page);
+    const metadata = includePageMetadata(
+      page,
+      parsed.flags.has("limit") || parsed.flags.has("cursor"),
+    );
+    output({ screenshots: page.items, ...(metadata ?? {}) });
     return;
   }
 
   if (resource === "screenshot" && action === "get") {
+    const evidence = await application.getScreenshotEvidence(
+      requiredFlag(parsed.flags, "screenshot-id"),
+    );
+    const outputPath = parsed.flags.get("output")?.trim();
+    if (parsed.flags.has("output") && !outputPath) {
+      throw new Error("--output must not be empty.");
+    }
+    if (outputPath) {
+      const resolvedOutputPath = resolve(outputPath);
+      writeFileSync(
+        resolvedOutputPath,
+        Buffer.from(evidence.dataBase64, "base64"),
+        {
+          flag: parsed.flags.has("overwrite") ? "w" : "wx",
+          mode: 0o600,
+        },
+      );
+      output({
+        output: resolvedOutputPath,
+        screenshot: screenshotSummary(evidence),
+      });
+      return;
+    }
     output({
-      screenshot: await application.getScreenshotEvidence(
-        requiredFlag(parsed.flags, "screenshot-id"),
-      ),
+      screenshot: screenshotSummary(evidence),
     });
     return;
   }

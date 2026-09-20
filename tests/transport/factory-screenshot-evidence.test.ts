@@ -10,8 +10,8 @@ import { createFactoryServer } from "../../src/server";
 
 const operator = { name: "Kevin", secret: "operator-secret" };
 const PNG = Buffer.from(
-  "89504e470d0a1a0a0000000d4948445200000001000000010806000000",
-  "hex",
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAABAAAAAQBPJcTWAAAADElEQVR4nGP8x8AAAAMCAQBFsWYPAAAAAElFTkSuQmCC",
+  "base64",
 ).toString("base64");
 
 type TRPCBody = {
