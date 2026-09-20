@@ -1,4 +1,7 @@
 export const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
+export const MAX_SCREENSHOT_CAPTION_CHARACTERS = 2_000;
+export const MAX_SCREENSHOT_CAPTURE_CONTEXT_CHARACTERS = 500;
+export const MAX_SCREENSHOT_METADATA_CHARACTERS = 200;
 
 export const SCREENSHOT_CONTENT_TYPES = [
   "image/jpeg",
@@ -167,49 +170,86 @@ function isJpegSof(marker: number): boolean {
   );
 }
 
+function jpegScanEnd(
+  bytes: Uint8Array,
+  start: number,
+): { marker: number; offset: number; hasData: boolean } | undefined {
+  let hasData = false;
+  let offset = start;
+  while (offset < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      hasData = true;
+      offset += 1;
+      continue;
+    }
+    let markerOffset = offset;
+    while (markerOffset < bytes.length && bytes[markerOffset] === 0xff) {
+      markerOffset += 1;
+    }
+    if (markerOffset >= bytes.length) return undefined;
+    const marker = bytes[markerOffset]!;
+    if (marker === 0x00) {
+      hasData = true;
+      offset = markerOffset + 1;
+      continue;
+    }
+    if (marker >= 0xd0 && marker <= 0xd7) {
+      offset = markerOffset + 1;
+      continue;
+    }
+    return { hasData, marker, offset };
+  }
+  return undefined;
+}
+
 function isValidJpeg(bytes: Uint8Array): boolean {
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
     return false;
   }
   let offset = 2;
   let sawFrame = false;
+  let sawScan = false;
   while (offset < bytes.length) {
     if (bytes[offset] !== 0xff) return false;
+    const markerOffset = offset;
     while (bytes[offset] === 0xff) offset += 1;
     const marker = bytes[offset++];
     if (marker === undefined) return false;
-    if (marker === 0xd9) return sawFrame && offset === bytes.length;
+    if (marker === 0xd9) {
+      return sawFrame && sawScan && offset === bytes.length;
+    }
     if (marker === 0xda) {
-      if (offset + 2 > bytes.length) return false;
-      const length = (bytes[offset]! << 8) | bytes[offset + 1]!;
-      if (length < 2 || offset + length > bytes.length) return false;
-      offset += length;
-      while (offset + 1 < bytes.length) {
-        if (bytes[offset] !== 0xff) {
-          offset += 1;
-          continue;
-        }
-        const next = bytes[offset + 1]!;
-        if (next === 0x00 || (next >= 0xd0 && next <= 0xd7)) {
-          offset += 2;
-          continue;
-        }
-        return next === 0xd9 && sawFrame && offset + 2 === bytes.length;
+      if (markerOffset + 4 > bytes.length) return false;
+      const length = (bytes[markerOffset + 2]! << 8) | bytes[markerOffset + 3]!;
+      const components = bytes[markerOffset + 4]!;
+      if (
+        length < 6 ||
+        components < 1 ||
+        length < 6 + components * 2 ||
+        markerOffset + 2 + length > bytes.length
+      ) {
+        return false;
       }
-      return false;
+      const scanStart = markerOffset + 2 + length;
+      const scanEnd = jpegScanEnd(bytes, scanStart);
+      if (!scanEnd?.hasData) return false;
+      sawScan = true;
+      offset = scanEnd.offset;
+      continue;
     }
     if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) continue;
-    if (offset + 2 > bytes.length) return false;
-    const length = (bytes[offset]! << 8) | bytes[offset + 1]!;
-    if (length < 2 || offset + length > bytes.length) return false;
+    if (marker === 0x01) continue;
+    if (markerOffset + 4 > bytes.length) return false;
+    const length = (bytes[markerOffset + 2]! << 8) | bytes[markerOffset + 3]!;
+    if (length < 2 || markerOffset + 2 + length > bytes.length) return false;
     if (isJpegSof(marker)) {
       if (length < 7) return false;
-      const height = (bytes[offset + 3]! << 8) | bytes[offset + 4]!;
-      const width = (bytes[offset + 5]! << 8) | bytes[offset + 6]!;
+      const height = (bytes[markerOffset + 5]! << 8) | bytes[markerOffset + 6]!;
+      const width = (bytes[markerOffset + 7]! << 8) | bytes[markerOffset + 8]!;
       if (width < 1 || height < 1) return false;
       sawFrame = true;
     }
-    offset += length;
+    offset = markerOffset + 2 + length;
   }
   return false;
 }
@@ -277,11 +317,11 @@ function isValidWebp(bytes: Uint8Array): boolean {
 }
 
 /**
- * Validate the bounded container structure, dimensions, chunk lengths, and
+ * Validate bounded image-container integrity: dimensions, chunk lengths, and
  * checksums available in the supported formats. This deliberately stops short
- * of decoding pixels; browser rendering remains the final visual check.
+ * of decoding pixels; the browser preview must load for a visual check.
  */
-function isStructurallyValidImage(
+function hasValidImageContainer(
   contentType: ScreenshotContentType,
   bytes: Uint8Array,
 ): boolean {
@@ -328,16 +368,28 @@ export function normalizeScreenshotEvidence(
     );
   }
   const contentType = input.contentType as ScreenshotContentType;
-  if (
-    !isStructurallyValidImage(contentType, screenshotBytes(input.dataBase64))
-  ) {
-    throw new Error("Screenshot bytes are not a structurally valid image.");
+  if (!hasValidImageContainer(contentType, screenshotBytes(input.dataBase64))) {
+    throw new Error(
+      "Screenshot bytes failed image container integrity checks.",
+    );
   }
   if (typeof input.caption !== "string" || !input.caption.trim()) {
     throw new Error("Screenshot caption must not be empty.");
   }
+  const caption = input.caption.trim();
+  if (caption.length > MAX_SCREENSHOT_CAPTION_CHARACTERS) {
+    throw new Error(
+      `Screenshot caption must be no longer than ${MAX_SCREENSHOT_CAPTION_CHARACTERS} characters.`,
+    );
+  }
   if (typeof input.uploader !== "string" || !input.uploader.trim()) {
     throw new Error("Screenshot uploader must not be empty.");
+  }
+  const uploader = input.uploader.trim();
+  if (uploader.length > MAX_SCREENSHOT_METADATA_CHARACTERS) {
+    throw new Error(
+      `Screenshot uploader must be no longer than ${MAX_SCREENSHOT_METADATA_CHARACTERS} characters.`,
+    );
   }
   const validateDate = (value: Date | string | undefined, field: string) => {
     if (
@@ -355,12 +407,19 @@ export function normalizeScreenshotEvidence(
   const optionalText = (
     value: string | undefined,
     field: string,
+    maximum: number,
   ): string | undefined => {
     if (value === undefined) return undefined;
     if (typeof value !== "string" || !value.trim()) {
       throw new Error(`Screenshot ${field} must not be blank when provided.`);
     }
-    return value.trim();
+    const trimmed = value.trim();
+    if (trimmed.length > maximum) {
+      throw new Error(
+        `Screenshot ${field} must be no longer than ${maximum} characters.`,
+      );
+    }
+    return trimmed;
   };
 
   if (input.uploaderKind !== "human" && input.uploaderKind !== "machine") {
@@ -373,9 +432,21 @@ export function normalizeScreenshotEvidence(
   ) {
     throw new Error("Screenshot label is invalid.");
   }
-  const captureContext = optionalText(input.captureContext, "capture context");
-  const testedRevision = optionalText(input.testedRevision, "tested revision");
-  const pairId = optionalText(input.pairId, "pair ID");
+  const captureContext = optionalText(
+    input.captureContext,
+    "capture context",
+    MAX_SCREENSHOT_CAPTURE_CONTEXT_CHARACTERS,
+  );
+  const testedRevision = optionalText(
+    input.testedRevision,
+    "tested revision",
+    MAX_SCREENSHOT_METADATA_CHARACTERS,
+  );
+  const pairId = optionalText(
+    input.pairId,
+    "pair ID",
+    MAX_SCREENSHOT_METADATA_CHARACTERS,
+  );
   return {
     id: input.id.trim(),
     projectId: input.projectId.trim(),
@@ -384,8 +455,8 @@ export function normalizeScreenshotEvidence(
     contentType,
     dataBase64: input.dataBase64,
     sizeBytes,
-    caption: input.caption.trim(),
-    uploader: input.uploader.trim(),
+    caption,
+    uploader,
     uploaderKind: input.uploaderKind,
     uploadedAt: new Date(input.uploadedAt ?? new Date()),
     ...(input.capturedAt ? { capturedAt: new Date(input.capturedAt) } : {}),

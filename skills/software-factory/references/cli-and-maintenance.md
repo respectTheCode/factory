@@ -81,12 +81,15 @@ the same key for the same file and metadata, and choose a new key for a changed 
 Uploads accept PNG, JPEG, and WebP bytes up to 5 MiB. `screenshot list` returns metadata only,
 is bounded by `--limit` (maximum 100), and continues with its returned `--cursor`. `screenshot
 get` also returns metadata only unless `--output` is explicitly supplied for the image bytes:
+The upload check verifies supported container integrity, dimensions, lengths, and checksums; it
+does not decode pixels. Treat an image as visual proof only after the dashboard preview loads;
+preview failures are shown explicitly and can be retried.
 
 ```bash
 # Local host maintenance uses an explicit database.
 bun run src/cli.ts screenshot upload --task-id T-38 --file ./proof.png \
   --content-type image/png --caption "Task dashboard proof" \
-  --request-key screenshot-t38-1 --database "$FACTORY_DB"
+  --database "$FACTORY_DB"
 bun run src/cli.ts screenshot list --task-id T-38 --limit 50 \
   --database "$FACTORY_DB"
 bun run src/cli.ts screenshot get --screenshot-id SCREENSHOT_ID \
