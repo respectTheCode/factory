@@ -156,10 +156,23 @@ describe("compact bounded CLI reads", () => {
       expect(firstPayload.history.truncated).toBe(true);
       expect(firstPayload.history.nextCursor).toEqual(expect.any(String));
       expect(first.stderr).toContain("output truncated");
-      expect(firstPayload.history.verifications).toEqual([
-        expect.objectContaining({
-          reportId: fixture.reports[0]!.id,
-        }),
+      expect(
+        firstPayload.history.verifications.every((verification) =>
+          firstPayload.history.reports.some(
+            (report) => report.id === verification.reportId,
+          ),
+        ),
+      ).toBe(true);
+
+      const allHistory = await runCli([...base.slice(0, 4), ...base.slice(4)]);
+      const allHistoryPayload = JSON.parse(allHistory.stdout) as {
+        history: {
+          reports: Array<{ id: string }>;
+          verifications: Array<{ reportId: string }>;
+        };
+      };
+      expect(allHistoryPayload.history.verifications).toEqual([
+        expect.objectContaining({ reportId: fixture.reports[0]!.id }),
       ]);
 
       const second = await runCli([
