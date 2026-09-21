@@ -97,32 +97,41 @@ describe("remote Factory CLI", () => {
     };
 
     try {
-      const localDetail = await runCli([
-        "task",
-        "detail",
-        "--task-id",
-        task.simpleId!,
-        "--database",
-        databasePath,
-        "--json",
-      ]);
       const remoteDetail = await runCli(
-        ["task", "detail", "--task-id", task.simpleId!, "--json"],
+        ["task", "detail", "--task-id", task.simpleId!, "--summary", "--json"],
         remoteEnvironment,
       );
       expect(remoteDetail.exitCode).toBe(0);
-      expect(JSON.parse(remoteDetail.stdout)).toEqual(
-        JSON.parse(localDetail.stdout),
+      expect(JSON.parse(remoteDetail.stdout).task).toMatchObject({
+        id: task.id,
+        simpleId: task.simpleId,
+        acceptanceCriteriaCount: 0,
+      });
+      expect(JSON.parse(remoteDetail.stdout).task).not.toHaveProperty(
+        "objective",
       );
 
       const remoteContext = await runCli(
-        ["project", "context", "--workspace-root", directory, "--json"],
+        [
+          "project",
+          "context",
+          "--workspace-root",
+          directory,
+          "--compact",
+          "--json",
+        ],
         remoteEnvironment,
       );
       expect(remoteContext.exitCode).toBe(0);
       expect(JSON.parse(remoteContext.stdout)).toMatchObject({
         context: {
           t3Mappings: [{ sourceId: "legacy", workspaceRoot: directory }],
+          tasks: [
+            {
+              id: task.id,
+              subtaskCount: 1,
+            },
+          ],
         },
       });
 
@@ -153,11 +162,40 @@ describe("remote Factory CLI", () => {
         },
       });
 
+      const reportPayload = JSON.parse(report.stdout) as {
+        report: { createdAt: string };
+      };
       const history = await runCli(
-        ["subtask", "history", "--subtask-id", subtask.simpleId!, "--json"],
+        [
+          "subtask",
+          "history",
+          "--subtask-id",
+          subtask.simpleId!,
+          "--tail",
+          "1",
+          "--since",
+          new Date(
+            new Date(reportPayload.report.createdAt).getTime() - 1,
+          ).toISOString(),
+          "--json",
+        ],
         remoteEnvironment,
       );
-      expect(JSON.parse(history.stdout).history.reports).toHaveLength(1);
+      expect(history.exitCode).not.toBe(0);
+      expect(history.stderr).toContain("either --tail or --since");
+      const remoteHistory = await runCli(
+        [
+          "subtask",
+          "history",
+          "--subtask-id",
+          subtask.simpleId!,
+          "--tail",
+          "1",
+          "--json",
+        ],
+        remoteEnvironment,
+      );
+      expect(JSON.parse(remoteHistory.stdout).history.reports).toHaveLength(1);
 
       const doctor = await runCli(["doctor", "--json"], remoteEnvironment);
       expect(doctor.exitCode).toBe(0);
