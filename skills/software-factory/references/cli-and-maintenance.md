@@ -75,6 +75,39 @@ bun run src/cli.ts session unlink --thread-id THREAD_ID --association-id ASSOCIA
   --json --database "$FACTORY_DB"
 ```
 
+Screenshot proof is scoped to one Task or Subtask. Uploads retain a caller-supplied
+`--request-key` in remote mode so a retry after an uncertain response is idempotent; reuse
+the same key for the same file and metadata, and choose a new key for a changed upload.
+Uploads accept PNG, JPEG, and static WebP images up to 5 MiB; animated WebP is unsupported. `screenshot list` returns metadata only,
+is bounded by `--limit` (maximum 100), and continues with its returned `--cursor`. `screenshot
+get` also returns metadata only unless `--output` is explicitly supplied for the image bytes.
+
+The upload check verifies supported container integrity, dimensions, lengths, and checksums; it
+does not decode pixels. Treat an image as visual proof only after the dashboard preview loads;
+preview failures are shown explicitly and can be retried.
+
+```bash
+# Local host maintenance uses an explicit database.
+bun run src/cli.ts screenshot upload --task-id T-38 --file ./proof.png \
+  --content-type image/png --caption "Task dashboard proof" \
+  --database "$FACTORY_DB"
+bun run src/cli.ts screenshot list --task-id T-38 --limit 50 \
+  --database "$FACTORY_DB"
+bun run src/cli.ts screenshot get --screenshot-id SCREENSHOT_ID \
+  --output ./proof-download.png --database "$FACTORY_DB"
+
+# Remote agent mode uses FACTORY_URL and FACTORY_ACCESS_TOKEN_FILE and omits --database.
+FACTORY_URL="$FACTORY_URL" FACTORY_ACCESS_TOKEN_FILE="$FACTORY_ACCESS_TOKEN_FILE" \
+  bun run src/cli.ts screenshot upload --subtask-id ST-173 --file ./proof.png \
+  --content-type image/png --caption "Subtask proof" \
+  --request-key screenshot-st173-1
+FACTORY_URL="$FACTORY_URL" FACTORY_ACCESS_TOKEN_FILE="$FACTORY_ACCESS_TOKEN_FILE" \
+  bun run src/cli.ts screenshot list --subtask-id ST-173 --limit 50
+FACTORY_URL="$FACTORY_URL" FACTORY_ACCESS_TOKEN_FILE="$FACTORY_ACCESS_TOKEN_FILE" \
+  bun run src/cli.ts screenshot get --screenshot-id SCREENSHOT_ID \
+  --output ./proof-download.png
+```
+
 Agent-facing read bounds:
 
 - `project list` caps Projects at 50; `project context` caps Tasks at 50;

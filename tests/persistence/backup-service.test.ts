@@ -18,15 +18,35 @@ import { describe, expect, test } from "bun:test";
 import { createFactoryApplication } from "../../src/application";
 import { createBackupService } from "../../src/backup-service";
 
+const PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAABAAAAAQBPJcTWAAAADElEQVR4nGP8x8AAAAMCAQBFsWYPAAAAAElFTkSuQmCC";
+
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "factory-backup-service-"));
   const databasePath = join(directory, "factory.sqlite");
   const backupDirectory = join(directory, "nfs-backups");
   const application = createFactoryApplication({ databasePath });
-  application.createProject({ name: "Backup fixture" });
+  const project = application.createProject({ name: "Backup fixture" });
+  const task = application.createTask({
+    name: "Backup screenshot task",
+    projectId: project.id,
+  });
+  const screenshot = application.addScreenshotEvidence({
+    caption: "Backup screenshot proof",
+    contentType: "image/png",
+    dataBase64: PNG,
+    taskId: task.id,
+    uploader: "backup-fixture",
+    uploaderKind: "machine",
+  });
   application.close();
   mkdirSync(backupDirectory);
-  return { backupDirectory, databasePath, directory };
+  return {
+    backupDirectory,
+    databasePath,
+    directory,
+    screenshotId: screenshot.id,
+  };
 }
 
 describe("Factory app-owned backup service", () => {
@@ -90,7 +110,8 @@ describe("Factory app-owned backup service", () => {
   });
 
   test("creates verified backups, rejects unsafe IDs, preserves unrelated entries, and rejects corruption on restore", async () => {
-    const { backupDirectory, databasePath, directory } = fixture();
+    const { backupDirectory, databasePath, directory, screenshotId } =
+      fixture();
     const unrelatedDirectory = join(backupDirectory, "keep-me");
     mkdirSync(unrelatedDirectory);
     writeFileSync(join(unrelatedDirectory, "note.txt"), "unrelated");
@@ -105,6 +126,16 @@ describe("Factory app-owned backup service", () => {
       expect(await service.list()).toMatchObject([
         { id: backup.id, integrity: "verified", trigger: "manual" },
       ]);
+      const restored = createFactoryApplication({
+        databasePath: join(backupDirectory, backup.id, "snapshot.sqlite"),
+      });
+      try {
+        expect(restored.getScreenshotEvidence(screenshotId).dataBase64).toBe(
+          PNG,
+        );
+      } finally {
+        restored.close();
+      }
       await expect(service.delete("../keep-me")).rejects.toThrow(
         "Backup ID is invalid",
       );
@@ -199,7 +230,8 @@ describe("Factory app-owned backup service", () => {
   });
 
   test("prepares a verified local restore copy and creates a mandatory pre-restore backup", async () => {
-    const { backupDirectory, databasePath, directory } = fixture();
+    const { backupDirectory, databasePath, directory, screenshotId } =
+      fixture();
     try {
       const service = createBackupService({
         databasePath,
@@ -211,6 +243,14 @@ describe("Factory app-owned backup service", () => {
       expect(result.preRestoreId).not.toBe(source.id);
       expect(lstatSync(result.stagedDatabasePath).isFile()).toBe(true);
       expect(lstatSync(result.stagedManifestPath).isFile()).toBe(true);
+      const staged = createFactoryApplication({
+        databasePath: result.stagedDatabasePath,
+      });
+      try {
+        expect(staged.getScreenshotEvidence(screenshotId).dataBase64).toBe(PNG);
+      } finally {
+        staged.close();
+      }
       await service.list();
       expect(existsSync(result.stagedDatabasePath)).toBe(true);
       expect(existsSync(result.stagedManifestPath)).toBe(true);

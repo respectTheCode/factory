@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,11 @@ import { createFactoryApplication } from "../../src/application";
 import { createMachineCredentialStore } from "../../src/machine-credential";
 import { createFactoryServer } from "../../src/server";
 import type { T3ActivityReader } from "../../src/t3";
+
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAABAAAAAQBPJcTWAAAADElEQVR4nGP8x8AAAAMCAQBFsWYPAAAAAElFTkSuQmCC",
+  "base64",
+);
 
 async function runCli(
   args: string[],
@@ -41,6 +46,9 @@ describe("remote Factory CLI", () => {
     const directory = mkdtempSync(join(tmpdir(), "factory-remote-cli-"));
     const databasePath = join(directory, "factory.sqlite");
     const tokenPath = join(directory, "access-token");
+    const screenshotPath = join(directory, "remote-proof.png");
+    const screenshotOutputPath = join(directory, "remote-proof-download.png");
+    writeFileSync(screenshotPath, PNG);
     const app = createFactoryApplication({ databasePath });
     const project = app.createProject({
       name: "Remote Factory",
@@ -161,6 +169,86 @@ describe("remote Factory CLI", () => {
           sessionRef: { externalThreadId: "thread-remote", provider: "t3" },
         },
       });
+
+      const upload = await runCli(
+        [
+          "screenshot",
+          "upload",
+          "--subtask-id",
+          subtask.simpleId!,
+          "--file",
+          screenshotPath,
+          "--content-type",
+          "image/png",
+          "--caption",
+          "Remote screenshot proof",
+          "--request-key",
+          "screenshot-remote-1",
+        ],
+        remoteEnvironment,
+      );
+      expect(upload.exitCode).toBe(0);
+      const uploadPayload = JSON.parse(upload.stdout) as {
+        screenshot: { id: string };
+      };
+
+      const screenshotList = await runCli(
+        [
+          "screenshot",
+          "list",
+          "--subtask-id",
+          subtask.simpleId!,
+          "--limit",
+          "1",
+        ],
+        remoteEnvironment,
+      );
+      expect(screenshotList.exitCode).toBe(0);
+      const screenshotListPayload = JSON.parse(screenshotList.stdout) as {
+        screenshots: Array<{ dataBase64?: string; id: string }>;
+      };
+      expect(screenshotListPayload.screenshots[0]?.id).toBe(
+        uploadPayload.screenshot.id,
+      );
+      expect(screenshotListPayload.screenshots[0]).not.toHaveProperty(
+        "dataBase64",
+      );
+
+      const screenshotMetadata = await runCli(
+        ["screenshot", "get", "--screenshot-id", uploadPayload.screenshot.id],
+        remoteEnvironment,
+      );
+      expect(screenshotMetadata.exitCode).toBe(0);
+      expect(
+        JSON.parse(screenshotMetadata.stdout).screenshot,
+      ).not.toHaveProperty("dataBase64");
+
+      const screenshotDownload = await runCli(
+        [
+          "screenshot",
+          "get",
+          "--screenshot-id",
+          uploadPayload.screenshot.id,
+          "--output",
+          screenshotOutputPath,
+        ],
+        remoteEnvironment,
+      );
+      expect(screenshotDownload.exitCode).toBe(0);
+      expect(readFileSync(screenshotOutputPath)).toEqual(PNG);
+      const screenshotExisting = await runCli(
+        [
+          "screenshot",
+          "get",
+          "--screenshot-id",
+          uploadPayload.screenshot.id,
+          "--output",
+          screenshotOutputPath,
+        ],
+        remoteEnvironment,
+      );
+      expect(screenshotExisting.exitCode).not.toBe(0);
+      expect(screenshotExisting.stderr).toContain("already exists");
 
       const reportPayload = JSON.parse(report.stdout) as {
         report: { createdAt: string };

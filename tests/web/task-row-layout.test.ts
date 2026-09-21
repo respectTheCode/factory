@@ -13,4 +13,13 @@ describe("expanded task row layout", () => {
       /\.task-card-header\s+\.task-summary\s*\{[\s\S]*?flex:\s*1\s+1\s+auto;/,
     );
   });
+
+  test("gives expanded mobile subtask copy the full row below its title", () => {
+    expect(stylesheet).toMatch(
+      /\.subtask\.row-expanded\s+\.subtask-copy\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;[\s\S]*?grid-row:\s*2;/,
+    );
+    expect(stylesheet).toContain(
+      ".subtask-content:not(:has(.reorder-handle))\n    .subtask-copy {\n    grid-column: 1 / -1;",
+    );
+  });
 });

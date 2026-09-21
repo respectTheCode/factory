@@ -1,0 +1,444 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import type {
+  ScreenshotContentType,
+  ScreenshotEvidence,
+  ScreenshotEvidenceSummary,
+} from "../screenshot-evidence";
+import { MAX_SCREENSHOT_BYTES } from "../screenshot-evidence";
+
+type ScreenshotProofProps = {
+  canMutate: boolean;
+  busy: boolean;
+  ownerLabel: string;
+  screenshots: ScreenshotEvidenceSummary[];
+  onGet: (screenshotId: string) => Promise<ScreenshotEvidence>;
+  onUpload: (input: {
+    capturedAt?: string;
+    captureContext?: string;
+    caption: string;
+    contentType: ScreenshotContentType;
+    dataBase64: string;
+    label?: "before" | "after";
+    pairId?: string;
+    requestKey: string;
+    testedRevision?: string;
+  }) => Promise<void>;
+};
+
+function formatDate(value: Date | string | undefined): string {
+  if (!value) return "Unavailable";
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleString()
+    : "Unavailable";
+}
+
+async function fileData(file: File): Promise<{
+  contentType: ScreenshotContentType;
+  dataBase64: string;
+}> {
+  const contentType = file.type as ScreenshotContentType;
+  if (
+    contentType !== "image/png" &&
+    contentType !== "image/jpeg" &&
+    contentType !== "image/webp"
+  ) {
+    throw new Error("Choose a PNG, JPEG, or WebP screenshot.");
+  }
+  if (file.size > MAX_SCREENSHOT_BYTES) {
+    throw new Error(
+      `Screenshot must be no larger than ${MAX_SCREENSHOT_BYTES} bytes.`,
+    );
+  }
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return { contentType, dataBase64: btoa(binary) };
+}
+
+function screenshotObjectUrl(evidence: ScreenshotEvidence): string {
+  const binary = atob(evidence.dataBase64);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return URL.createObjectURL(new Blob([bytes], { type: evidence.contentType }));
+}
+
+export type ScreenshotUploadRequestState = {
+  key: string;
+  signature?: string;
+};
+
+export function screenshotUploadRequest(
+  current: ScreenshotUploadRequestState,
+  signature: string,
+  outcome: "retry" | "success" = "retry",
+  createKey: () => string = () => crypto.randomUUID(),
+): ScreenshotUploadRequestState {
+  if (outcome === "success") {
+    return { key: createKey() };
+  }
+  if (current.signature !== undefined && current.signature !== signature) {
+    return { key: createKey(), signature };
+  }
+  return { key: current.key, signature };
+}
+
+export function ScreenshotProof({
+  busy,
+  canMutate,
+  onGet,
+  onUpload,
+  ownerLabel,
+  screenshots,
+}: ScreenshotProofProps) {
+  const [file, setFile] = useState<File | null>(null);
+  const [caption, setCaption] = useState("");
+  const [captureContext, setCaptureContext] = useState("");
+  const [capturedAt, setCapturedAt] = useState("");
+  const [testedRevision, setTestedRevision] = useState("");
+  const [pairId, setPairId] = useState("");
+  const [label, setLabel] = useState<"" | "before" | "after">("");
+  const [loaded, setLoaded] = useState<Record<string, ScreenshotEvidence>>({});
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const previewUrlsRef = useRef<Record<string, string>>({});
+  const uploadRequestRef = useRef<ScreenshotUploadRequestState>({
+    key: crypto.randomUUID(),
+    signature: undefined as string | undefined,
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
+  const [retryVersion, setRetryVersion] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const screenshotIds = useMemo(
+    () => screenshots.map((screenshot) => screenshot.id).join(","),
+    [screenshots],
+  );
+
+  useEffect(() => {
+    let active = true;
+    const missing = screenshots.filter(
+      (screenshot) => !loaded[screenshot.id] && !loadErrors[screenshot.id],
+    );
+    void Promise.all(
+      missing.map(async (screenshot) => {
+        try {
+          return await onGet(screenshot.id);
+        } catch (loadError) {
+          return {
+            error:
+              loadError instanceof Error
+                ? loadError.message
+                : "Unable to load screenshot.",
+            id: screenshot.id,
+          };
+        }
+      }),
+    ).then((results) => {
+      if (!active) return;
+      const successful = results.filter(
+        (result): result is ScreenshotEvidence => !("error" in result),
+      );
+      for (const result of successful) {
+        const objectUrl = screenshotObjectUrl(result);
+        previewUrlsRef.current[result.id] = objectUrl;
+      }
+      setLoaded((current) => {
+        const next = { ...current };
+        for (const result of successful) {
+          next[result.id] = result;
+        }
+        return next;
+      });
+      setPreviewUrls((current) => {
+        const next = { ...current };
+        for (const result of successful) {
+          next[result.id] = previewUrlsRef.current[result.id]!;
+        }
+        return next;
+      });
+      setLoadErrors((current) => {
+        const next = { ...current };
+        for (const result of results) {
+          if ("error" in result) next[result.id] = result.error;
+          else delete next[result.id];
+        }
+        return next;
+      });
+    });
+    return () => {
+      active = false;
+    };
+    // The callback is owned by the dashboard connection; IDs are the data dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retryVersion, screenshotIds]);
+
+  useEffect(
+    () => () => {
+      Object.values(previewUrlsRef.current).forEach((url) =>
+        URL.revokeObjectURL(url),
+      );
+    },
+    [],
+  );
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!file || !caption.trim()) return;
+    const form = event.currentTarget;
+    setError(null);
+    setUploading(true);
+    try {
+      const encoded = await fileData(file);
+      const signature = JSON.stringify({
+        captureContext: captureContext.trim(),
+        capturedAt,
+        caption: caption.trim(),
+        contentType: encoded.contentType,
+        data: `${file.name}:${file.size}:${file.lastModified}`,
+        label,
+        pairId: pairId.trim(),
+        testedRevision: testedRevision.trim(),
+      });
+      uploadRequestRef.current = screenshotUploadRequest(
+        uploadRequestRef.current,
+        signature,
+      );
+      await onUpload({
+        ...encoded,
+        caption: caption.trim(),
+        ...(capturedAt
+          ? { capturedAt: new Date(capturedAt).toISOString() }
+          : {}),
+        ...(captureContext.trim()
+          ? { captureContext: captureContext.trim() }
+          : {}),
+        ...(testedRevision.trim()
+          ? { testedRevision: testedRevision.trim() }
+          : {}),
+        ...(pairId.trim() ? { pairId: pairId.trim() } : {}),
+        ...(label ? { label } : {}),
+        requestKey: uploadRequestRef.current.key,
+      });
+      uploadRequestRef.current = screenshotUploadRequest(
+        uploadRequestRef.current,
+        signature,
+        "success",
+      );
+      setFile(null);
+      setCaption("");
+      setCaptureContext("");
+      setCapturedAt("");
+      setTestedRevision("");
+      setPairId("");
+      setLabel("");
+      const input = form.querySelector<HTMLInputElement>('input[type="file"]');
+      if (input) input.value = "";
+    } catch (uploadError) {
+      setError(
+        uploadError instanceof Error
+          ? uploadError.message
+          : "Screenshot upload failed.",
+      );
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const renderCard = (summary: ScreenshotEvidenceSummary) => {
+    const src = previewUrls[summary.id];
+    const loadError = loadErrors[summary.id];
+    return (
+      <article className="screenshot-proof-card" key={summary.id}>
+        {src ? (
+          <a
+            aria-label={`Open full-size screenshot: ${summary.caption}`}
+            href={src}
+            rel="noreferrer"
+            target="_blank"
+          >
+            <img alt={summary.caption} loading="lazy" src={src} />
+          </a>
+        ) : loadError ? (
+          <div className="screenshot-proof-loading" role="alert">
+            <span>{loadError}</span>
+            <button
+              onClick={() => {
+                setLoadErrors((current) => {
+                  const next = { ...current };
+                  delete next[summary.id];
+                  return next;
+                });
+                setRetryVersion((version) => version + 1);
+              }}
+              type="button"
+            >
+              Retry preview
+            </button>
+          </div>
+        ) : (
+          <span className="screenshot-proof-loading">Loading preview…</span>
+        )}
+        <strong>{summary.caption}</strong>
+        <div className="screenshot-proof-meta">
+          <span>{summary.label ?? "Unlabeled"}</span>
+          <span>by {summary.uploader}</span>
+          <span>uploaded {formatDate(summary.uploadedAt)}</span>
+          <span>captured {formatDate(summary.capturedAt)}</span>
+          <span>revision {summary.testedRevision ?? "Unavailable"}</span>
+          <span>context {summary.captureContext ?? "Unavailable"}</span>
+        </div>
+      </article>
+    );
+  };
+  const screenshotGroups = useMemo(() => {
+    const groups = new Map<string, ScreenshotEvidenceSummary[]>();
+    for (const screenshot of screenshots) {
+      const key = screenshot.pairId ?? `single:${screenshot.id}`;
+      const group = groups.get(key) ?? [];
+      group.push(screenshot);
+      groups.set(key, group);
+    }
+    return [...groups.values()];
+  }, [screenshots]);
+
+  return (
+    <section
+      aria-label={`${ownerLabel} screenshot proof`}
+      className="screenshot-proof"
+    >
+      <div className="screenshot-proof-heading">
+        <div>
+          <strong>Screenshot proof</strong>
+          <span>{screenshots.length} attached</span>
+        </div>
+        <small>Evidence supplements reports and never verifies work.</small>
+      </div>
+      {screenshots.length > 0 && (
+        <div className="screenshot-proof-grid">
+          {screenshotGroups.map((group) => {
+            const isComparison =
+              group.length > 1 &&
+              group.some((screenshot) => screenshot.label === "before") &&
+              group.some((screenshot) => screenshot.label === "after");
+            if (!isComparison) return group.map(renderCard);
+            return (
+              <div
+                className="screenshot-proof-comparison"
+                key={group[0]?.pairId}
+              >
+                <strong>Before / After comparison</strong>
+                <div className="screenshot-proof-comparison-grid">
+                  {group
+                    .slice()
+                    .sort((left, right) =>
+                      left.label === "before" && right.label === "after"
+                        ? -1
+                        : 1,
+                    )
+                    .map(renderCard)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {canMutate && (
+        <details className="screenshot-proof-upload">
+          <summary>Add screenshot</summary>
+          <form
+            className="screenshot-proof-form"
+            onSubmit={(event) => void submit(event)}
+          >
+            <label>
+              <span>Screenshot file</span>
+              <input
+                accept="image/png,image/jpeg,image/webp"
+                disabled={busy || uploading}
+                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                type="file"
+              />
+            </label>
+            <label>
+              <span>Caption</span>
+              <input
+                disabled={busy || uploading}
+                onChange={(event) => setCaption(event.target.value)}
+                placeholder="What this proves"
+                value={caption}
+              />
+            </label>
+            <details className="screenshot-proof-metadata">
+              <summary>Optional metadata</summary>
+              <div className="screenshot-proof-form-grid">
+                <label>
+                  <span>Comparison side</span>
+                  <select
+                    disabled={busy || uploading}
+                    onChange={(event) =>
+                      setLabel(event.target.value as "" | "before" | "after")
+                    }
+                    value={label}
+                  >
+                    <option value="">No comparison</option>
+                    <option value="before">Before</option>
+                    <option value="after">After</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Comparison group</span>
+                  <input
+                    disabled={busy || uploading}
+                    onChange={(event) => setPairId(event.target.value)}
+                    placeholder="Optional group name"
+                    value={pairId}
+                  />
+                </label>
+                <label>
+                  <span>Tested revision</span>
+                  <input
+                    disabled={busy || uploading}
+                    onChange={(event) => setTestedRevision(event.target.value)}
+                    placeholder="Optional commit"
+                    value={testedRevision}
+                  />
+                </label>
+                <label>
+                  <span>Capture context</span>
+                  <input
+                    disabled={busy || uploading}
+                    onChange={(event) => setCaptureContext(event.target.value)}
+                    placeholder="Optional device or viewport"
+                    value={captureContext}
+                  />
+                </label>
+                <label>
+                  <span>Captured at</span>
+                  <input
+                    disabled={busy || uploading}
+                    onChange={(event) => setCapturedAt(event.target.value)}
+                    type="datetime-local"
+                    value={capturedAt}
+                  />
+                </label>
+              </div>
+            </details>
+            <button
+              disabled={busy || uploading || !file || !caption.trim()}
+              type="submit"
+            >
+              {uploading ? "Uploading…" : "Attach screenshot"}
+            </button>
+          </form>
+        </details>
+      )}
+      {error && (
+        <p className="screenshot-proof-error" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}

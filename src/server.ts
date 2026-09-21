@@ -59,6 +59,10 @@ import {
   resolveMachineToken,
   type MachineCredentialIdentity,
 } from "./machine-credential";
+import {
+  SCREENSHOT_CONTENT_TYPES,
+  type ScreenshotContentType,
+} from "./screenshot-evidence";
 import { canonicalPayloadDigest, createIdempotencyStore } from "./idempotency";
 import {
   DEFAULT_SHUTDOWN_TIMEOUT_MS,
@@ -484,6 +488,29 @@ function createRouter(
     return application.getProjectIdForThread(threadId, scopedSourceId);
   };
 
+  const screenshotTargetProjectId: ProjectIdResolver = (input) => {
+    const candidate = input as Record<string, unknown> | null | undefined;
+    if (typeof candidate?.screenshotId === "string") {
+      return application.getProjectIdForScreenshot(candidate.screenshotId);
+    }
+    if (typeof candidate?.taskId === "string") {
+      return application.getProjectIdForTask(candidate.taskId);
+    }
+    if (typeof candidate?.subtaskId === "string") {
+      return application.getProjectIdForSubtask(candidate.subtaskId);
+    }
+    return undefined;
+  };
+  const screenshotTargetSchema = z
+    .object({
+      subtaskId: z.string().trim().min(1).optional(),
+      taskId: z.string().trim().min(1).optional(),
+    })
+    .refine(
+      ({ taskId, subtaskId }) => Boolean(taskId) !== Boolean(subtaskId),
+      "Provide exactly one Task or Subtask ID.",
+    );
+
   const projectUpdates = new ProjectUpdateBus(application);
   const serializedMutation = trpc.middleware(async ({ next }) => {
     try {
@@ -645,6 +672,70 @@ function createRouter(
           const prepared = await backupRestore.prepareRestore(input.backupId);
           return { ...prepared, status: "restarting" as const };
         }),
+    }),
+    screenshots: trpc.router({
+      upload: scopedProcedure(screenshotTargetProjectId)
+        .input(
+          z
+            .object({
+              capturedAt: z.string().trim().min(1).optional(),
+              captureContext: z.string().trim().max(500).optional(),
+              caption: z.string().trim().min(1).max(2_000),
+              contentType: z.enum(
+                SCREENSHOT_CONTENT_TYPES as readonly [
+                  ScreenshotContentType,
+                  ...ScreenshotContentType[],
+                ],
+              ),
+              dataBase64: z.string().min(4).max(7_000_000),
+              label: z.enum(["before", "after"]).optional(),
+              pairId: z.string().trim().max(200).optional(),
+              requestKey: requestKeySchema.optional(),
+              subtaskId: z.string().trim().min(1).optional(),
+              taskId: z.string().trim().min(1).optional(),
+              testedRevision: z.string().trim().max(200).optional(),
+            })
+            .refine(
+              ({ taskId, subtaskId }) => Boolean(taskId) !== Boolean(subtaskId),
+              "Provide exactly one Task or Subtask ID.",
+            ),
+        )
+        .use(serializedMutation)
+        .use(idempotentMutation)
+        .mutation(({ ctx, input }) => {
+          const uploader = ctx.machine?.machineId ?? ctx.human?.name;
+          if (!uploader) throw new TRPCError({ code: "UNAUTHORIZED" });
+          const { requestKey: _requestKey, ...evidenceInput } = input;
+          let evidence;
+          try {
+            evidence = application.addScreenshotEvidence({
+              ...evidenceInput,
+              uploader,
+              uploaderKind: ctx.machine ? "machine" : "human",
+            });
+          } catch (error) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+          const projectId = screenshotTargetProjectId(input);
+          if (!projectId)
+            throw new Error("Screenshot Project could not be resolved.");
+          return withContextDashboard(
+            ctx,
+            evidence,
+            dashboardAfterPublish(application, projectUpdates, projectId),
+          );
+        }),
+      list: scopedProcedure(screenshotTargetProjectId)
+        .input(screenshotTargetSchema)
+        .query(({ input }) => application.listScreenshotEvidence(input)),
+      get: scopedProcedure(screenshotTargetProjectId)
+        .input(z.object({ screenshotId: z.string().trim().min(1) }))
+        .query(({ input }) =>
+          application.getScreenshotEvidence(input.screenshotId),
+        ),
     }),
     projects: trpc.router({
       create: humanProcedure()

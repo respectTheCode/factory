@@ -65,6 +65,12 @@ or paste the machine token.
 - For task creation/edits, archive/restore, backups, or database maintenance, read [references/cli-and-maintenance.md](references/cli-and-maintenance.md).
 - To refresh the compact context, use `bun run src/cli.ts project brief` with the repository identity and database flags below.
 
+Screenshot proof is an evidence attachment scoped to a Task or Subtask. Use the bounded
+`screenshot list` read for metadata and pass `--output` to `screenshot get` only when image
+bytes are required. Remote retries must reuse the same stable `--request-key` for an unchanged
+upload; a changed file or metadata uses a new key. The supported syntax and local/remote
+examples are in [references/cli-and-maintenance.md](references/cli-and-maintenance.md).
+
 Tasks and Subtasks accept `T-<number>` / `ST-<number>` as well as UUIDs. Prefer simple IDs in communication. Reports are append-only claims: `blocked` and `complete` require `--reason` naming the blocker or concrete human check. Only a human can accept the report and make the work completed.
 
 ## Agent operating loop

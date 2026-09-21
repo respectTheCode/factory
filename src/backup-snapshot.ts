@@ -28,6 +28,7 @@ const STATE_COLLECTIONS = [
   "statusReports",
   "verifications",
   "trackerLinks",
+  "screenshotEvidence",
   "runs",
   "codeSessions",
   "codeSessionAssociations",
