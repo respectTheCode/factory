@@ -12,7 +12,11 @@ import type {
 } from "../t3-coordinator";
 import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
 import { BackupsPage } from "./backups";
-import { formatHistoryReportAttribution } from "./history";
+import {
+  formatHistoryReportAttribution,
+  historyThreadsForTarget,
+} from "./history";
+import { HistoryThreadLinks } from "./history-thread-links";
 import {
   githubActionsSummaryLabel,
   summarizeGitHubActions,
@@ -2271,6 +2275,10 @@ function Dashboard() {
                             ),
                           ]);
                           const progress = summarizeTaskProgress(task, status);
+                          const taskHistoryThreads = historyThreadsForTarget(
+                            t3Activity,
+                            task.id,
+                          );
                           const subtaskGroups = groupSubtasksByStatus(
                             task.subtasks.map((subtask, index) => ({
                               ...subtask,
@@ -2796,6 +2804,15 @@ function Dashboard() {
 
                               {taskRowExpanded && (
                                 <>
+                                  {taskHistoryThreads.length > 0 && (
+                                    <details className="task-details task-history">
+                                      <summary>History</summary>
+                                      <HistoryThreadLinks
+                                        onOpenThreadDetail={openT3ThreadDetail}
+                                        threads={taskHistoryThreads}
+                                      />
+                                    </details>
+                                  )}
                                   <div className="subtask-list">
                                     {subtaskGroups.map((subtaskGroup) => (
                                       <section
@@ -3310,6 +3327,15 @@ function Dashboard() {
                                                   {history && (
                                                     <div className="history">
                                                       <strong>History</strong>
+                                                      <HistoryThreadLinks
+                                                        onOpenThreadDetail={
+                                                          openT3ThreadDetail
+                                                        }
+                                                        threads={historyThreadsForTarget(
+                                                          t3Activity,
+                                                          subtask.id,
+                                                        )}
+                                                      />
                                                       {history.reports.map(
                                                         (report) => (
                                                           <p key={report.id}>
