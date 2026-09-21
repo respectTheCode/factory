@@ -445,6 +445,7 @@ export function ObservedActivitySection({
             return (
               <article
                 className="observed-thread"
+                data-observed-thread-key={threadKey}
                 key={observedThreadKey(thread.threadId, thread.sourceId)}
               >
                 <div className="observed-thread-heading">

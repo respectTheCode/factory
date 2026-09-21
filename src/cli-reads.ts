@@ -43,6 +43,7 @@ export const CLI_READ_CAPS = {
   projectList: 50,
   portfolioProjects: 50,
   sessionFindings: 50,
+  screenshotEvidence: 100,
   statusSubtasks: 100,
   t3Sources: 20,
 } as const;
