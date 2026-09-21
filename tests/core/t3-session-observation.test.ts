@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   FactoryApplication,
+  type FactoryState,
   type CodeSessionObservationInput,
 } from "../../src/application";
 import type { T3ShellObservation } from "../../src/t3";
@@ -299,6 +300,171 @@ describe("T3 session observations", () => {
         }),
       ]),
     );
+  });
+
+  test("retains archived Task links without missing-target or active-work drift", () => {
+    const { app } = createApplication();
+    const project = app.createProject({
+      gitOriginUrl: "git@github.com:app-press/watchtower.git",
+      name: "Watchtower",
+    });
+    const task = app.createTask({
+      branchName: "feature/watchtower",
+      name: "Build the Watchtower shell",
+      projectId: project.id,
+    });
+    const input = observation(project.id);
+
+    app.refreshT3Observations({ observations: [input] });
+    app.linkT3Thread({ observation: input, taskId: task.id });
+    app.archiveTask(task.id, "released");
+
+    const findings = app.reconcileT3Project({ projectId: project.id });
+    expect(
+      findings.filter(
+        (finding) =>
+          finding.externalThreadId === input.externalThreadId &&
+          finding.status === "open",
+      ),
+    ).toEqual([]);
+    expect(app.matchT3Observation(input)).toEqual({
+      candidates: [],
+      status: "unmatched",
+    });
+  });
+
+  test("resolves a preexisting missing-target finding after a linked Task is archived", () => {
+    let persisted: FactoryState | undefined;
+    let nextId = 0;
+    const app = new FactoryApplication({
+      clock: () => fixtureDate(),
+      idGenerator: () => `id-${++nextId}`,
+      persist: (state) => {
+        persisted = state;
+      },
+      refreshBeforeOperations: false,
+    });
+    const project = app.createProject({ name: "Watchtower" });
+    const task = app.createTask({
+      branchName: "feature/watchtower",
+      name: "Build the Watchtower shell",
+      projectId: project.id,
+    });
+    const input = observation(project.id);
+
+    app.linkT3Thread({ observation: input, taskId: task.id });
+    app.archiveTask(task.id, "released");
+
+    if (!persisted) throw new Error("Expected the Factory state to persist.");
+    persisted.reconciliationFindings = [
+      ...(persisted.reconciliationFindings ?? []),
+      {
+        candidateIds: [],
+        createdAt: fixtureDate(),
+        dedupeKey: "ambiguous_target:legacy:t3:t3-thread-1",
+        explanation:
+          "The linked Factory target no longer exists in this Project.",
+        externalThreadId: input.externalThreadId,
+        id: "false-missing-target",
+        kind: "ambiguous_target",
+        observedAt: input.sourceUpdatedAt,
+        projectId: project.id,
+        severity: "attention",
+        sourceId: "legacy",
+        status: "open",
+        suggestedAction:
+          "Choose an existing Factory Task or Subtask explicitly.",
+        updatedAt: fixtureDate(),
+      },
+    ];
+
+    const reopened = new FactoryApplication({
+      clock: () => fixtureDate(),
+      idGenerator: () => `reopened-${++nextId}`,
+      refreshBeforeOperations: false,
+      state: persisted,
+    });
+    reopened.reconcileT3Project({ projectId: project.id });
+
+    expect(
+      reopened
+        .listReconciliationFindings(project.id)
+        .find((finding) => finding.id === "false-missing-target"),
+    ).toMatchObject({ status: "resolved" });
+  });
+
+  test("retains archived Subtask links while excluding them from matching", () => {
+    const { app } = createApplication();
+    const project = app.createProject({
+      gitOriginUrl: "git@github.com:app-press/watchtower.git",
+      name: "Watchtower",
+    });
+    const task = app.createTask({
+      name: "Build the Watchtower shell",
+      projectId: project.id,
+    });
+    const subtask = app.createSubtask({
+      name: "Implement the shell",
+      pullRequestUrl: "https://github.com/app-press/watchtower/pull/7",
+      taskId: task.id,
+    });
+    const input = observation(project.id, {
+      linkedPullRequestUrl: "https://github.com/app-press/watchtower/pull/7",
+    });
+
+    app.refreshT3Observations({ observations: [input] });
+    app.linkT3Thread({ observation: input, subtaskId: subtask.id });
+    app.archiveSubtask(subtask.id, "wont_do");
+
+    const findings = app.reconcileT3Project({ projectId: project.id });
+    expect(
+      findings.filter(
+        (finding) =>
+          finding.externalThreadId === input.externalThreadId &&
+          finding.status === "open",
+      ),
+    ).toEqual([]);
+    expect(app.matchT3Observation(input)).toEqual({
+      candidates: [],
+      status: "unmatched",
+    });
+  });
+
+  test("treats a Subtask under an archived Task as archived provenance", () => {
+    const { app } = createApplication();
+    const project = app.createProject({
+      gitOriginUrl: "git@github.com:app-press/watchtower.git",
+      name: "Watchtower",
+    });
+    const task = app.createTask({
+      name: "Build the Watchtower shell",
+      projectId: project.id,
+    });
+    const subtask = app.createSubtask({
+      name: "Implement the shell",
+      pullRequestUrl: "https://github.com/app-press/watchtower/pull/8",
+      taskId: task.id,
+    });
+    const input = observation(project.id, {
+      linkedPullRequestUrl: "https://github.com/app-press/watchtower/pull/8",
+    });
+
+    app.linkT3Thread({ observation: input, subtaskId: subtask.id });
+    app.archiveTask(task.id, "released");
+
+    expect(
+      app
+        .reconcileT3Project({ projectId: project.id })
+        .filter(
+          (finding) =>
+            finding.externalThreadId === input.externalThreadId &&
+            finding.status === "open",
+        ),
+    ).toEqual([]);
+    expect(app.matchT3Observation(input)).toEqual({
+      candidates: [],
+      status: "unmatched",
+    });
   });
 
   test("suppresses and resolves branch mismatch when one linked target matches", () => {

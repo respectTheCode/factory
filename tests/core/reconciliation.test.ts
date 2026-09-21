@@ -378,4 +378,93 @@ describe("T3 reconciliation", () => {
       status: "matched",
     });
   });
+
+  test("keeps archived linked targets out of matching and active drift", () => {
+    const archivedTarget = target({
+      archived: true,
+      branchName: "feature/archived",
+      subtaskId: "subtask-archived",
+      subtaskName: "Archived implementation",
+    });
+
+    expect(
+      matchReconciliationTarget(session({ branch: "feature/archived" }), [
+        archivedTarget,
+      ]),
+    ).toEqual({ candidates: [], status: "unmatched" });
+
+    expect(
+      computeReconciliationFindings({
+        links: [
+          {
+            externalThreadId: "t3-thread",
+            provider: "t3",
+            subtaskId: archivedTarget.subtaskId,
+            taskId: archivedTarget.taskId,
+          },
+        ],
+        now: sourceUpdatedAt,
+        sessions: [
+          session({
+            branch: "feature/other",
+            hasPendingUserInput: true,
+            latestSessionState: "error",
+          }),
+        ],
+        targets: [archivedTarget],
+      }),
+    ).toEqual([]);
+
+    const activeTarget = target({
+      branchName: "feature/active",
+      taskId: "task-active",
+    });
+    const mixedFindings = computeReconciliationFindings({
+      links: [
+        {
+          externalThreadId: "t3-thread",
+          provider: "t3",
+          subtaskId: archivedTarget.subtaskId,
+          taskId: archivedTarget.taskId,
+        },
+        {
+          externalThreadId: "t3-thread",
+          provider: "t3",
+          taskId: activeTarget.taskId,
+        },
+      ],
+      now: sourceUpdatedAt,
+      sessions: [session({ branch: "feature/archived" })],
+      targets: [archivedTarget, activeTarget],
+    });
+    expect(mixedFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "branch_mismatch",
+          taskId: activeTarget.taskId,
+        }),
+      ]),
+    );
+  });
+
+  test("warns when a linked target was deleted", () => {
+    expect(
+      computeReconciliationFindings({
+        links: [
+          {
+            externalThreadId: "t3-thread",
+            provider: "t3",
+            taskId: "deleted-task",
+          },
+        ],
+        now: sourceUpdatedAt,
+        sessions: [session()],
+        targets: [],
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        kind: "ambiguous_target",
+      }),
+    ]);
+  });
 });
