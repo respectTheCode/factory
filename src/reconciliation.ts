@@ -66,6 +66,8 @@ export type ReconciliationTarget = {
   workspaceRoot?: string;
   workState: ReconciliationWorkState;
   latestReportAt?: Date;
+  /** Existing links may still point at archived work, which is not eligible for matching. */
+  archived?: boolean;
 };
 
 export type ReconciliationMatchBasis =
@@ -193,7 +195,9 @@ export function matchReconciliationTarget(
 ): ReconciliationMatch {
   const sourceId = normalizeT3SourceId(session.sourceId);
   const sourceTargets = targets.filter(
-    (target) => normalizeT3SourceId(target.sourceId) === sourceId,
+    (target) =>
+      target.archived !== true &&
+      normalizeT3SourceId(target.sourceId) === sourceId,
   );
   const pullRequestMatches = sourceTargets.filter((target) =>
     same(
@@ -408,12 +412,15 @@ export function computeReconciliationFindings({
         target.projectId === session.projectId &&
         normalizeT3SourceId(target.sourceId) === sourceId,
     );
-    const linkedTargets = sessionLinks
+    const resolvedLinkedTargets = sessionLinks
       .map((link) => targetForLink(link, projectTargets))
       .filter((target): target is ReconciliationTarget => target !== undefined);
     const hasMatchingLinkedBranch =
       session.branch !== undefined &&
-      linkedTargets.some((target) => target.branchName === session.branch);
+      resolvedLinkedTargets.some(
+        (target) =>
+          target.archived !== true && target.branchName === session.branch,
+      );
 
     if (sessionLinks.length === 0) {
       if (!isRecentlyActive(session, now, recentActivityWindowMs)) continue;
@@ -480,6 +487,11 @@ export function computeReconciliationFindings({
         });
         continue;
       }
+
+      // Archived work remains valid provenance for an existing association,
+      // but it must not create active-work drift findings or participate in
+      // automatic matching.
+      if (target.archived === true) continue;
 
       if (
         !hasMatchingLinkedBranch &&

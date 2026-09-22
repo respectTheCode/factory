@@ -2707,7 +2707,11 @@ export class FactoryApplication {
           normalizeT3SourceId(observation.sourceId) === normalizedSourceId) &&
         observation.sourceCurrent !== false,
     );
-    const targets = this.reconciliationTargets(project, normalizedSourceId);
+    const targets = this.reconciliationTargets(
+      project,
+      normalizedSourceId,
+      true,
+    );
     const sessionsById = new Map(
       this.codeSessions.map((session) => [session.id, session]),
     );
@@ -3395,6 +3399,7 @@ export class FactoryApplication {
   private reconciliationTargets(
     project: Project,
     sourceId?: string,
+    includeArchived = false,
   ): ReconciliationTarget[] {
     const repositoryIdentity = normalizeRepositoryIdentity(
       project.gitOriginUrl,
@@ -3418,9 +3423,13 @@ export class FactoryApplication {
           ? project.workspaceRoot
           : undefined);
       for (const task of this.tasks) {
-        if (task.projectId !== project.id || task.archiveState !== undefined) {
+        if (
+          task.projectId !== project.id ||
+          (!includeArchived && task.archiveState !== undefined)
+        ) {
           continue;
         }
+        const taskArchived = task.archiveState !== undefined;
         const taskState = this.getEffectiveTaskWorkState(task);
         targets.push({
           sourceId: currentSourceId,
@@ -3434,15 +3443,21 @@ export class FactoryApplication {
           ...(repositoryIdentity ? { repositoryIdentity } : {}),
           ...(workspaceRoot ? { workspaceRoot } : {}),
           workState: taskState,
+          ...(taskArchived ? { archived: true } : {}),
         });
 
         for (const subtask of this.subtasks) {
           if (
             subtask.taskId !== task.id ||
-            subtask.archiveState !== undefined
+            (!includeArchived &&
+              (task.archiveState !== undefined ||
+                subtask.archiveState !== undefined))
           ) {
             continue;
           }
+          const subtaskArchived =
+            task.archiveState !== undefined ||
+            subtask.archiveState !== undefined;
           const report = this.getCurrentStatusReport(subtask.id);
           targets.push({
             sourceId: currentSourceId,
@@ -3459,6 +3474,7 @@ export class FactoryApplication {
             ...(workspaceRoot ? { workspaceRoot } : {}),
             workState: this.getSubtaskEffectiveWorkState(subtask),
             ...(report ? { latestReportAt: report.createdAt } : {}),
+            ...(subtaskArchived ? { archived: true } : {}),
           });
         }
       }
