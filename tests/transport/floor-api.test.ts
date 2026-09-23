@@ -63,7 +63,7 @@ describe("projects.floor API", () => {
             redirect: "manual",
           });
           expect(ledger.status).toBe(302);
-          expect(new URL(ledger.headers.get("location")!).pathname).toBe("/");
+          expect(ledger.headers.get("location")).toBe("/");
         }
       }
       const input = encodeURIComponent(JSON.stringify({}));

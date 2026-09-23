@@ -1962,7 +1962,10 @@ export function createFactoryServer({
         (request.method === "GET" || request.method === "HEAD") &&
         (url.pathname === "/ledger" || url.pathname === "/ledger/")
       ) {
-        return Response.redirect(new URL("/", request.url), 302);
+        return new Response(null, {
+          headers: { Location: "/" },
+          status: 302,
+        });
       }
 
       if (url.pathname === "/session/login" && request.method === "POST") {
