@@ -2248,7 +2248,7 @@ textarea:focus {
     justify-content: flex-end;
   }
 }
-/* Ledger visual layer. Keep the existing component selectors above stable so
+/* Application visual layer. Keep the existing component selectors above stable so
    reporting, verification, archive, and connection behavior remain unchanged. */
 body {
   background: var(--canvas);
@@ -2287,6 +2287,21 @@ main {
   padding: 24px 24px 64px;
   position: relative;
   z-index: 1;
+}
+
+.app-shell {
+  padding: 24px 0 0;
+  position: relative;
+  z-index: 1;
+}
+
+.app-shell-home {
+  padding-top: 16px;
+}
+
+main.app-main,
+main.floor-main {
+  padding-top: 0;
 }
 
 .deployment-banner {
@@ -2354,7 +2369,7 @@ h2 {
 
 header {
   border-bottom: 1px solid var(--rule);
-  padding-bottom: 16px;
+  padding: 0 24px 16px;
 }
 .wordmark {
   font: 700 15px/1 var(--sans);
@@ -3659,9 +3674,14 @@ option {
     grid-template-columns: 1fr;
   }
 
+  .app-shell {
+    padding: 10px 0 0;
+  }
+
   header {
     align-items: flex-start;
     flex-direction: column;
+    padding-inline: 12px;
   }
 
   .header-status {

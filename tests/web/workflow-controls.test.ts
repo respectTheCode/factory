@@ -73,10 +73,8 @@ describe("PWA workflow controls", () => {
   });
 
   test("shows the durable simple reference on Task and Subtask rows", () => {
-    expect(source).toContain("simpleId={task.simpleId}");
-    expect(source).toContain(
-      "simpleId={\n                                                            subtask.simpleId",
-    );
+    expect(source).toMatch(/simpleId=\{\s*task\.simpleId\s*\}/);
+    expect(source).toMatch(/simpleId=\{\s*subtask\.simpleId\s*\}/);
     expect(source).toContain('className="row-reference"');
     expect(stylesheet).toContain(".row-reference {");
   });

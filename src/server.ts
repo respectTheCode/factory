@@ -38,6 +38,7 @@ import {
   normalizeT3BaseUrl,
   type T3ActivityReader,
 } from "./t3";
+import { FLOOR_DEFAULT_TIMEZONE } from "./floor";
 import { resolveT3AccessToken } from "./t3-credential";
 import {
   DEFAULT_T3_MACHINE_ID,
@@ -817,6 +818,38 @@ function createRouter(
           ? projects.filter(({ id }) => ctx.machine!.projectIds.includes(id))
           : projects;
       }),
+      floor: scopedProcedure()
+        .input(
+          z.object({
+            sourceId: sourceIdSchema.optional(),
+            timezone: z.string().trim().min(1).default(FLOOR_DEFAULT_TIMEZONE),
+          }),
+        )
+        .query(async ({ ctx, input }) => {
+          const sourceId = resolveSourceForContext(ctx, input.sourceId, {
+            requireMachineSource: true,
+          });
+          const projects = application
+            .listProjects()
+            .filter(
+              (project) =>
+                !ctx.machine || ctx.machine.projectIds.includes(project.id),
+            );
+          const activities = await Promise.all(
+            projects.map(async (project) => ({
+              activity: await sourceAwareCoordinator.projectActivity(
+                project.id,
+                sourceId,
+              ),
+              projectId: project.id,
+            })),
+          );
+          return application.getFloorSnapshot({
+            activities,
+            projectIds: projects.map((project) => project.id),
+            timezone: input.timezone,
+          });
+        }),
       attention: scopedProcedure().query(({ ctx }) => {
         const attention = application.getAttentionProjection();
         return ctx.machine
@@ -1924,6 +1957,13 @@ export function createFactoryServer({
     port,
     async fetch(request, bunServer) {
       const url = new URL(request.url);
+
+      if (
+        (request.method === "GET" || request.method === "HEAD") &&
+        (url.pathname === "/ledger" || url.pathname === "/ledger/")
+      ) {
+        return Response.redirect(new URL("/", request.url), 302);
+      }
 
       if (url.pathname === "/session/login" && request.method === "POST") {
         if (!originAllowed(request, allowedOrigins)) {

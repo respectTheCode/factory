@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Factory — The Floor (v0.3 study)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    color-scheme: dark;
+    --canvas:#141210; --panel:#1B1815; --raised:#24201B; --rule:#342E26;
+    --ink:#EAE6DF; --ink-dim:#A2988A; --ink-faint:#635A4D;
+    --sig-down:#E5484D; --sig-ok:#2FBE6B; --sig-warn:#F0B429; --sig-info:#4AA3E0;
+    --tint-down:rgba(229,72,77,.16); --tint-ok:rgba(47,190,107,.16);
+    --tint-warn:rgba(240,180,41,.16); --tint-info:rgba(74,163,224,.16);
+    --accent:#9499CB; --on-accent:#141210; --tint-accent:rgba(148,153,203,.16);
+    --edge:inset 0 1px 0 rgba(255,255,255,.04);
+    --glow-down:drop-shadow(0 0 4px rgba(229,72,77,.55));
+    --glow-ok:drop-shadow(0 0 4px rgba(47,190,107,.55));
+    --glow-warn:drop-shadow(0 0 5px rgba(240,180,41,.6));
+    --glow-info:drop-shadow(0 0 4px rgba(74,163,224,.55));
+    --sans:"IBM Plex Sans",system-ui,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,monospace;
+  }
+  * { box-sizing:border-box; margin:0; }
+  html,body { height:100%; }
+  body {
+    background:var(--canvas); color:var(--ink); font:400 14px/1.5 var(--sans);
+    display:grid; grid-template-rows:56px 1fr; overflow:hidden;
+  }
+  body::before { content:""; position:fixed; inset:0; z-index:2; pointer-events:none;
+    background:radial-gradient(140% 110% at 50% 20%, transparent 50%, rgba(0,0,0,.40) 100%); }
+  body::after { content:""; position:fixed; inset:0; z-index:3; pointer-events:none; opacity:.08;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E"); }
+
+  .eyebrow { font:700 10px/1 var(--sans); letter-spacing:.18em; text-transform:uppercase; color:var(--ink-dim); }
+  .mono { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  .micro { font:400 11px/1.4 var(--mono); color:var(--ink-dim); font-variant-numeric:tabular-nums; }
+  .dim { color:var(--ink-dim); }
+
+  /* masthead */
+  header { display:flex; align-items:center; gap:16px; padding:0 24px; border-bottom:1px solid var(--rule); position:relative; z-index:1; }
+  .wordmark { font:700 15px/1 var(--sans); letter-spacing:.18em; display:flex; align-items:center; gap:10px; }
+  .wordmark .sub { font:500 10px/1 var(--mono); letter-spacing:.18em; color:var(--ink-dim); margin-left:6px; }
+  .clock { margin-left:auto; font:500 22px/1 var(--mono); letter-spacing:.04em; font-variant-numeric:tabular-nums; }
+  .leds { display:flex; gap:12px; align-items:center; font:500 11px/1 var(--mono); color:var(--ink-dim); }
+  .led { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px; }
+  .led.ok { background:var(--sig-ok); filter:var(--glow-ok); }
+
+  /* layout */
+  main { display:grid; grid-template-columns:1fr 440px; gap:16px; padding:16px 24px 20px; min-height:0; position:relative; z-index:1; }
+  .floor { display:grid; grid-template-columns:1fr 1fr 1fr; grid-template-rows:1fr 1fr; gap:14px; min-height:0; }
+
+  /* a bay = one project, drawn as a room with a track: BENCH → STATIONS → COUNTER */
+  .bay { background:var(--panel); border:1px solid var(--rule); border-radius:10px; box-shadow:var(--edge);
+    display:grid; grid-template-rows:auto 1fr; min-height:0; overflow:hidden; position:relative; }
+  .bay.attn { border-color:rgba(240,180,41,.45); }
+  .bay.quiet { opacity:.7; }
+  .plate { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--rule); background:var(--raised); }
+  .plate h2 { font:600 15px/1.2 var(--sans); flex:1; }
+  .tally { display:flex; gap:10px; font:500 11px/1 var(--mono); }
+  .tally span { display:inline-flex; align-items:center; gap:5px; }
+  .k { width:8px; height:8px; border-radius:50%; display:inline-block; }
+  .k.info { background:var(--sig-info); } .k.warn { background:var(--sig-warn); } .k.down { background:var(--sig-down); } .k.faint { background:var(--ink-faint); }
+
+  .track { display:grid; grid-template-rows:auto 1fr auto; gap:0; min-height:0; }
+  .zone { padding:10px 12px; display:flex; flex-direction:column; gap:8px; min-height:0; overflow:hidden; }
+  .zone + .zone { border-top:1px dashed var(--rule); }
+  .zone.stations .list { display:grid; grid-template-columns:1fr; gap:8px; }
+  .zone.bench .list { display:flex; flex-wrap:wrap; gap:8px; }
+  .zone.bench .station { flex:1 1 100%; min-height:36px; }
+  .zone.counter .list { display:grid; grid-template-columns:1fr; gap:6px; }
+  .zone .eyebrow { font-size:9px; letter-spacing:.16em; }
+  .zone.counter { background-image:repeating-linear-gradient(45deg, rgba(234,230,223,.05) 0 1px, transparent 1px 9px); }
+  .zone.counter.hot { background-color:rgba(240,180,41,.05); }
+
+  /* stations: where workers sit */
+  .station { display:flex; align-items:center; gap:10px; padding:6px 8px; border:1px solid var(--rule); border-radius:8px; background:var(--panel); min-height:44px; }
+  .station.empty { border-style:dashed; color:var(--ink-faint); }
+  .station .name { font:600 12px/1.3 var(--sans); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .station .sub { font:400 10px/1.2 var(--mono); color:var(--ink-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .station .name .id { font:500 10px/1 var(--mono); color:var(--accent); margin-right:6px; }
+  .station.blocked { border-color:rgba(229,72,77,.45); }
+
+  /* the worker token — this is the "character". Circle = machine, mono initials = who. */
+  .worker { position:relative; width:30px; height:30px; flex:none; border-radius:50%;
+    display:grid; place-items:center; font:700 10px/1 var(--mono); letter-spacing:.02em;
+    background:var(--raised); border:1.5px solid var(--ink-dim); color:var(--ink); }
+  .worker.claude { border-color:var(--accent); }
+  .worker.codex  { border-color:var(--ink); }
+  .worker.working::after { content:""; position:absolute; inset:-5px; border-radius:50%; border:2px solid transparent;
+    border-top-color:var(--sig-info); border-right-color:var(--sig-info); animation:spin 1.6s linear infinite; filter:var(--glow-info); }
+  .worker.idle { opacity:.45; border-style:dashed; }
+  /* over-head badge = the video's "icon above the agent" */
+  .badge { position:absolute; top:-12px; right:-10px; min-width:16px; height:16px; padding:0 4px; border-radius:6px;
+    display:grid; place-items:center; font:700 10px/1 var(--mono); }
+  .badge.approve { background:var(--sig-warn); color:var(--on-accent); filter:var(--glow-warn); animation:blink 1.2s steps(2) infinite; }
+  .badge.input   { background:var(--sig-warn); color:var(--on-accent); filter:var(--glow-warn); }
+  .badge.error   { background:var(--sig-down); color:#fff; filter:var(--glow-down); }
+  .badge.done    { background:var(--sig-ok); color:var(--on-accent); }
+
+  /* countersign slot at the counter */
+  .slot { width:16px; height:16px; border-radius:4px; border:1px dashed var(--ink-dim); flex:none; display:grid; place-items:center; font:700 10px/1 var(--mono); }
+  .slot.stamped { border:1px solid var(--sig-ok); background:var(--tint-ok); color:var(--sig-ok); animation:stamp 120ms ease-out; }
+  .paper { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid rgba(240,180,41,.35); border-radius:6px; background:var(--tint-warn); }
+  .paper .name { font:600 12px/1.3 var(--sans); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .paper .age { font:500 10px/1 var(--mono); color:var(--sig-warn); }
+  .paper.old { border-color:rgba(240,180,41,.6); }
+  .paper.old .age { font-weight:700; }
+  .more { font:500 10px/1 var(--mono); color:var(--ink-dim); padding:2px 8px; }
+
+  /* right column */
+  aside { display:grid; grid-template-rows:auto 1fr auto; gap:14px; min-height:0; }
+  .turn { background:var(--panel); border:1px solid rgba(240,180,41,.45); border-radius:10px; padding:14px 16px; box-shadow:var(--edge); }
+  .turn .big { display:flex; align-items:baseline; gap:12px; }
+  .turn .num { font:600 56px/1 var(--mono); color:var(--sig-warn); font-variant-numeric:tabular-nums; }
+  .turn .lbl { font:600 14px/1.2 var(--sans); }
+  .turn .lbl small { display:block; font:400 12px/1.4 var(--sans); color:var(--ink-dim); }
+  .turn ol { list-style:none; margin-top:12px; display:flex; flex-direction:column; gap:6px; }
+  .turn li { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; background:var(--raised); border:1px solid var(--rule); }
+  .turn li .what { flex:1; min-width:0; font:600 12px/1.3 var(--sans); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .turn li .what small { display:block; font:400 10px/1.3 var(--mono); color:var(--ink-dim); }
+  .turn li .kind { font:600 9px/1 var(--mono); letter-spacing:.08em; text-transform:uppercase; padding:3px 6px; border-radius:6px; border:1px solid; }
+  .kind.approve { color:var(--sig-warn); border-color:rgba(240,180,41,.45); background:var(--tint-warn); }
+  .kind.stamp   { color:var(--sig-warn); border-color:rgba(240,180,41,.45); background:var(--tint-warn); }
+  .kind.unblock { color:var(--sig-down); border-color:rgba(229,72,77,.45); background:var(--tint-down); }
+
+  .log { background:var(--panel); border:1px solid var(--rule); border-radius:10px; padding:14px 16px; box-shadow:var(--edge); min-height:0; display:flex; flex-direction:column; }
+  .log ul { list-style:none; margin-top:10px; display:flex; flex-direction:column; gap:0; overflow:hidden; }
+  .log li { display:grid; grid-template-columns:52px 16px 1fr; gap:8px; align-items:center; padding:7px 0; border-top:1px solid var(--rule); font:400 12px/1.4 var(--sans); }
+  .log li:first-child { border-top:none; }
+  .log li .t { font:400 10px/1 var(--mono); color:var(--ink-dim); }
+  .log li .who { font:600 11px/1 var(--mono); }
+  .log li.fresh { border-left:2px solid var(--sig-info); padding-left:8px; animation:flash 400ms ease-out; }
+  .log li b { font-weight:600; }
+
+  .score { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  .tile { background:var(--panel); border:1px solid var(--rule); border-radius:10px; padding:10px 12px; box-shadow:var(--edge); }
+  .tile .n { font:600 22px/1.1 var(--mono); font-variant-numeric:tabular-nums; }
+  .tile .l { font:400 10px/1.3 var(--sans); color:var(--ink-dim); }
+  .tile.ok .n { color:var(--sig-ok); }
+
+  @media (min-width:1800px) { .zone.stations .list, .zone.counter .list { grid-template-columns:1fr 1fr; } .zone.bench .station { flex-basis:45%; } }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @keyframes blink { 50% { opacity:.35; } }
+  @keyframes stamp { from { transform:scale(1.6); opacity:0; } to { transform:scale(1); opacity:1; } }
+  @keyframes flash { from { background:var(--tint-info); } to { background:transparent; } }
+  @media (prefers-reduced-motion: reduce) { * { animation:none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="wordmark">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4.5" y="3" width="15" height="3.5" rx="0.6" fill="currentColor"/><rect x="4.5" y="3" width="3" height="18" rx="0.6" fill="currentColor"/><rect x="4.5" y="10.5" width="9" height="3.5" rx="0.6" fill="currentColor"/><rect x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="var(--sig-warn)"/></svg>
+    FACTORY <span class="sub">THE FLOOR</span>
+  </div>
+  <div class="leds"><span><i class="led ok"></i>T3 1/1</span><span><i class="led ok"></i>WS</span><span class="dim">3 on shift · 1 working</span></div>
+  <div class="clock">09:41:07</div>
+</header>
+
+<main>
+  <section class="floor" aria-label="Floor">
+
+    <!-- FACTORY -->
+    <article class="bay attn">
+      <div class="plate"><h2>Factory</h2><div class="tally"><span><i class="k info"></i>1</span><span><i class="k warn"></i>5</span><span><i class="k down"></i>0</span></div></div>
+      <div class="track">
+        <div class="zone bench"><div class="eyebrow">Bench</div><div class="list">
+          <div class="station empty"><div class="worker idle">—</div><div class="name">No planned work</div></div>
+        </div></div>
+        <div class="zone stations"><div class="eyebrow">Stations</div><div class="list">
+          <div class="station"><div class="worker claude working">CL</div><div style="min-width:0;flex:1"><div class="name"><span class="id">T-44</span>Floor view dashboard</div><div class="sub">feat/t44-floor · turn 3 · 12 min</div></div></div>
+          <div class="station empty"><div class="worker idle">·</div><div class="name">Station open</div></div>
+        </div></div>
+        <div class="zone counter hot"><div class="eyebrow">Counter · stamp</div><div class="list">
+          <div class="paper old"><span class="slot"></span><div class="name">T-20 Thread-state dots</div><span class="age">4d</span></div>
+          <div class="paper old"><span class="slot"></span><div class="name">T-21 History threads</div><span class="age">3d</span></div>
+          <div class="paper"><span class="slot"></span><div class="name">T-38 Screenshot proof</div><span class="age">2d</span></div>
+          <div class="more">+2 more waiting</div>
+        </div></div>
+      </div>
+    </article>
+
+    <!-- GRAIL -->
+    <article class="bay attn">
+      <div class="plate"><h2>Grail</h2><div class="tally"><span><i class="k info"></i>0</span><span><i class="k warn"></i>5</span><span><i class="k down"></i>1</span></div></div>
+      <div class="track">
+        <div class="zone bench"><div class="eyebrow">Bench</div><div class="list">
+          <div class="station empty"><div class="worker idle">—</div><div class="name">No planned work</div></div>
+        </div></div>
+        <div class="zone stations"><div class="eyebrow">Stations</div><div class="list">
+          <div class="station blocked"><div class="worker codex idle">CX<span class="badge error">!</span></div><div style="min-width:0;flex:1"><div class="name"><span class="id">T-29</span>Updater stale-lock race</div><div class="sub">blocked · needs a decision from you</div></div></div>
+          <div class="station empty"><div class="worker idle">·</div><div class="name">Station open</div></div>
+        </div></div>
+        <div class="zone counter hot"><div class="eyebrow">Counter · stamp</div><div class="list">
+          <div class="paper"><span class="slot"></span><div class="name">T-19 File request links</div><span class="age">6d</span></div>
+          <div class="paper"><span class="slot"></span><div class="name">T-24 fflate audit fix</div><span class="age">5d</span></div>
+          <div class="paper"><span class="slot"></span><div class="name">T-39 GRA-137 permissions</div><span class="age">1d</span></div>
+          <div class="more">+2 more waiting</div>
+        </div></div>
+      </div>
+    </article>
+
+    <!-- PLAYLISTER -->
+    <article class="bay attn">
+      <div class="plate"><h2>Playlister</h2><div class="tally"><span><i class="k info"></i>1</span><span><i class="k warn"></i>2</span><span><i class="k down"></i>1</span></div></div>
+      <div class="track">
+        <div class="zone bench"><div class="eyebrow">Bench</div><div class="list">
+          <div class="station empty"><div class="worker idle">·</div><div class="name"><span class="id">T-18</span>QA smoke test</div></div>
+        </div></div>
+        <div class="zone stations"><div class="eyebrow">Stations</div><div class="list">
+          <div class="station"><div class="worker codex">CX<span class="badge approve">?</span></div><div style="min-width:0;flex:1"><div class="name"><span class="id">T-1</span>Preview environments</div><div class="sub">waiting for your approval · 7 min</div></div></div>
+          <div class="station blocked"><div class="worker idle">—</div><div style="min-width:0;flex:1"><div class="name"><span class="id">T-12</span>Design system</div><div class="sub">blocked · no session</div></div></div>
+        </div></div>
+        <div class="zone counter hot"><div class="eyebrow">Counter · stamp</div><div class="list">
+          <div class="paper"><span class="slot"></span><div class="name">T-13 Watchtower API</div><span class="age">9d</span></div>
+          <div class="paper"><span class="slot"></span><div class="name">T-34 Luna guidance</div><span class="age">2d</span></div>
+        </div>
+      </div>
+    </article>
+
+    <!-- FORGE -->
+    <article class="bay">
+      <div class="plate"><h2>Forge</h2><div class="tally"><span><i class="k info"></i>2</span><span><i class="k warn"></i>1</span><span><i class="k down"></i>0</span></div></div>
+      <div class="track">
+        <div class="zone bench"><div class="eyebrow">Bench</div><div class="list">
+          <div class="station empty"><div class="worker idle">·</div><div class="name"><span class="id">T-4</span>Prototype → product</div></div>
+          <div class="station empty"><div class="worker idle">·</div><div class="name"><span class="id">T-7</span>Release 2 streaming</div></div>
+        </div></div>
+        <div class="zone stations"><div class="eyebrow">Stations</div><div class="list">
+          <div class="station"><div class="worker claude idle">CL</div><div style="min-width:0;flex:1"><div class="name"><span class="id">T-15</span>Mark and icon</div><div class="sub">idle · last report 2h ago</div></div></div>
+          <div class="station"><div class="worker idle">—</div><div style="min-width:0;flex:1"><div class="name"><span class="id">T-6</span>Release 1 SDI playout</div><div class="sub">active · no session observed</div></div></div>
+        </div></div>
+        <div class="zone counter"><div class="eyebrow">Counter · stamp</div><div class="list">
+          <div class="paper"><span class="slot"></span><div class="name">T-36 Luna guidance</div><span class="age">2d</span></div>
+        </div>
+      </div>
+    </article>
+
+    <!-- WATCHTOWER -->
+    <article class="bay">
+      <div class="plate"><h2>Watchtower</h2><div class="tally"><span><i class="k info"></i>2</span><span><i class="k warn"></i>0</span><span><i class="k down"></i>1</span></div></div>
+      <div class="track">
+        <div class="zone bench"><div class="eyebrow">Bench</div><div class="list">
+          <div class="station empty"><div class="worker idle">·</div><div class="name"><span class="id">T-31</span>First production release</div></div>
+          <div class="station empty"><div class="worker idle">·</div><div class="name">+2 later</div></div>
+        </div></div>
+        <div class="zone stations"><div class="eyebrow">Stations</div><div class="list">
+          <div class="station"><div class="worker idle">—</div><div style="min-width:0;flex:1"><div class="name"><span class="id">T-26</span>MVP dashboard</div><div class="sub">active · no session observed</div></div></div>
+          <div class="station"><div class="worker idle">—</div><div style="min-width:0;flex:1"><div class="name"><span class="id">T-9</span>V1 Apple TV probe</div><div class="sub">active · no session observed</div></div></div>
+        </div></div>
+        <div class="zone counter"><div class="eyebrow">Counter · stamp</div><div class="list">
+          <div class="station blocked"><div class="worker idle">—</div><div style="min-width:0;flex:1"><div class="name"><span class="id">T-8</span>Earlier MVP evidence</div><div class="sub">blocked</div></div></div>
+        </div>
+      </div>
+    </article>
+
+    <!-- BEACON -->
+    <article class="bay quiet">
+      <div class="plate"><h2>Beacon</h2><div class="tally"><span><i class="k faint"></i>lights off</span></div></div>
+      <div class="track">
+        <div class="zone bench"><div class="eyebrow">Bench</div><div class="list">
+          <div class="station empty"><div class="worker idle">·</div><div class="name"><span class="id">T-5</span>Test prototype</div></div>
+        </div></div>
+        <div class="zone stations"><div class="eyebrow">Stations</div><div class="list">
+          <div class="station empty"><div class="worker idle">·</div><div class="name">Station open</div></div>
+        </div></div>
+        <div class="zone counter"><div class="eyebrow">Counter · stamp</div><div class="list"><div class="more">Nothing waiting</div></div>
+      </div>
+    </article>
+  </section>
+
+  <aside>
+    <section class="turn" aria-label="Your turn">
+      <div class="eyebrow">Your turn</div>
+      <div class="big"><span class="num">17</span><span class="lbl">things only you can do<small>1 approval · 13 stamps · 3 unblocks</small></span></div>
+      <ol>
+        <li><span class="kind approve">Approve</span><span class="what">Codex wants to run a migration on Playlister<small>T-1 · waiting 7 min</small></span></li>
+        <li><span class="kind unblock">Unblock</span><span class="what">Decide lock strategy for the Grail updater<small>T-29 · Codex reported blocked 1d ago</small></span></li>
+        <li><span class="kind stamp">Stamp</span><span class="what">T-13 Watchtower API<small>Playlister · reported complete 9d ago</small></span></li>
+        <li><span class="kind stamp">Stamp</span><span class="what">T-19 File request / upload links<small>Grail · reported complete 6d ago</small></span></li>
+        <li><span class="kind stamp">Stamp</span><span class="what">T-20 Thread-state dots<small>Factory · reported complete 4d ago</small></span></li>
+      </ol>
+      <div class="more" style="margin-top:8px">+12 more, oldest first</div>
+    </section>
+
+    <section class="log" aria-label="Shift log">
+      <div class="eyebrow">Shift log · live</div>
+      <ul>
+        <li class="fresh"><span class="t">09:40:52</span><span class="who" style="color:var(--accent)">CL</span><span><b>Claude</b> finished turn 3 on T-44, 6 files changed</span></li>
+        <li><span class="t">09:38:10</span><span class="who">CX</span><span><b>Codex</b> is waiting for your approval on T-1</span></li>
+        <li><span class="t">09:31:44</span><span class="who" style="color:var(--sig-ok)">✓</span><span><b>You</b> stamped ST-171 accepted</span></li>
+        <li><span class="t">09:29:03</span><span class="who" style="color:var(--accent)">CL</span><span><b>Claude</b> reported ST-173 complete for verification</span></li>
+        <li><span class="t">09:12:37</span><span class="who">CX</span><span><b>Codex</b> started on T-1 preview environments</span></li>
+        <li><span class="t">08:55:20</span><span class="who" style="color:var(--sig-down)">✕</span><span><b>Codex</b> reported T-29 blocked: needs lock strategy</span></li>
+        <li><span class="t">08:41:09</span><span class="who" style="color:var(--accent)">CL</span><span><b>Claude</b> clocked in on Factory · feat/t44-floor</span></li>
+      </ul>
+    </section>
+
+    <div class="score">
+      <div class="tile ok"><div class="n">4</div><div class="l">stamped today</div></div>
+      <div class="tile"><div class="n">9</div><div class="l">reports today</div></div>
+      <div class="tile"><div class="n">1</div><div class="l">working now</div></div>
+      <div class="tile"><div class="n">9d</div><div class="l">oldest unstamped</div></div>
+    </div>
+  </aside>
+</main>
+</body>
+</html>

@@ -71,6 +71,7 @@ export type T3ObservedThread = {
   machineId: string;
   threadId: string;
   title: string;
+  agent?: string;
   externalProjectId: string;
   provider: "t3";
   branch?: string;
@@ -85,6 +86,7 @@ export type T3ObservedThread = {
     | "stopped"
     | "error";
   latestTurnState?: "running" | "interrupted" | "completed" | "error";
+  latestTurnCompletedAt?: string;
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
   observedAt: string;
@@ -416,6 +418,9 @@ export function mapT3ThreadObservation({
 }): CodeSessionObservationInput {
   const repositoryIdentity = project.repositoryIdentity?.canonicalKey;
   return {
+    ...(thread.session?.providerName === undefined
+      ? {}
+      : { agent: thread.session.providerName }),
     ...(thread.branch === undefined ? {} : { branch: thread.branch }),
     ...(thread.linkedPullRequestUrl === undefined
       ? {}
@@ -601,6 +606,7 @@ function viewThread(
   const sourceId = observationSourceId(observation);
   const machineId = observationMachineId(observation);
   return {
+    ...(observation.agent === undefined ? {} : { agent: observation.agent }),
     ...(observation.branch === undefined ? {} : { branch: observation.branch }),
     ...(evidence?.changedFileCount === undefined
       ? {}
@@ -614,6 +620,12 @@ function viewThread(
     ...(observation.latestTurnState === undefined
       ? {}
       : { latestTurnState: observation.latestTurnState }),
+    ...(observation.latestTurnCompletedAt === undefined
+      ? {}
+      : {
+          latestTurnCompletedAt:
+            observation.latestTurnCompletedAt.toISOString(),
+        }),
     ...(observation.worktreePath === undefined
       ? {}
       : { worktreePath: observation.worktreePath }),
@@ -1194,6 +1206,12 @@ export function createT3Coordinator(input: {
           ...(thread.latestTurn === undefined
             ? {}
             : { latestTurnState: thread.latestTurn.state }),
+          ...(thread.latestTurn?.completedAt === undefined
+            ? {}
+            : { latestTurnCompletedAt: thread.latestTurn.completedAt }),
+          ...(thread.session?.providerName === undefined
+            ? {}
+            : { agent: thread.session.providerName }),
           ...(sessionState(thread.session) === undefined
             ? {}
             : { latestSessionState: sessionState(thread.session) }),

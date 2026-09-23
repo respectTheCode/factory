@@ -13,6 +13,13 @@ import type {
 import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
 import { BackupsPage } from "./backups";
 import {
+  Floor,
+  floorPaperMatches,
+  normalizeFloorSnapshot,
+  type FloorPaper,
+  type FloorTarget,
+} from "./floor";
+import {
   formatHistoryReportAttribution,
   historyThreadsForTarget,
 } from "./history";
@@ -32,13 +39,11 @@ import {
   type DashboardView,
 } from "./navigation";
 import {
-  filterAttention,
   filterArchivedTasks,
   groupSubtasksByStatus,
   groupTasksByStatus,
   reorderIds,
   summarizeTaskProgress,
-  type AttentionFilter,
 } from "./task-summary";
 import {
   archiveStatusOrder,
@@ -84,16 +89,6 @@ type PortfolioStatus = {
     totalTasks: number;
     counts: WorkCounts;
   }>;
-};
-type AttentionItem = {
-  projectId: string;
-  projectName: string;
-  taskId: string;
-  taskSimpleId: string;
-  taskName: string;
-  state: "backlog" | "planned" | "active" | "awaiting_verification" | "blocked";
-  priority?: "low" | "medium" | "high" | "urgent";
-  owner?: string;
 };
 type ProjectDetail = {
   gitOriginUrl?: string;
@@ -481,7 +476,6 @@ function Dashboard() {
   const [snapshot, setSnapshot] = useState<ConnectionSnapshot>(
     connection.snapshot(),
   );
-  const [projectName, setProjectName] = useState("");
   const [view, setView] = useState<DashboardView>(() =>
     dashboardViewFromPath(window.location.pathname),
   );
@@ -518,11 +512,13 @@ function Dashboard() {
   });
   const [projectGitOriginInput, setProjectGitOriginInput] = useState("");
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
+  const [floorSnapshot, setFloorSnapshot] = useState<ReturnType<
+    typeof normalizeFloorSnapshot
+  > | null>(null);
+  const [floorError, setFloorError] = useState<string | null>(null);
+  const [floorLoading, setFloorLoading] = useState(false);
   const [portfolioStatus, setPortfolioStatus] =
     useState<PortfolioStatus | null>(null);
-  const [attention, setAttention] = useState<AttentionItem[] | null>(null);
-  const [attentionFilter, setAttentionFilter] =
-    useState<AttentionFilter>("all");
   const [showArchivedTasks, setShowArchivedTasks] = useState(false);
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(
     null,
@@ -562,6 +558,8 @@ function Dashboard() {
   >({});
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
+  const [pendingFloorTarget, setPendingFloorTarget] =
+    useState<FloorTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [human, setHuman] = useState<{ name: string } | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -574,6 +572,11 @@ function Dashboard() {
   const t3RefreshGeneration = useRef(0);
   const t3StatusGeneration = useRef(0);
   const t3StatusRequest = useRef<symbol | null>(null);
+  const floorRefreshGeneration = useRef(0);
+  const floorRequest = useRef<symbol | null>(null);
+  const floorRequestPromise = useRef<Promise<
+    ReturnType<typeof normalizeFloorSnapshot> | undefined
+  > | null>(null);
   const webSocketGenerationRef = useRef(webSocketGeneration);
   webSocketGenerationRef.current = webSocketGeneration;
 
@@ -621,6 +624,58 @@ function Dashboard() {
       active = false;
     };
   }, []);
+
+  const refreshFloor = async (
+    client: TRPCClient,
+  ): Promise<ReturnType<typeof normalizeFloorSnapshot> | undefined> => {
+    if (floorRequestPromise.current) return floorRequestPromise.current;
+    const request = Symbol("floor");
+    floorRequest.current = request;
+    const generation = ++floorRefreshGeneration.current;
+    setFloorLoading(true);
+    const requestPromise = (async () => {
+      try {
+        const result = await client.projects.floor.query({});
+        if (
+          trpc.current !== client ||
+          floorRefreshGeneration.current !== generation
+        )
+          return undefined;
+        const next = normalizeFloorSnapshot(result);
+        setFloorSnapshot(next);
+        setFloorError(null);
+        return next;
+      } catch (error: unknown) {
+        if (
+          trpc.current !== client ||
+          floorRefreshGeneration.current !== generation
+        )
+          return undefined;
+        setFloorError(
+          error instanceof Error
+            ? error.message
+            : "Floor data could not be refreshed.",
+        );
+        setFloorSnapshot((current) =>
+          current ? { ...current, stale: true } : current,
+        );
+        return undefined;
+      } finally {
+        if (floorRequest.current === request) {
+          floorRequest.current = null;
+          setFloorLoading(false);
+        }
+      }
+    })();
+    floorRequestPromise.current = requestPromise;
+    try {
+      return await requestPromise;
+    } finally {
+      if (floorRequestPromise.current === requestPromise) {
+        floorRequestPromise.current = null;
+      }
+    }
+  };
 
   const refreshT3Status = async (client: TRPCClient) => {
     if (t3StatusRequest.current) return;
@@ -685,8 +740,13 @@ function Dashboard() {
         subscriptionCleanup.current = null;
         connection.markDisconnected();
         setProjects(null);
+        floorRefreshGeneration.current += 1;
+        floorRequest.current = null;
+        floorRequestPromise.current = null;
+        setFloorSnapshot(null);
+        setFloorError("Factory connection closed; Floor data is unavailable.");
+        setFloorLoading(false);
         setPortfolioStatus(null);
-        setAttention(null);
         setProjectDetail(null);
         setTaskDetails({});
         setTaskEdits({});
@@ -710,12 +770,10 @@ function Dashboard() {
         void Promise.all([
           trpc.current?.projects.list.query(),
           trpc.current?.projects.portfolio.query(),
-          trpc.current?.projects.attention.query(),
-        ]).then(([nextProjects, nextPortfolio, nextAttention]) => {
-          if (!nextProjects || !nextPortfolio || !nextAttention) return;
+        ]).then(([nextProjects, nextPortfolio]) => {
+          if (!nextProjects || !nextPortfolio) return;
           setProjects(nextProjects);
           setPortfolioStatus(nextPortfolio);
-          setAttention(nextAttention);
           connection.markAuthoritativeRefresh();
           setSnapshot(connection.snapshot());
         });
@@ -735,6 +793,31 @@ function Dashboard() {
       void client.close();
     };
   }, [connection, human, sessionLoading, webSocketGeneration]);
+
+  useEffect(() => {
+    if (
+      sessionLoading ||
+      !human ||
+      snapshot.state !== "connected" ||
+      view.screen !== "home"
+    )
+      return;
+    const client = trpc.current;
+    if (!client) return;
+    void refreshFloor(client);
+    const interval = window.setInterval(() => {
+      if (connection.snapshot().state === "connected")
+        void refreshFloor(client);
+    }, 5_000);
+    return () => window.clearInterval(interval);
+  }, [
+    connection,
+    human,
+    sessionLoading,
+    snapshot.state,
+    view.screen,
+    webSocketGeneration,
+  ]);
 
   useEffect(() => {
     if (sessionLoading || !human) return;
@@ -793,7 +876,6 @@ function Dashboard() {
   const applyDashboardSnapshot = (dashboard: DashboardSnapshot) => {
     setProjects(dashboard.projects);
     setPortfolioStatus(dashboard.portfolioStatus);
-    setAttention(dashboard.attention);
     if (dashboard.projectDetail) {
       const detail = dashboard.projectDetail as ProjectDetail;
       setProjectDetail(detail);
@@ -998,6 +1080,65 @@ function Dashboard() {
     setExpandedRows({});
   }, [projectDetail?.id]);
 
+  useEffect(() => {
+    const target = pendingFloorTarget;
+    if (!target || !projectDetail || target.projectId !== projectDetail.id)
+      return;
+
+    const hasWorkTarget = Boolean(target.taskId || target.subtaskId);
+    if ((target.threadId || target.findingId) && !t3Activity) return;
+    if (target.threadId && t3Activity) {
+      void openT3ThreadDetail(target.threadId, target.sourceId);
+    }
+    if (target.findingId && t3Activity) {
+      const panel = document.querySelector<HTMLDetailsElement>(
+        '[data-observed-activity="true"]',
+      );
+      if (panel) {
+        panel.open = true;
+        window.requestAnimationFrame(() =>
+          panel
+            .querySelector<HTMLElement>(".observed-findings")
+            ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+        );
+      }
+      setPendingFloorTarget(null);
+      return;
+    }
+    if (!hasWorkTarget) {
+      setPendingFloorTarget(null);
+      return;
+    }
+    // Floor targets can live in any work-state group. Open all groups
+    // before expanding the exact row so a planned/blocked subtask is reachable.
+    setCollapsedTaskGroups({});
+    setExpandedRows((current) => ({
+      ...current,
+      ...(target.taskId ? { [`task:${target.taskId}`]: true } : {}),
+      ...(target.subtaskId ? { [`subtask:${target.subtaskId}`]: true } : {}),
+    }));
+    const frame = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const element = document.getElementById(
+          target.subtaskId
+            ? `floor-subtask-${target.subtaskId}`
+            : target.taskId
+              ? `floor-task-${target.taskId}`
+              : "",
+        );
+        if (target.threadId && t3Activity) {
+          // openT3ThreadDetail owns the observed-thread scroll; do not let the
+          // project row scroll steal focus from the pending session.
+          setPendingFloorTarget(null);
+          return;
+        }
+        element?.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (element) setPendingFloorTarget(null);
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pendingFloorTarget, projectDetail, t3Activity]);
+
   const toggleRow = (rowKey: string) => {
     setExpandedRows((current) => ({
       ...current,
@@ -1119,6 +1260,32 @@ function Dashboard() {
         reportId,
       }),
     );
+  };
+
+  const stampFloorPaper = async (paper: FloorPaper) => {
+    const client = trpc.current;
+    if (!client || !paper.reportId || !snapshot.canMutate || busy) return;
+    const latest = await refreshFloor(client);
+    const currentClaim = latest?.projects
+      .flatMap((project) => project.counter)
+      .find((claim) => claim.reportId === paper.reportId);
+    if (!currentClaim || !floorPaperMatches(currentClaim, paper)) {
+      const message =
+        "This report changed while you were reviewing it. Refresh the Floor and review the current claim and evidence.";
+      setFloorError(message);
+      throw new Error(message);
+    }
+    setBusy(true);
+    try {
+      const result = await client.subtasks.verify.mutate({
+        decision: "accepted",
+        reportId: paper.reportId,
+      });
+      applyDashboardSnapshot(result.dashboard);
+      await refreshFloor(client);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const reorderTask = async (
@@ -1314,6 +1481,12 @@ function Dashboard() {
     navigateToView(homeView());
   };
 
+  const openFloorTarget = (target: FloorTarget) => {
+    if (!target.projectId) return;
+    setPendingFloorTarget(target);
+    openProject(target.projectId);
+  };
+
   const openBackups = () => {
     stopProjectSubscription();
     navigateToView(backupsView());
@@ -1353,9 +1526,6 @@ function Dashboard() {
       .map((line) => line.trim())
       .filter(Boolean);
 
-  const visibleAttention = attention
-    ? filterAttention(attention, attentionFilter)
-    : null;
   const visibleProjectTasks = projectDetail
     ? filterArchivedTasks(projectDetail.tasks, showArchivedTasks)
     : [];
@@ -1367,6 +1537,19 @@ function Dashboard() {
     ? projectDetail.tasks.filter((task) => task.archiveState !== undefined)
         .length
     : 0;
+
+  const createProject = async (name: string) => {
+    const client = trpc.current;
+    if (!client || !snapshot.canMutate || busy) return;
+    setBusy(true);
+    try {
+      const result = await client.projects.create.mutate({ name });
+      applyDashboardSnapshot(result.dashboard);
+      await refreshFloor(client);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const loadSubtaskHistory = async (subtaskId: string) => {
     const client = trpc.current;
@@ -1584,1995 +1767,1872 @@ function Dashboard() {
   }
 
   return (
-    <main>
-      <PilotBanner environment={deploymentEnvironment} />
-      <header>
-        <a
-          aria-label="Factory dashboard"
-          className="brand-link"
-          href="/"
-          onClick={(event) => {
-            event.preventDefault();
-            window.location.assign("/");
-          }}
-        >
-          <div className="brand-lockup">
-            <img alt="Factory" className="brand-mark" src="/icon.svg" />
-            <div>
-              <div className="wordmark">FACTORY</div>
-              <p className="eyebrow">Project operations</p>
-            </div>
-          </div>
-        </a>
-        <nav aria-label="Primary" className="global-nav">
+    <>
+      <div
+        className={`app-shell ${view.screen === "home" ? "app-shell-home" : "app-shell-constrained"}`}
+      >
+        <PilotBanner environment={deploymentEnvironment} />
+        <header>
           <a
-            aria-current={view.screen === "home" ? "page" : undefined}
-            className={
-              view.screen === "home"
-                ? "global-nav-link selected"
-                : "global-nav-link"
-            }
+            aria-label="Factory dashboard"
+            className="brand-link"
             href="/"
             onClick={(event) => {
               event.preventDefault();
-              openHome();
+              window.location.assign("/");
             }}
           >
-            Dashboard
-          </a>
-          <a
-            aria-current={view.screen === "backups" ? "page" : undefined}
-            className={
-              view.screen === "backups"
-                ? "global-nav-link selected"
-                : "global-nav-link"
-            }
-            href="/backups"
-            onClick={(event) => {
-              event.preventDefault();
-              openBackups();
-            }}
-          >
-            Backups
-          </a>
-        </nav>
-        <div className="header-status">
-          {sessionLoading ? (
-            <span className="status-twin">Checking session…</span>
-          ) : human ? (
-            <div className="session-controls">
-              <span className="status-twin">Signed in as {human.name}</span>
-              <button
-                className="secondary"
-                disabled={sessionBusy}
-                onClick={() => void signOut()}
-                type="button"
-              >
-                Sign out
-              </button>
-            </div>
-          ) : null}
-          <ConnectionIndicator
-            snapshot={snapshot}
-            t3Status={snapshot.state === "connected" ? t3Status : undefined}
-          />
-        </div>
-      </header>
-
-      {view.screen === "home" && (
-        <>
-          <section className="hero" aria-labelledby="portfolio-title">
-            <p className="eyebrow">Portfolio</p>
-            <h2 id="portfolio-title">Your project work, in one clear place.</h2>
-            <p>
-              Factory keeps native work, agent reports, and Kevin’s verification
-              visible without replacing Notion or Linear.
-            </p>
-          </section>
-
-          <section
-            className="panel attention-panel"
-            aria-labelledby="attention-title"
-          >
-            <div className="attention-header">
+            <div className="brand-lockup">
+              <img alt="Factory" className="brand-mark" src="/icon.svg" />
               <div>
-                <p className="eyebrow">Attention</p>
-                <h2 id="attention-title">
-                  {attention === null
-                    ? "Loading work…"
-                    : attention.length === 0
-                      ? "Nothing needs attention"
-                      : `${attention.length} open tasks`}
-                </h2>
-                <p className="attention-summary">
-                  Start with blocked or awaiting-verification work, then pick
-                  the next planned task.
-                </p>
-              </div>
-              <div
-                aria-label="Attention filters"
-                className="attention-filters"
-                role="group"
-              >
-                {(
-                  [
-                    ["all", "All"],
-                    ["backlog", "Backlog"],
-                    ["blocked", "Blocked"],
-                    ["awaiting_verification", "Awaiting"],
-                    ["active", "Active"],
-                    ["planned", "Planned"],
-                  ] as const
-                ).map(([filter, label]) => (
-                  <button
-                    aria-pressed={attentionFilter === filter}
-                    className={
-                      attentionFilter === filter
-                        ? "filter-selected"
-                        : "secondary"
-                    }
-                    key={filter}
-                    onClick={() => setAttentionFilter(filter)}
-                    type="button"
-                  >
-                    {label}
-                    {attention && (
-                      <span>
-                        {filter === "all"
-                          ? attention.length
-                          : attention.filter((item) => item.state === filter)
-                              .length}
-                      </span>
-                    )}
-                  </button>
-                ))}
+                <div className="wordmark">FACTORY</div>
+                <p className="eyebrow">Project operations</p>
               </div>
             </div>
-            {visibleAttention && visibleAttention.length > 0 && (
-              <div className="attention-list">
-                {visibleAttention.map((item) => (
-                  <article className="attention-item" key={item.taskId}>
-                    <div>
-                      <strong>
-                        <span className="row-reference">
-                          {item.taskSimpleId}
-                        </span>{" "}
-                        {item.taskName}
-                      </strong>
-                      <p>
-                        {item.projectName}
-                        {item.owner ? ` · ${item.owner}` : ""}
-                      </p>
-                    </div>
-                    <div className="attention-item-meta">
-                      <StatusIcon state={item.state} />
-                      <span className="status-twin">
-                        {statusDefinitions[item.state].label}
-                      </span>
-                      {item.priority && (
-                        <small>{formatWorkState(item.priority)} priority</small>
-                      )}
-                      <button
-                        className="secondary"
-                        disabled={snapshot.state !== "connected"}
-                        onClick={() => void openProject(item.projectId)}
-                        type="button"
-                      >
-                        Open
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-            {attention &&
-              attention.length > 0 &&
-              visibleAttention &&
-              visibleAttention.length === 0 && (
-                <p className="empty attention-empty">
-                  No tasks match this filter.
-                </p>
-              )}
-          </section>
-
-          <section className="panel projects-panel" aria-live="polite">
-            <div>
-              <p className="eyebrow">Projects</p>
-              <h2>
-                {projects === null
-                  ? "Loading projects…"
-                  : `${projects.length} projects`}
-              </h2>
-              {portfolioStatus && (
-                <p className="portfolio-summary">
-                  {portfolioStatus.totalTasks} tasks ·{" "}
-                  {portfolioStatus.counts.backlog} backlog ·{" "}
-                  {portfolioStatus.counts.planned} planned ·{" "}
-                  {portfolioStatus.counts.active} active ·{" "}
-                  {portfolioStatus.counts.awaiting_verification} awaiting
-                  verification · {portfolioStatus.counts.completed} completed ·{" "}
-                  {portfolioStatus.counts.blocked} blocked ·{" "}
-                  {portfolioStatus.counts.released} released ·{" "}
-                  {portfolioStatus.counts.wont_do} won&apos;t do
-                </p>
-              )}
-            </div>
-            {projects && projects.length > 0 && (
-              <div aria-label="Project links" className="project-links">
-                {projects.map((project) => (
-                  <button
-                    className="project-link"
-                    disabled={snapshot.state !== "connected"}
-                    key={project.id}
-                    onClick={() => void openProject(project.id)}
-                    type="button"
-                  >
-                    <span>{project.name}</span>
-                    <span aria-hidden="true">→</span>
-                  </button>
-                ))}
-              </div>
-            )}
-            <form
-              onSubmit={(event) => {
+          </a>
+          <nav aria-label="Primary" className="global-nav">
+            <a
+              aria-current={view.screen === "home" ? "page" : undefined}
+              className={
+                view.screen === "home"
+                  ? "global-nav-link selected"
+                  : "global-nav-link"
+              }
+              href="/"
+              onClick={(event) => {
                 event.preventDefault();
-                if (!projectName.trim() || !trpc.current || !snapshot.canMutate)
-                  return;
-                setBusy(true);
-                void trpc.current.projects.create
-                  .mutate({ name: projectName.trim() })
-                  .then((result) => {
-                    applyDashboardSnapshot(result.dashboard);
-                    setProjectName("");
-                  })
-                  .finally(() => setBusy(false));
+                openHome();
               }}
             >
-              <label>
-                <span className="visually-hidden">Project name</span>
-                <input
-                  disabled={!snapshot.canMutate || busy}
-                  onChange={(event) => setProjectName(event.target.value)}
-                  placeholder="New project name"
-                  value={projectName}
-                />
-              </label>
-              <button
-                disabled={!snapshot.canMutate || busy || !projectName.trim()}
-                type="submit"
-              >
-                New project
-              </button>
-            </form>
-          </section>
-        </>
-      )}
-
-      {view.screen === "backups" && (
-        <BackupsPage client={trpc.current} connection={snapshot} />
-      )}
-
-      {projects &&
-        projects.length > 0 &&
-        view.screen !== "home" &&
-        view.screen !== "backups" && (
-          <nav aria-label="Projects" className="project-tabs">
-            {projects.map((project) => (
-              <button
-                className={
-                  project.id === view.projectId ? "selected" : "secondary"
-                }
-                disabled={snapshot.state !== "connected"}
-                key={project.id}
-                onClick={() => void openProject(project.id)}
-                type="button"
-              >
-                {project.name}
-              </button>
-            ))}
+              Floor
+            </a>
+            <a
+              aria-current={view.screen === "backups" ? "page" : undefined}
+              className={
+                view.screen === "backups"
+                  ? "global-nav-link selected"
+                  : "global-nav-link"
+              }
+              href="/backups"
+              onClick={(event) => {
+                event.preventDefault();
+                openBackups();
+              }}
+            >
+              Backups
+            </a>
           </nav>
-        )}
-
-      {projectDetail &&
-        view.screen === "edit_project" &&
-        projectDetail.id === view.projectId && (
-          <section className="detail" aria-labelledby="project-edit-title">
-            <div className="detail-heading">
-              <div>
-                <p className="eyebrow">Project settings</p>
-                <h2 id="project-edit-title">Edit {projectDetail.name}</h2>
-                <p className="project-summary">
-                  Keep planning metadata and external project links together.
-                </p>
-              </div>
-              <div className="detail-actions">
+          <div className="header-status">
+            {sessionLoading ? (
+              <span className="status-twin">Checking session…</span>
+            ) : human ? (
+              <div className="session-controls">
+                <span className="status-twin">Signed in as {human.name}</span>
                 <button
                   className="secondary"
-                  onClick={() => openProject(projectDetail.id)}
+                  disabled={sessionBusy}
+                  onClick={() => void signOut()}
                   type="button"
                 >
-                  Back to tasks
-                </button>
-                <button className="secondary" onClick={openHome} type="button">
-                  Home
+                  Sign out
                 </button>
               </div>
-            </div>
+            ) : null}
+            <ConnectionIndicator
+              snapshot={snapshot}
+              t3Status={snapshot.state === "connected" ? t3Status : undefined}
+            />
+          </div>
+        </header>
+      </div>
 
-            <form
-              className="project-link-form project-context-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (!trpc.current) return;
-                void mutateAndRefresh(() =>
-                  trpc.current!.projects.update.mutate({
-                    gitOriginUrl: projectGitOriginInput.trim() || null,
-                    projectId: projectDetail.id,
-                  }),
-                );
-              }}
-            >
-              <input
-                aria-label="Git origin URL"
-                disabled={!snapshot.canMutate || busy}
-                onChange={(event) =>
-                  setProjectGitOriginInput(event.target.value)
-                }
-                placeholder="Git origin URL (SSH or HTTPS)"
-                value={projectGitOriginInput}
-              />
-              <button disabled={!snapshot.canMutate || busy} type="submit">
-                Save Git URL
-              </button>
-            </form>
+      <main className={view.screen === "home" ? "floor-main" : "app-main"}>
+        {view.screen === "home" && (
+          <Floor
+            busy={busy}
+            canMutate={snapshot.canMutate && snapshot.state === "connected"}
+            connected={snapshot.state === "connected"}
+            error={floorError}
+            loading={floorLoading}
+            onCreateProject={createProject}
+            onOpenTarget={openFloorTarget}
+            onStamp={stampFloorPaper}
+            snapshot={floorSnapshot}
+          />
+        )}
 
-            <form
-              className="project-link-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (
-                  !projectTrackerInput.stableId.trim() ||
-                  !projectTrackerInput.url.trim() ||
-                  !trpc.current
-                )
-                  return;
-                void mutateAndRefresh(async () => {
-                  const result = await trpc.current!.projects.link.mutate({
-                    ...projectTrackerInput,
-                    projectId: projectDetail.id,
-                    stableId: projectTrackerInput.stableId.trim(),
-                    title: projectTrackerInput.title.trim() || undefined,
-                    url: projectTrackerInput.url.trim(),
-                  });
-                  setProjectTrackerInput({
-                    system: projectTrackerInput.system,
-                    stableId: "",
-                    title: "",
-                    url: "",
-                  });
-                  return result;
-                });
-              }}
-            >
-              <select
-                aria-label="Project tracker system"
-                disabled={!snapshot.canMutate || busy}
-                onChange={(event) =>
-                  setProjectTrackerInput((current) => ({
-                    ...current,
-                    system: event.target.value as "linear" | "notion",
-                  }))
-                }
-                value={projectTrackerInput.system}
-              >
-                <option value="linear">Linear project</option>
-                <option value="notion">Notion project</option>
-              </select>
-              <input
-                aria-label="Project tracker ID"
-                disabled={!snapshot.canMutate || busy}
-                onChange={(event) =>
-                  setProjectTrackerInput((current) => ({
-                    ...current,
-                    stableId: event.target.value,
-                  }))
-                }
-                placeholder="Project ID"
-                value={projectTrackerInput.stableId}
-              />
-              <input
-                aria-label="Project tracker URL"
-                disabled={!snapshot.canMutate || busy}
-                onChange={(event) =>
-                  setProjectTrackerInput((current) => ({
-                    ...current,
-                    url: event.target.value,
-                  }))
-                }
-                placeholder="https://…"
-                value={projectTrackerInput.url}
-              />
-              <input
-                aria-label="Project tracker title"
-                disabled={!snapshot.canMutate || busy}
-                onChange={(event) =>
-                  setProjectTrackerInput((current) => ({
-                    ...current,
-                    title: event.target.value,
-                  }))
-                }
-                placeholder="Display title (optional)"
-                value={projectTrackerInput.title}
-              />
-              <button
-                disabled={
-                  !snapshot.canMutate ||
-                  busy ||
-                  !projectTrackerInput.stableId.trim() ||
-                  !projectTrackerInput.url.trim()
-                }
-                type="submit"
-              >
-                Link project
-              </button>
-            </form>
+        {view.screen === "backups" && (
+          <BackupsPage client={trpc.current} connection={snapshot} />
+        )}
 
-            {projectDetail.trackerLinks.length > 0 && (
-              <div className="links" aria-label="Project tracker links">
-                {projectDetail.trackerLinks.map((link) => (
-                  <a
-                    href={link.url}
-                    key={link.id}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    {link.system}: {link.title ?? link.stableId}
-                  </a>
-                ))}
-              </div>
-            )}
-
-            <form className="task-editor" onSubmit={createTask}>
-              <div>
-                <p className="eyebrow">New task</p>
-                <h3>Plan the next piece of work</h3>
-              </div>
-              <div className="task-create-main">
-                <label>
-                  <span className="visually-hidden">Task name</span>
-                  <input
-                    disabled={!snapshot.canMutate || busy}
-                    onChange={(event) => setTaskName(event.target.value)}
-                    placeholder="Task name"
-                    value={taskName}
-                  />
-                </label>
+        {projects &&
+          projects.length > 0 &&
+          view.screen !== "home" &&
+          view.screen !== "backups" && (
+            <nav aria-label="Projects" className="project-tabs">
+              {projects.map((project) => (
                 <button
-                  disabled={!snapshot.canMutate || busy || !taskName.trim()}
+                  className={
+                    project.id === view.projectId ? "selected" : "secondary"
+                  }
+                  disabled={snapshot.state !== "connected"}
+                  key={project.id}
+                  onClick={() => void openProject(project.id)}
+                  type="button"
+                >
+                  {project.name}
+                </button>
+              ))}
+            </nav>
+          )}
+
+        {projectDetail &&
+          view.screen === "edit_project" &&
+          projectDetail.id === view.projectId && (
+            <section className="detail" aria-labelledby="project-edit-title">
+              <div className="detail-heading">
+                <div>
+                  <p className="eyebrow">Project settings</p>
+                  <h2 id="project-edit-title">Edit {projectDetail.name}</h2>
+                  <p className="project-summary">
+                    Keep planning metadata and external project links together.
+                  </p>
+                </div>
+                <div className="detail-actions">
+                  <button
+                    className="secondary"
+                    onClick={() => openProject(projectDetail.id)}
+                    type="button"
+                  >
+                    Back to tasks
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={openHome}
+                    type="button"
+                  >
+                    Home
+                  </button>
+                </div>
+              </div>
+
+              <form
+                className="project-link-form project-context-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!trpc.current) return;
+                  void mutateAndRefresh(() =>
+                    trpc.current!.projects.update.mutate({
+                      gitOriginUrl: projectGitOriginInput.trim() || null,
+                      projectId: projectDetail.id,
+                    }),
+                  );
+                }}
+              >
+                <input
+                  aria-label="Git origin URL"
+                  disabled={!snapshot.canMutate || busy}
+                  onChange={(event) =>
+                    setProjectGitOriginInput(event.target.value)
+                  }
+                  placeholder="Git origin URL (SSH or HTTPS)"
+                  value={projectGitOriginInput}
+                />
+                <button disabled={!snapshot.canMutate || busy} type="submit">
+                  Save Git URL
+                </button>
+              </form>
+
+              <form
+                className="project-link-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (
+                    !projectTrackerInput.stableId.trim() ||
+                    !projectTrackerInput.url.trim() ||
+                    !trpc.current
+                  )
+                    return;
+                  void mutateAndRefresh(async () => {
+                    const result = await trpc.current!.projects.link.mutate({
+                      ...projectTrackerInput,
+                      projectId: projectDetail.id,
+                      stableId: projectTrackerInput.stableId.trim(),
+                      title: projectTrackerInput.title.trim() || undefined,
+                      url: projectTrackerInput.url.trim(),
+                    });
+                    setProjectTrackerInput({
+                      system: projectTrackerInput.system,
+                      stableId: "",
+                      title: "",
+                      url: "",
+                    });
+                    return result;
+                  });
+                }}
+              >
+                <select
+                  aria-label="Project tracker system"
+                  disabled={!snapshot.canMutate || busy}
+                  onChange={(event) =>
+                    setProjectTrackerInput((current) => ({
+                      ...current,
+                      system: event.target.value as "linear" | "notion",
+                    }))
+                  }
+                  value={projectTrackerInput.system}
+                >
+                  <option value="linear">Linear project</option>
+                  <option value="notion">Notion project</option>
+                </select>
+                <input
+                  aria-label="Project tracker ID"
+                  disabled={!snapshot.canMutate || busy}
+                  onChange={(event) =>
+                    setProjectTrackerInput((current) => ({
+                      ...current,
+                      stableId: event.target.value,
+                    }))
+                  }
+                  placeholder="Project ID"
+                  value={projectTrackerInput.stableId}
+                />
+                <input
+                  aria-label="Project tracker URL"
+                  disabled={!snapshot.canMutate || busy}
+                  onChange={(event) =>
+                    setProjectTrackerInput((current) => ({
+                      ...current,
+                      url: event.target.value,
+                    }))
+                  }
+                  placeholder="https://…"
+                  value={projectTrackerInput.url}
+                />
+                <input
+                  aria-label="Project tracker title"
+                  disabled={!snapshot.canMutate || busy}
+                  onChange={(event) =>
+                    setProjectTrackerInput((current) => ({
+                      ...current,
+                      title: event.target.value,
+                    }))
+                  }
+                  placeholder="Display title (optional)"
+                  value={projectTrackerInput.title}
+                />
+                <button
+                  disabled={
+                    !snapshot.canMutate ||
+                    busy ||
+                    !projectTrackerInput.stableId.trim() ||
+                    !projectTrackerInput.url.trim()
+                  }
                   type="submit"
                 >
-                  Add task
+                  Link project
                 </button>
-              </div>
-              <details className="task-planning" open>
-                <summary>Planning metadata</summary>
-                <div className="planning-grid">
-                  <textarea
-                    aria-label="Task objective"
-                    disabled={!snapshot.canMutate || busy}
-                    onChange={(event) => setTaskObjective(event.target.value)}
-                    placeholder="Objective"
-                    value={taskObjective}
-                  />
-                  <textarea
-                    aria-label="Acceptance criteria"
-                    disabled={!snapshot.canMutate || busy}
-                    onChange={(event) =>
-                      setTaskAcceptanceCriteria(event.target.value)
-                    }
-                    placeholder="Acceptance criteria (one per line)"
-                    value={taskAcceptanceCriteria}
-                  />
-                  <input
-                    aria-label="Task branch name"
-                    disabled={!snapshot.canMutate || busy}
-                    onChange={(event) => setTaskBranchName(event.target.value)}
-                    placeholder="Branch name (optional)"
-                    value={taskBranchName}
-                  />
-                  <select
-                    aria-label="Task priority"
-                    disabled={!snapshot.canMutate || busy}
-                    onChange={(event) =>
-                      setTaskPriority(
-                        event.target.value as
-                          | "low"
-                          | "medium"
-                          | "high"
-                          | "urgent",
-                      )
-                    }
-                    value={taskPriority}
-                  >
-                    <option value="low">Low priority</option>
-                    <option value="medium">Medium priority</option>
-                    <option value="high">High priority</option>
-                    <option value="urgent">Urgent priority</option>
-                  </select>
-                  <input
-                    aria-label="Task owner"
-                    disabled={!snapshot.canMutate || busy}
-                    onChange={(event) => setTaskOwner(event.target.value)}
-                    placeholder="Owner"
-                    value={taskOwner}
-                  />
-                  <textarea
-                    aria-label="Task dependencies"
-                    disabled={!snapshot.canMutate || busy}
-                    onChange={(event) =>
-                      setTaskDependencies(event.target.value)
-                    }
-                    placeholder="Dependencies (one per line)"
-                    value={taskDependencies}
-                  />
-                  <textarea
-                    aria-label="Repository links"
-                    disabled={!snapshot.canMutate || busy}
-                    onChange={(event) =>
-                      setTaskRepositoryLinks(event.target.value)
-                    }
-                    placeholder="Repository links (one URL per line)"
-                    value={taskRepositoryLinks}
-                  />
+              </form>
+
+              {projectDetail.trackerLinks.length > 0 && (
+                <div className="links" aria-label="Project tracker links">
+                  {projectDetail.trackerLinks.map((link) => (
+                    <a
+                      href={link.url}
+                      key={link.id}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      {link.system}: {link.title ?? link.stableId}
+                    </a>
+                  ))}
                 </div>
-              </details>
-            </form>
-          </section>
-        )}
+              )}
 
-      {projectDetail &&
-        view.screen === "project" &&
-        projectDetail.id === view.projectId && (
-          <section className="detail" aria-labelledby="project-detail-title">
-            <div className="detail-heading">
-              <div>
-                <p className="eyebrow">Project tasks</p>
-                <h2 id="project-detail-title">{projectDetail.name}</h2>
-                {portfolioStatus &&
-                  (() => {
-                    const status = portfolioStatus.projects.find(
-                      (candidate) => candidate.projectId === projectDetail.id,
-                    );
-                    return status ? (
-                      <p className="project-summary">
-                        {status.totalTasks} tasks · {status.counts.backlog}{" "}
-                        backlog · {status.counts.planned} planned ·{" "}
-                        {status.counts.active} active ·{" "}
-                        {status.counts.awaiting_verification} awaiting
-                        verification · {status.counts.completed} completed ·{" "}
-                        {status.counts.blocked} blocked ·{" "}
-                        {status.counts.released} released ·{" "}
-                        {status.counts.wont_do} won&apos;t do
-                      </p>
-                    ) : null;
-                  })()}
-              </div>
-              <div className="detail-actions">
-                <button className="secondary" onClick={openHome} type="button">
-                  Home
-                </button>
-                <button
-                  className="secondary"
-                  onClick={() => openProjectEditor(projectDetail.id)}
-                  type="button"
-                >
-                  Edit project
-                </button>
-                <button
-                  aria-label={`${showArchivedTasks ? "Hide" : "Show"} archived tasks`}
-                  aria-pressed={showArchivedTasks}
-                  className="secondary"
-                  onClick={() => setShowArchivedTasks((current) => !current)}
-                  type="button"
-                >
-                  {showArchivedTasks
-                    ? "Hide archived"
-                    : `Show archived (${archivedTaskCount})`}
-                </button>
-              </div>
-            </div>
-
-            {portfolioStatus &&
-              (() => {
-                const status = portfolioStatus.projects.find(
-                  (candidate) => candidate.projectId === projectDetail.id,
-                );
-                if (!status) return null;
-                return (
-                  <div className="project-stats" aria-label="Project summary">
-                    <div className="project-stat">
-                      <strong>{status.totalTasks}</strong>
-                      <span>Total tasks</span>
-                    </div>
-                    <div className="project-stat">
-                      <strong>
-                        {status.counts.completed}/{status.totalTasks}
-                      </strong>
-                      <span>Tasks complete</span>
-                    </div>
-                    <div className="project-stat">
-                      <strong>{status.counts.active}</strong>
-                      <span>Active</span>
-                    </div>
-                    <div className="project-stat">
-                      <strong>{status.counts.blocked}</strong>
-                      <span>Blocked</span>
-                    </div>
-                  </div>
-                );
-              })()}
-
-            <ObservedActivitySection
-              activity={t3Activity}
-              busy={t3Busy || busy}
-              canMutate={snapshot.canMutate && !busy}
-              onLinkThread={linkT3Thread}
-              onOpenThreadDetail={openT3ThreadDetail}
-              onRefresh={() => refreshT3Project(projectDetail.id)}
-              onUnlinkThread={unlinkT3Thread}
-              threadDetails={t3ThreadDetails}
-              threadDetailLoadingIds={t3ThreadDetailLoadingIds}
-            />
-
-            {projectDetail.tasks.length === 0 ? (
-              <div className="empty">
-                <p>
-                  No tasks yet. Add the first piece of work from project
-                  settings.
-                </p>
-                <button
-                  className="secondary"
-                  onClick={() => openProjectEditor(projectDetail.id)}
-                  type="button"
-                >
-                  Add a task
-                </button>
-              </div>
-            ) : visibleProjectTasks.length === 0 ? (
-              <div className="empty">
-                <p>
-                  All tasks are archived. Show archived tasks to review or
-                  restore them.
-                </p>
-                <button
-                  className="secondary"
-                  onClick={() => setShowArchivedTasks(true)}
-                  type="button"
-                >
-                  Show archived tasks
-                </button>
-              </div>
-            ) : (
-              <div className="task-list">
-                {groupedProjectTasks.map(({ state, tasks }) => (
-                  <section
-                    aria-labelledby={`task-group-${state}`}
-                    className={`task-group task-group-${state}`}
-                    key={state}
+              <form className="task-editor" onSubmit={createTask}>
+                <div>
+                  <p className="eyebrow">New task</p>
+                  <h3>Plan the next piece of work</h3>
+                </div>
+                <div className="task-create-main">
+                  <label>
+                    <span className="visually-hidden">Task name</span>
+                    <input
+                      disabled={!snapshot.canMutate || busy}
+                      onChange={(event) => setTaskName(event.target.value)}
+                      placeholder="Task name"
+                      value={taskName}
+                    />
+                  </label>
+                  <button
+                    disabled={!snapshot.canMutate || busy || !taskName.trim()}
+                    type="submit"
                   >
-                    <div className="task-group-heading">
-                      <button
-                        aria-expanded={!collapsedTaskGroups[state]}
-                        aria-label={`${statusDefinitions[state].label} task group`}
-                        className="task-group-toggle"
-                        onClick={() =>
-                          setCollapsedTaskGroups((current) => ({
-                            ...current,
-                            [state]: !current[state],
-                          }))
-                        }
-                        type="button"
-                      >
-                        <span aria-hidden="true" className="task-group-chevron">
-                          {collapsedTaskGroups[state] ? "▸" : "▾"}
-                        </span>
-                        <StatusIcon size={20} state={state} />
-                        <h3 id={`task-group-${state}`}>
-                          {statusDefinitions[state].label}
-                        </h3>
-                        <span>{tasks.length}</span>
-                      </button>
+                    Add task
+                  </button>
+                </div>
+                <details className="task-planning" open>
+                  <summary>Planning metadata</summary>
+                  <div className="planning-grid">
+                    <textarea
+                      aria-label="Task objective"
+                      disabled={!snapshot.canMutate || busy}
+                      onChange={(event) => setTaskObjective(event.target.value)}
+                      placeholder="Objective"
+                      value={taskObjective}
+                    />
+                    <textarea
+                      aria-label="Acceptance criteria"
+                      disabled={!snapshot.canMutate || busy}
+                      onChange={(event) =>
+                        setTaskAcceptanceCriteria(event.target.value)
+                      }
+                      placeholder="Acceptance criteria (one per line)"
+                      value={taskAcceptanceCriteria}
+                    />
+                    <input
+                      aria-label="Task branch name"
+                      disabled={!snapshot.canMutate || busy}
+                      onChange={(event) =>
+                        setTaskBranchName(event.target.value)
+                      }
+                      placeholder="Branch name (optional)"
+                      value={taskBranchName}
+                    />
+                    <select
+                      aria-label="Task priority"
+                      disabled={!snapshot.canMutate || busy}
+                      onChange={(event) =>
+                        setTaskPriority(
+                          event.target.value as
+                            | "low"
+                            | "medium"
+                            | "high"
+                            | "urgent",
+                        )
+                      }
+                      value={taskPriority}
+                    >
+                      <option value="low">Low priority</option>
+                      <option value="medium">Medium priority</option>
+                      <option value="high">High priority</option>
+                      <option value="urgent">Urgent priority</option>
+                    </select>
+                    <input
+                      aria-label="Task owner"
+                      disabled={!snapshot.canMutate || busy}
+                      onChange={(event) => setTaskOwner(event.target.value)}
+                      placeholder="Owner"
+                      value={taskOwner}
+                    />
+                    <textarea
+                      aria-label="Task dependencies"
+                      disabled={!snapshot.canMutate || busy}
+                      onChange={(event) =>
+                        setTaskDependencies(event.target.value)
+                      }
+                      placeholder="Dependencies (one per line)"
+                      value={taskDependencies}
+                    />
+                    <textarea
+                      aria-label="Repository links"
+                      disabled={!snapshot.canMutate || busy}
+                      onChange={(event) =>
+                        setTaskRepositoryLinks(event.target.value)
+                      }
+                      placeholder="Repository links (one URL per line)"
+                      value={taskRepositoryLinks}
+                    />
+                  </div>
+                </details>
+              </form>
+            </section>
+          )}
+
+        {projectDetail &&
+          view.screen === "project" &&
+          projectDetail.id === view.projectId && (
+            <section className="detail" aria-labelledby="project-detail-title">
+              <div className="detail-heading">
+                <div>
+                  <p className="eyebrow">Project tasks</p>
+                  <h2 id="project-detail-title">{projectDetail.name}</h2>
+                  {portfolioStatus &&
+                    (() => {
+                      const status = portfolioStatus.projects.find(
+                        (candidate) => candidate.projectId === projectDetail.id,
+                      );
+                      return status ? (
+                        <p className="project-summary">
+                          {status.totalTasks} tasks · {status.counts.backlog}{" "}
+                          backlog · {status.counts.planned} planned ·{" "}
+                          {status.counts.active} active ·{" "}
+                          {status.counts.awaiting_verification} awaiting
+                          verification · {status.counts.completed} completed ·{" "}
+                          {status.counts.blocked} blocked ·{" "}
+                          {status.counts.released} released ·{" "}
+                          {status.counts.wont_do} won&apos;t do
+                        </p>
+                      ) : null;
+                    })()}
+                </div>
+                <div className="detail-actions">
+                  <button
+                    className="secondary"
+                    onClick={openHome}
+                    type="button"
+                  >
+                    Home
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={() => openProjectEditor(projectDetail.id)}
+                    type="button"
+                  >
+                    Edit project
+                  </button>
+                  <button
+                    aria-label={`${showArchivedTasks ? "Hide" : "Show"} archived tasks`}
+                    aria-pressed={showArchivedTasks}
+                    className="secondary"
+                    onClick={() => setShowArchivedTasks((current) => !current)}
+                    type="button"
+                  >
+                    {showArchivedTasks
+                      ? "Hide archived"
+                      : `Show archived (${archivedTaskCount})`}
+                  </button>
+                </div>
+              </div>
+
+              {portfolioStatus &&
+                (() => {
+                  const status = portfolioStatus.projects.find(
+                    (candidate) => candidate.projectId === projectDetail.id,
+                  );
+                  if (!status) return null;
+                  return (
+                    <div className="project-stats" aria-label="Project summary">
+                      <div className="project-stat">
+                        <strong>{status.totalTasks}</strong>
+                        <span>Total tasks</span>
+                      </div>
+                      <div className="project-stat">
+                        <strong>
+                          {status.counts.completed}/{status.totalTasks}
+                        </strong>
+                        <span>Tasks complete</span>
+                      </div>
+                      <div className="project-stat">
+                        <strong>{status.counts.active}</strong>
+                        <span>Active</span>
+                      </div>
+                      <div className="project-stat">
+                        <strong>{status.counts.blocked}</strong>
+                        <span>Blocked</span>
+                      </div>
                     </div>
-                    {!collapsedTaskGroups[state] && (
-                      <div className="task-group-items">
-                        {tasks.map((task) => {
-                          const status = taskStatuses[task.id];
-                          const taskDetail = taskDetails[task.id];
-                          const currentTaskState = taskWorkState(task, status);
-                          const taskStateReason =
-                            status?.stateReason ?? task.stateReason;
-                          const taskEdit = taskEdits[task.id];
-                          const linkInput = projectLinkInputs[task.id] ?? {
-                            system: "linear" as const,
-                            stableId: "",
-                            title: "",
-                            url: "",
-                          };
-                          const taskRowKey = `task:${task.id}`;
-                          const taskRowExpanded = Boolean(
-                            expandedRows[taskRowKey],
-                          );
-                          const taskActionsSummary = summarizeGitHubActions([
-                            githubStatuses[`task:${task.id}`],
-                            ...task.subtasks.map(
-                              (subtask) =>
-                                githubStatuses[`subtask:${subtask.id}`],
-                            ),
-                          ]);
-                          const progress = summarizeTaskProgress(task, status);
-                          const taskHistoryThreads = historyThreadsForTarget(
-                            t3Activity,
-                            task.id,
-                          );
-                          const subtaskGroups = groupSubtasksByStatus(
-                            task.subtasks.map((subtask, index) => ({
-                              ...subtask,
-                              sortOrder:
-                                subtask.sortOrder ??
-                                status?.subtasks[index]?.sortOrder,
-                              state: subtaskWorkState(
-                                subtask,
-                                status?.subtasks[index],
+                  );
+                })()}
+
+              <ObservedActivitySection
+                activity={t3Activity}
+                busy={t3Busy || busy}
+                canMutate={snapshot.canMutate && !busy}
+                onLinkThread={linkT3Thread}
+                onOpenThreadDetail={openT3ThreadDetail}
+                onRefresh={() => refreshT3Project(projectDetail.id)}
+                onUnlinkThread={unlinkT3Thread}
+                threadDetails={t3ThreadDetails}
+                threadDetailLoadingIds={t3ThreadDetailLoadingIds}
+              />
+
+              {projectDetail.tasks.length === 0 ? (
+                <div className="empty">
+                  <p>
+                    No tasks yet. Add the first piece of work from project
+                    settings.
+                  </p>
+                  <button
+                    className="secondary"
+                    onClick={() => openProjectEditor(projectDetail.id)}
+                    type="button"
+                  >
+                    Add a task
+                  </button>
+                </div>
+              ) : visibleProjectTasks.length === 0 ? (
+                <div className="empty">
+                  <p>
+                    All tasks are archived. Show archived tasks to review or
+                    restore them.
+                  </p>
+                  <button
+                    className="secondary"
+                    onClick={() => setShowArchivedTasks(true)}
+                    type="button"
+                  >
+                    Show archived tasks
+                  </button>
+                </div>
+              ) : (
+                <div className="task-list">
+                  {groupedProjectTasks.map(({ state, tasks }) => (
+                    <section
+                      aria-labelledby={`task-group-${state}`}
+                      className={`task-group task-group-${state}`}
+                      key={state}
+                    >
+                      <div className="task-group-heading">
+                        <button
+                          aria-expanded={!collapsedTaskGroups[state]}
+                          aria-label={`${statusDefinitions[state].label} task group`}
+                          className="task-group-toggle"
+                          onClick={() =>
+                            setCollapsedTaskGroups((current) => ({
+                              ...current,
+                              [state]: !current[state],
+                            }))
+                          }
+                          type="button"
+                        >
+                          <span
+                            aria-hidden="true"
+                            className="task-group-chevron"
+                          >
+                            {collapsedTaskGroups[state] ? "▸" : "▾"}
+                          </span>
+                          <StatusIcon size={20} state={state} />
+                          <h3 id={`task-group-${state}`}>
+                            {statusDefinitions[state].label}
+                          </h3>
+                          <span>{tasks.length}</span>
+                        </button>
+                      </div>
+                      {!collapsedTaskGroups[state] && (
+                        <div className="task-group-items">
+                          {tasks.map((task) => {
+                            const status = taskStatuses[task.id];
+                            const taskDetail = taskDetails[task.id];
+                            const currentTaskState = taskWorkState(
+                              task,
+                              status,
+                            );
+                            const taskStateReason =
+                              status?.stateReason ?? task.stateReason;
+                            const taskEdit = taskEdits[task.id];
+                            const linkInput = projectLinkInputs[task.id] ?? {
+                              system: "linear" as const,
+                              stableId: "",
+                              title: "",
+                              url: "",
+                            };
+                            const taskRowKey = `task:${task.id}`;
+                            const taskRowExpanded = Boolean(
+                              expandedRows[taskRowKey],
+                            );
+                            const taskActionsSummary = summarizeGitHubActions([
+                              githubStatuses[`task:${task.id}`],
+                              ...task.subtasks.map(
+                                (subtask) =>
+                                  githubStatuses[`subtask:${subtask.id}`],
                               ),
-                              stateReason:
-                                status?.subtasks[index]?.reason ??
-                                subtask.stateReason,
-                              statusIndex: index,
-                            })),
-                          );
-                          return (
-                            <article
-                              aria-labelledby={`task-${task.id}-title`}
-                              className={`task-row ${
-                                taskRowExpanded
-                                  ? "row-expanded"
-                                  : "row-collapsed"
-                              } ${
-                                dragTarget?.kind === "task" &&
-                                dragTarget.id === task.id
-                                  ? "is-dragging"
-                                  : ""
-                              } ${
-                                dragTarget?.overId === task.id
-                                  ? "is-drag-over"
-                                  : ""
-                              }`}
-                              data-reorder-id={task.id}
-                              data-reorder-kind="task"
-                              data-work-state={state}
-                              key={task.id}
-                            >
-                              <div className="task-card-header">
-                                {isLiveWorkState(state) && (
-                                  <ReorderHandle
-                                    disabled={
-                                      !snapshot.canMutate ||
-                                      busy ||
-                                      Boolean(task.archiveState)
-                                    }
-                                    kind="task"
-                                    itemId={task.id}
-                                    onKeyDown={(event) =>
-                                      keyboardReorder(
-                                        event,
-                                        {
+                            ]);
+                            const progress = summarizeTaskProgress(
+                              task,
+                              status,
+                            );
+                            const taskHistoryThreads = historyThreadsForTarget(
+                              t3Activity,
+                              task.id,
+                            );
+                            const subtaskGroups = groupSubtasksByStatus(
+                              task.subtasks.map((subtask, index) => ({
+                                ...subtask,
+                                sortOrder:
+                                  subtask.sortOrder ??
+                                  status?.subtasks[index]?.sortOrder,
+                                state: subtaskWorkState(
+                                  subtask,
+                                  status?.subtasks[index],
+                                ),
+                                stateReason:
+                                  status?.subtasks[index]?.reason ??
+                                  subtask.stateReason,
+                                statusIndex: index,
+                              })),
+                            );
+                            return (
+                              <article
+                                aria-labelledby={`task-${task.id}-title`}
+                                id={`floor-task-${task.id}`}
+                                className={`task-row ${
+                                  taskRowExpanded
+                                    ? "row-expanded"
+                                    : "row-collapsed"
+                                } ${
+                                  dragTarget?.kind === "task" &&
+                                  dragTarget.id === task.id
+                                    ? "is-dragging"
+                                    : ""
+                                } ${
+                                  dragTarget?.overId === task.id
+                                    ? "is-drag-over"
+                                    : ""
+                                }`}
+                                data-reorder-id={task.id}
+                                data-reorder-kind="task"
+                                data-work-state={state}
+                                key={task.id}
+                              >
+                                <div className="task-card-header">
+                                  {isLiveWorkState(state) && (
+                                    <ReorderHandle
+                                      disabled={
+                                        !snapshot.canMutate ||
+                                        busy ||
+                                        Boolean(task.archiveState)
+                                      }
+                                      kind="task"
+                                      itemId={task.id}
+                                      onKeyDown={(event) =>
+                                        keyboardReorder(
+                                          event,
+                                          {
+                                            id: task.id,
+                                            kind: "task",
+                                            state,
+                                          },
+                                          tasks.map(
+                                            (candidate) => candidate.id,
+                                          ),
+                                        )
+                                      }
+                                      onPointerDown={(event) =>
+                                        beginDrag(event, {
                                           id: task.id,
                                           kind: "task",
                                           state,
-                                        },
-                                        tasks.map((candidate) => candidate.id),
-                                      )
-                                    }
-                                    onPointerDown={(event) =>
-                                      beginDrag(event, {
-                                        id: task.id,
-                                        kind: "task",
-                                        state,
-                                      })
-                                    }
-                                    onPointerMove={updateDrag}
-                                    onPointerUp={finishDrag}
-                                    state={state}
-                                  />
-                                )}
-                                <div className="task-summary">
-                                  <div className="task-summary-heading">
-                                    <div className="status-with-thread-dots">
-                                      <TaskStatusMenu
-                                        onResumeRollup={
-                                          task.archiveState
-                                            ? undefined
-                                            : () =>
-                                                void mutateAndRefresh(() =>
-                                                  trpc.current!.tasks.resumeRollup.mutate(
-                                                    { taskId: task.id },
-                                                  ),
-                                                )
-                                        }
-                                        onDisposition={(archiveState) =>
-                                          void mutateAndRefresh(() =>
-                                            trpc.current!.tasks.archive.mutate({
-                                              archiveState,
-                                              taskId: task.id,
-                                            }),
-                                          )
-                                        }
-                                        onState={(nextState, reason) =>
-                                          void setTaskWorkState(
-                                            task.id,
-                                            nextState,
-                                            reason,
-                                          )
-                                        }
-                                        state={currentTaskState}
-                                        taskName={task.name}
-                                      />
-                                      <ThreadDots
-                                        activity={t3Activity}
-                                        onOpenThread={openT3ThreadDetail}
-                                        target={{
-                                          id: task.id,
-                                          kind: "task",
-                                          label: task.name,
-                                        }}
-                                      />
-                                    </div>
-                                    <h3
-                                      className="visually-hidden"
-                                      id={`task-${task.id}-title`}
-                                    >
-                                      {task.name}
-                                    </h3>
-                                    <RowToggle
-                                      expanded={taskRowExpanded}
-                                      kind="task"
-                                      name={task.name}
-                                      simpleId={task.simpleId}
-                                      onToggle={() => toggleRow(taskRowKey)}
-                                      actionsSummary={taskActionsSummary}
-                                    />
-                                  </div>
-                                  {taskStateReason &&
-                                    (currentTaskState === "blocked" ||
-                                      currentTaskState ===
-                                        "awaiting_verification") && (
-                                      <p className="state-reason">
-                                        <strong>
-                                          {currentTaskState === "blocked"
-                                            ? "Why blocked"
-                                            : "What to verify"}
-                                          :
-                                        </strong>{" "}
-                                        {taskStateReason}
-                                      </p>
-                                    )}
-                                  {taskDetail?.objective && (
-                                    <p className="task-objective">
-                                      {taskDetail.objective}
-                                    </p>
-                                  )}
-                                  <div className="task-preview-meta">
-                                    {taskDetail?.owner && (
-                                      <span>Owner: {taskDetail.owner}</span>
-                                    )}
-                                    {taskDetail?.priority && (
-                                      <span>
-                                        Priority:{" "}
-                                        {formatWorkState(taskDetail.priority)}
-                                      </span>
-                                    )}
-                                    <span>
-                                      {progress.totalSubtasks > 0
-                                        ? `${progress.completedSubtasks}/${progress.totalSubtasks} subtasks done`
-                                        : "No subtasks yet"}
-                                    </span>
-                                    {task.pullRequestUrl && (
-                                      <GitHubStatusBadge
-                                        pullRequestUrl={task.pullRequestUrl}
-                                        status={
-                                          githubStatuses[`task:${task.id}`]
-                                        }
-                                      />
-                                    )}
-                                  </div>
-                                  {progress.totalSubtasks > 0 && (
-                                    <progress
-                                      aria-label={
-                                        String(progress.completedSubtasks) +
-                                        " of " +
-                                        String(progress.totalSubtasks) +
-                                        " subtasks complete"
+                                        })
                                       }
-                                      className="task-progress"
-                                      max={progress.totalSubtasks}
-                                      value={progress.completedSubtasks}
+                                      onPointerMove={updateDrag}
+                                      onPointerUp={finishDrag}
+                                      state={state}
                                     />
                                   )}
-                                  {progress.nextSubtaskName && (
-                                    <p className="task-next">
-                                      <strong>Next:</strong>{" "}
-                                      {progress.nextSubtaskName}
-                                    </p>
-                                  )}
-                                </div>
-                                <div
-                                  aria-label={`Quick status for ${task.name}`}
-                                  className="task-actions"
-                                >
-                                  <details className="task-menu">
-                                    <summary>More</summary>
-                                    <div className="task-menu-options">
-                                      <button
-                                        className="secondary"
-                                        disabled={
-                                          !snapshot.canMutate ||
-                                          busy ||
-                                          !taskDetail
-                                        }
-                                        onClick={() => startTaskEdit(task.id)}
-                                        type="button"
-                                      >
-                                        Edit task
-                                      </button>
-                                      {status?.archiveState && (
-                                        <button
-                                          className="secondary"
-                                          disabled={!snapshot.canMutate || busy}
-                                          onClick={() =>
+                                  <div className="task-summary">
+                                    <div className="task-summary-heading">
+                                      <div className="status-with-thread-dots">
+                                        <TaskStatusMenu
+                                          onResumeRollup={
+                                            task.archiveState
+                                              ? undefined
+                                              : () =>
+                                                  void mutateAndRefresh(() =>
+                                                    trpc.current!.tasks.resumeRollup.mutate(
+                                                      { taskId: task.id },
+                                                    ),
+                                                  )
+                                          }
+                                          onDisposition={(archiveState) =>
                                             void mutateAndRefresh(() =>
-                                              trpc.current!.tasks.restore.mutate(
+                                              trpc.current!.tasks.archive.mutate(
                                                 {
+                                                  archiveState,
                                                   taskId: task.id,
                                                 },
                                               ),
                                             )
                                           }
+                                          onState={(nextState, reason) =>
+                                            void setTaskWorkState(
+                                              task.id,
+                                              nextState,
+                                              reason,
+                                            )
+                                          }
+                                          state={currentTaskState}
+                                          taskName={task.name}
+                                        />
+                                        <ThreadDots
+                                          activity={t3Activity}
+                                          onOpenThread={openT3ThreadDetail}
+                                          target={{
+                                            id: task.id,
+                                            kind: "task",
+                                            label: task.name,
+                                          }}
+                                        />
+                                      </div>
+                                      <h3
+                                        className="visually-hidden"
+                                        id={`task-${task.id}-title`}
+                                      >
+                                        {task.name}
+                                      </h3>
+                                      <RowToggle
+                                        expanded={taskRowExpanded}
+                                        kind="task"
+                                        name={task.name}
+                                        simpleId={task.simpleId}
+                                        onToggle={() => toggleRow(taskRowKey)}
+                                        actionsSummary={taskActionsSummary}
+                                      />
+                                    </div>
+                                    {taskStateReason &&
+                                      (currentTaskState === "blocked" ||
+                                        currentTaskState ===
+                                          "awaiting_verification") && (
+                                        <p className="state-reason">
+                                          <strong>
+                                            {currentTaskState === "blocked"
+                                              ? "Why blocked"
+                                              : "What to verify"}
+                                            :
+                                          </strong>{" "}
+                                          {taskStateReason}
+                                        </p>
+                                      )}
+                                    {taskDetail?.objective && (
+                                      <p className="task-objective">
+                                        {taskDetail.objective}
+                                      </p>
+                                    )}
+                                    <div className="task-preview-meta">
+                                      {taskDetail?.owner && (
+                                        <span>Owner: {taskDetail.owner}</span>
+                                      )}
+                                      {taskDetail?.priority && (
+                                        <span>
+                                          Priority:{" "}
+                                          {formatWorkState(taskDetail.priority)}
+                                        </span>
+                                      )}
+                                      <span>
+                                        {progress.totalSubtasks > 0
+                                          ? `${progress.completedSubtasks}/${progress.totalSubtasks} subtasks done`
+                                          : "No subtasks yet"}
+                                      </span>
+                                      {task.pullRequestUrl && (
+                                        <GitHubStatusBadge
+                                          pullRequestUrl={task.pullRequestUrl}
+                                          status={
+                                            githubStatuses[`task:${task.id}`]
+                                          }
+                                        />
+                                      )}
+                                    </div>
+                                    {progress.totalSubtasks > 0 && (
+                                      <progress
+                                        aria-label={
+                                          String(progress.completedSubtasks) +
+                                          " of " +
+                                          String(progress.totalSubtasks) +
+                                          " subtasks complete"
+                                        }
+                                        className="task-progress"
+                                        max={progress.totalSubtasks}
+                                        value={progress.completedSubtasks}
+                                      />
+                                    )}
+                                    {progress.nextSubtaskName && (
+                                      <p className="task-next">
+                                        <strong>Next:</strong>{" "}
+                                        {progress.nextSubtaskName}
+                                      </p>
+                                    )}
+                                  </div>
+                                  <div
+                                    aria-label={`Quick status for ${task.name}`}
+                                    className="task-actions"
+                                  >
+                                    <details className="task-menu">
+                                      <summary>More</summary>
+                                      <div className="task-menu-options">
+                                        <button
+                                          className="secondary"
+                                          disabled={
+                                            !snapshot.canMutate ||
+                                            busy ||
+                                            !taskDetail
+                                          }
+                                          onClick={() => startTaskEdit(task.id)}
                                           type="button"
                                         >
-                                          Restore
+                                          Edit task
                                         </button>
-                                      )}
-                                      <button
-                                        className="danger"
-                                        disabled={!snapshot.canMutate || busy}
-                                        onClick={() => {
-                                          if (
-                                            !window.confirm(
-                                              `Delete task “${task.name}” and all of its subtasks? This cannot be undone.`,
+                                        {status?.archiveState && (
+                                          <button
+                                            className="secondary"
+                                            disabled={
+                                              !snapshot.canMutate || busy
+                                            }
+                                            onClick={() =>
+                                              void mutateAndRefresh(() =>
+                                                trpc.current!.tasks.restore.mutate(
+                                                  {
+                                                    taskId: task.id,
+                                                  },
+                                                ),
+                                              )
+                                            }
+                                            type="button"
+                                          >
+                                            Restore
+                                          </button>
+                                        )}
+                                        <button
+                                          className="danger"
+                                          disabled={!snapshot.canMutate || busy}
+                                          onClick={() => {
+                                            if (
+                                              !window.confirm(
+                                                `Delete task “${task.name}” and all of its subtasks? This cannot be undone.`,
+                                              )
                                             )
-                                          )
-                                            return;
-                                          void mutateAndRefresh(() =>
-                                            trpc.current!.tasks.remove.mutate({
-                                              confirm: true,
-                                              taskId: task.id,
-                                            }),
-                                          );
-                                        }}
+                                              return;
+                                            void mutateAndRefresh(() =>
+                                              trpc.current!.tasks.remove.mutate(
+                                                {
+                                                  confirm: true,
+                                                  taskId: task.id,
+                                                },
+                                              ),
+                                            );
+                                          }}
+                                          type="button"
+                                        >
+                                          Delete task
+                                        </button>
+                                      </div>
+                                    </details>
+                                  </div>
+                                </div>
+                                {taskEdit && (
+                                  <form
+                                    className="task-edit-form"
+                                    onSubmit={(event) =>
+                                      void saveTaskEdit(event, task.id)
+                                    }
+                                  >
+                                    <p className="eyebrow">Edit task</p>
+                                    <label>
+                                      <span>Task title</span>
+                                      <input
+                                        autoFocus
+                                        disabled={!snapshot.canMutate || busy}
+                                        onChange={(event) =>
+                                          setTaskEdits((current) => ({
+                                            ...current,
+                                            [task.id]: {
+                                              ...taskEdit,
+                                              title: event.target.value,
+                                            },
+                                          }))
+                                        }
+                                        value={taskEdit.title}
+                                      />
+                                    </label>
+                                    <label>
+                                      <span>Description</span>
+                                      <textarea
+                                        disabled={!snapshot.canMutate || busy}
+                                        onChange={(event) =>
+                                          setTaskEdits((current) => ({
+                                            ...current,
+                                            [task.id]: {
+                                              ...taskEdit,
+                                              description: event.target.value,
+                                            },
+                                          }))
+                                        }
+                                        value={taskEdit.description}
+                                      />
+                                    </label>
+                                    <label>
+                                      <span>Acceptance criteria</span>
+                                      <textarea
+                                        disabled={!snapshot.canMutate || busy}
+                                        onChange={(event) =>
+                                          setTaskEdits((current) => ({
+                                            ...current,
+                                            [task.id]: {
+                                              ...taskEdit,
+                                              acceptanceCriteria:
+                                                event.target.value,
+                                            },
+                                          }))
+                                        }
+                                        placeholder="One criterion per line"
+                                        value={taskEdit.acceptanceCriteria}
+                                      />
+                                    </label>
+                                    <div className="edit-actions">
+                                      <button
+                                        disabled={
+                                          !snapshot.canMutate ||
+                                          busy ||
+                                          !taskEdit.title.trim()
+                                        }
+                                        type="submit"
+                                      >
+                                        Save task
+                                      </button>
+                                      <button
+                                        className="secondary"
+                                        disabled={busy}
+                                        onClick={() => cancelTaskEdit(task.id)}
                                         type="button"
                                       >
-                                        Delete task
+                                        Cancel
                                       </button>
                                     </div>
-                                  </details>
-                                </div>
-                              </div>
-                              {taskEdit && (
-                                <form
-                                  className="task-edit-form"
-                                  onSubmit={(event) =>
-                                    void saveTaskEdit(event, task.id)
-                                  }
-                                >
-                                  <p className="eyebrow">Edit task</p>
-                                  <label>
-                                    <span>Task title</span>
+                                  </form>
+                                )}
+                                <details className="task-tracker">
+                                  <summary>Link external tracker</summary>
+                                  <form
+                                    className="inline-form"
+                                    onSubmit={(event) => {
+                                      event.preventDefault();
+                                      if (
+                                        !linkInput.stableId.trim() ||
+                                        !linkInput.url.trim() ||
+                                        !trpc.current
+                                      )
+                                        return;
+                                      void mutateAndRefresh(async () => {
+                                        const result =
+                                          await trpc.current!.tasks.link.mutate(
+                                            {
+                                              ...linkInput,
+                                              stableId:
+                                                linkInput.stableId.trim(),
+                                              title:
+                                                linkInput.title.trim() ||
+                                                undefined,
+                                              taskId: task.id,
+                                              url: linkInput.url.trim(),
+                                            },
+                                          );
+                                        setProjectLinkInputs((current) => ({
+                                          ...current,
+                                          [task.id]: {
+                                            ...linkInput,
+                                            stableId: "",
+                                            title: "",
+                                            url: "",
+                                          },
+                                        }));
+                                        return result;
+                                      });
+                                    }}
+                                  >
+                                    <select
+                                      aria-label="Tracker system"
+                                      disabled={!snapshot.canMutate || busy}
+                                      onChange={(event) =>
+                                        setProjectLinkInputs((current) => ({
+                                          ...current,
+                                          [task.id]: {
+                                            ...linkInput,
+                                            system: event.target.value as
+                                              | "linear"
+                                              | "notion",
+                                          },
+                                        }))
+                                      }
+                                      value={linkInput.system}
+                                    >
+                                      <option value="linear">Linear</option>
+                                      <option value="notion">Notion</option>
+                                    </select>
                                     <input
-                                      autoFocus
+                                      aria-label="Tracker ID"
                                       disabled={!snapshot.canMutate || busy}
                                       onChange={(event) =>
-                                        setTaskEdits((current) => ({
+                                        setProjectLinkInputs((current) => ({
                                           ...current,
                                           [task.id]: {
-                                            ...taskEdit,
-                                            title: event.target.value,
+                                            ...linkInput,
+                                            stableId: event.target.value,
                                           },
                                         }))
                                       }
-                                      value={taskEdit.title}
+                                      placeholder="GRA-123"
+                                      value={linkInput.stableId}
                                     />
-                                  </label>
-                                  <label>
-                                    <span>Description</span>
-                                    <textarea
+                                    <input
+                                      aria-label="Tracker URL"
                                       disabled={!snapshot.canMutate || busy}
                                       onChange={(event) =>
-                                        setTaskEdits((current) => ({
+                                        setProjectLinkInputs((current) => ({
                                           ...current,
                                           [task.id]: {
-                                            ...taskEdit,
-                                            description: event.target.value,
+                                            ...linkInput,
+                                            url: event.target.value,
                                           },
                                         }))
                                       }
-                                      value={taskEdit.description}
+                                      placeholder="https://…"
+                                      value={linkInput.url}
                                     />
-                                  </label>
-                                  <label>
-                                    <span>Acceptance criteria</span>
-                                    <textarea
-                                      disabled={!snapshot.canMutate || busy}
-                                      onChange={(event) =>
-                                        setTaskEdits((current) => ({
-                                          ...current,
-                                          [task.id]: {
-                                            ...taskEdit,
-                                            acceptanceCriteria:
-                                              event.target.value,
-                                          },
-                                        }))
-                                      }
-                                      placeholder="One criterion per line"
-                                      value={taskEdit.acceptanceCriteria}
-                                    />
-                                  </label>
-                                  <div className="edit-actions">
                                     <button
                                       disabled={
                                         !snapshot.canMutate ||
                                         busy ||
-                                        !taskEdit.title.trim()
+                                        !linkInput.stableId.trim() ||
+                                        !linkInput.url.trim()
                                       }
                                       type="submit"
                                     >
-                                      Save task
+                                      Link
                                     </button>
-                                    <button
-                                      className="secondary"
-                                      disabled={busy}
-                                      onClick={() => cancelTaskEdit(task.id)}
-                                      type="button"
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-                                </form>
-                              )}
-                              <details className="task-tracker">
-                                <summary>Link external tracker</summary>
-                                <form
-                                  className="inline-form"
-                                  onSubmit={(event) => {
-                                    event.preventDefault();
-                                    if (
-                                      !linkInput.stableId.trim() ||
-                                      !linkInput.url.trim() ||
-                                      !trpc.current
-                                    )
-                                      return;
-                                    void mutateAndRefresh(async () => {
-                                      const result =
-                                        await trpc.current!.tasks.link.mutate({
-                                          ...linkInput,
-                                          stableId: linkInput.stableId.trim(),
-                                          title:
-                                            linkInput.title.trim() || undefined,
-                                          taskId: task.id,
-                                          url: linkInput.url.trim(),
-                                        });
-                                      setProjectLinkInputs((current) => ({
-                                        ...current,
-                                        [task.id]: {
-                                          ...linkInput,
-                                          stableId: "",
-                                          title: "",
-                                          url: "",
-                                        },
-                                      }));
-                                      return result;
-                                    });
-                                  }}
-                                >
-                                  <select
-                                    aria-label="Tracker system"
-                                    disabled={!snapshot.canMutate || busy}
-                                    onChange={(event) =>
-                                      setProjectLinkInputs((current) => ({
-                                        ...current,
-                                        [task.id]: {
-                                          ...linkInput,
-                                          system: event.target.value as
-                                            | "linear"
-                                            | "notion",
-                                        },
-                                      }))
-                                    }
-                                    value={linkInput.system}
-                                  >
-                                    <option value="linear">Linear</option>
-                                    <option value="notion">Notion</option>
-                                  </select>
-                                  <input
-                                    aria-label="Tracker ID"
-                                    disabled={!snapshot.canMutate || busy}
-                                    onChange={(event) =>
-                                      setProjectLinkInputs((current) => ({
-                                        ...current,
-                                        [task.id]: {
-                                          ...linkInput,
-                                          stableId: event.target.value,
-                                        },
-                                      }))
-                                    }
-                                    placeholder="GRA-123"
-                                    value={linkInput.stableId}
-                                  />
-                                  <input
-                                    aria-label="Tracker URL"
-                                    disabled={!snapshot.canMutate || busy}
-                                    onChange={(event) =>
-                                      setProjectLinkInputs((current) => ({
-                                        ...current,
-                                        [task.id]: {
-                                          ...linkInput,
-                                          url: event.target.value,
-                                        },
-                                      }))
-                                    }
-                                    placeholder="https://…"
-                                    value={linkInput.url}
-                                  />
-                                  <button
-                                    disabled={
-                                      !snapshot.canMutate ||
-                                      busy ||
-                                      !linkInput.stableId.trim() ||
-                                      !linkInput.url.trim()
-                                    }
-                                    type="submit"
-                                  >
-                                    Link
-                                  </button>
-                                </form>
-                              </details>
-
-                              {taskDetail?.trackerLinks.length ? (
-                                <div
-                                  className="links"
-                                  aria-label="Tracker links"
-                                >
-                                  {taskDetail.trackerLinks.map((link) => (
-                                    <a
-                                      href={link.url}
-                                      key={link.id}
-                                      rel="noreferrer"
-                                      target="_blank"
-                                    >
-                                      {link.system}: {link.stableId}
-                                    </a>
-                                  ))}
-                                </div>
-                              ) : null}
-
-                              {taskDetail &&
-                              (taskDetail.objective ||
-                                taskDetail.acceptanceCriteria.length > 0 ||
-                                taskDetail.priority ||
-                                taskDetail.owner ||
-                                taskDetail.dependencies.length > 0 ||
-                                taskDetail.repositoryLinks.length > 0 ||
-                                taskDetail.branchName) ? (
-                                <details className="task-details">
-                                  <summary>
-                                    Details and planning metadata
-                                  </summary>
-                                  <div className="task-metadata">
-                                    {taskDetail.objective && (
-                                      <p>
-                                        <strong>Objective:</strong>{" "}
-                                        {taskDetail.objective}
-                                      </p>
-                                    )}
-                                    {taskDetail.branchName && (
-                                      <p>
-                                        <strong>Branch:</strong>{" "}
-                                        {taskDetail.branchName}
-                                      </p>
-                                    )}
-                                    {taskDetail.owner && (
-                                      <p>
-                                        <strong>Owner:</strong>{" "}
-                                        {taskDetail.owner}
-                                      </p>
-                                    )}
-                                    {taskDetail.priority && (
-                                      <p>
-                                        <strong>Priority:</strong>{" "}
-                                        {taskDetail.priority}
-                                      </p>
-                                    )}
-                                    {taskDetail.acceptanceCriteria.length >
-                                      0 && (
-                                      <p>
-                                        <strong>Acceptance:</strong>{" "}
-                                        {taskDetail.acceptanceCriteria.join(
-                                          " · ",
-                                        )}
-                                      </p>
-                                    )}
-                                    {taskDetail.dependencies.length > 0 && (
-                                      <p>
-                                        <strong>Dependencies:</strong>{" "}
-                                        {taskDetail.dependencies.join(" · ")}
-                                      </p>
-                                    )}
-                                    {taskDetail.repositoryLinks.length > 0 && (
-                                      <p>
-                                        <strong>Repositories:</strong>{" "}
-                                        {taskDetail.repositoryLinks.map(
-                                          (link) => (
-                                            <a
-                                              href={link}
-                                              key={link}
-                                              rel="noreferrer"
-                                              target="_blank"
-                                            >
-                                              {link}
-                                            </a>
-                                          ),
-                                        )}
-                                      </p>
-                                    )}
-                                  </div>
+                                  </form>
                                 </details>
-                              ) : null}
 
-                              {taskRowExpanded && (
-                                <>
-                                  {taskHistoryThreads.length > 0 && (
-                                    <details className="task-details task-history">
-                                      <summary>History</summary>
-                                      <HistoryThreadLinks
-                                        onOpenThreadDetail={openT3ThreadDetail}
-                                        threads={taskHistoryThreads}
-                                      />
-                                    </details>
-                                  )}
-                                  {taskDetail && (
-                                    <ScreenshotProof
-                                      busy={busy}
-                                      canMutate={snapshot.canMutate}
-                                      onGet={getScreenshot}
-                                      onUpload={(input) =>
-                                        uploadScreenshot(
-                                          { taskId: task.id },
-                                          input,
-                                        )
-                                      }
-                                      ownerLabel={`Task ${task.simpleId}`}
-                                      screenshots={taskDetail.screenshots ?? []}
-                                    />
-                                  )}
-                                  <div className="subtask-list">
-                                    {subtaskGroups.map((subtaskGroup) => (
-                                      <section
-                                        aria-labelledby={`subtask-group-${task.id}-${subtaskGroup.state}`}
-                                        className={`subtask-group subtask-group-${subtaskGroup.state}`}
-                                        key={subtaskGroup.state}
+                                {taskDetail?.trackerLinks.length ? (
+                                  <div
+                                    className="links"
+                                    aria-label="Tracker links"
+                                  >
+                                    {taskDetail.trackerLinks.map((link) => (
+                                      <a
+                                        href={link.url}
+                                        key={link.id}
+                                        rel="noreferrer"
+                                        target="_blank"
                                       >
-                                        <div className="subtask-group-heading">
-                                          <StatusIcon
-                                            size={16}
-                                            state={subtaskGroup.state}
-                                          />
-                                          <h4
-                                            id={`subtask-group-${task.id}-${subtaskGroup.state}`}
-                                          >
-                                            {
-                                              statusDefinitions[
-                                                subtaskGroup.state
-                                              ].label
-                                            }
-                                          </h4>
-                                          <span>
-                                            {subtaskGroup.subtasks.length}
-                                          </span>
-                                        </div>
-                                        <div className="subtask-group-items">
-                                          {subtaskGroup.subtasks.map(
-                                            (subtask) => {
-                                              const index = subtask.statusIndex;
-                                              const liveSubtaskState =
-                                                isLiveWorkState(
-                                                  subtaskGroup.state,
-                                                )
-                                                  ? subtaskGroup.state
-                                                  : null;
-                                              const subtaskStatus =
-                                                status?.subtasks[index];
-                                              const history =
-                                                subtaskHistories[subtask.id];
-                                              const subtaskEdit =
-                                                subtaskEdits[subtask.id];
-                                              const subtaskArchived = Boolean(
-                                                subtaskStatus?.archiveState,
-                                              );
-                                              const subtaskWorkStatus: WorkStatus =
-                                                subtaskWorkState(
-                                                  subtask,
-                                                  subtaskStatus,
+                                        {link.system}: {link.stableId}
+                                      </a>
+                                    ))}
+                                  </div>
+                                ) : null}
+
+                                {taskDetail &&
+                                (taskDetail.objective ||
+                                  taskDetail.acceptanceCriteria.length > 0 ||
+                                  taskDetail.priority ||
+                                  taskDetail.owner ||
+                                  taskDetail.dependencies.length > 0 ||
+                                  taskDetail.repositoryLinks.length > 0 ||
+                                  taskDetail.branchName) ? (
+                                  <details className="task-details">
+                                    <summary>
+                                      Details and planning metadata
+                                    </summary>
+                                    <div className="task-metadata">
+                                      {taskDetail.objective && (
+                                        <p>
+                                          <strong>Objective:</strong>{" "}
+                                          {taskDetail.objective}
+                                        </p>
+                                      )}
+                                      {taskDetail.branchName && (
+                                        <p>
+                                          <strong>Branch:</strong>{" "}
+                                          {taskDetail.branchName}
+                                        </p>
+                                      )}
+                                      {taskDetail.owner && (
+                                        <p>
+                                          <strong>Owner:</strong>{" "}
+                                          {taskDetail.owner}
+                                        </p>
+                                      )}
+                                      {taskDetail.priority && (
+                                        <p>
+                                          <strong>Priority:</strong>{" "}
+                                          {taskDetail.priority}
+                                        </p>
+                                      )}
+                                      {taskDetail.acceptanceCriteria.length >
+                                        0 && (
+                                        <p>
+                                          <strong>Acceptance:</strong>{" "}
+                                          {taskDetail.acceptanceCriteria.join(
+                                            " · ",
+                                          )}
+                                        </p>
+                                      )}
+                                      {taskDetail.dependencies.length > 0 && (
+                                        <p>
+                                          <strong>Dependencies:</strong>{" "}
+                                          {taskDetail.dependencies.join(" · ")}
+                                        </p>
+                                      )}
+                                      {taskDetail.repositoryLinks.length >
+                                        0 && (
+                                        <p>
+                                          <strong>Repositories:</strong>{" "}
+                                          {taskDetail.repositoryLinks.map(
+                                            (link) => (
+                                              <a
+                                                href={link}
+                                                key={link}
+                                                rel="noreferrer"
+                                                target="_blank"
+                                              >
+                                                {link}
+                                              </a>
+                                            ),
+                                          )}
+                                        </p>
+                                      )}
+                                    </div>
+                                  </details>
+                                ) : null}
+
+                                {taskRowExpanded && (
+                                  <>
+                                    {taskHistoryThreads.length > 0 && (
+                                      <details className="task-details task-history">
+                                        <summary>History</summary>
+                                        <HistoryThreadLinks
+                                          onOpenThreadDetail={
+                                            openT3ThreadDetail
+                                          }
+                                          threads={taskHistoryThreads}
+                                        />
+                                      </details>
+                                    )}
+                                    {taskDetail && (
+                                      <ScreenshotProof
+                                        busy={busy}
+                                        canMutate={snapshot.canMutate}
+                                        onGet={getScreenshot}
+                                        onUpload={(input) =>
+                                          uploadScreenshot(
+                                            { taskId: task.id },
+                                            input,
+                                          )
+                                        }
+                                        ownerLabel={`Task ${task.simpleId}`}
+                                        screenshots={
+                                          taskDetail.screenshots ?? []
+                                        }
+                                      />
+                                    )}
+                                    <div className="subtask-list">
+                                      {subtaskGroups.map((subtaskGroup) => (
+                                        <section
+                                          aria-labelledby={`subtask-group-${task.id}-${subtaskGroup.state}`}
+                                          className={`subtask-group subtask-group-${subtaskGroup.state}`}
+                                          key={subtaskGroup.state}
+                                        >
+                                          <div className="subtask-group-heading">
+                                            <StatusIcon
+                                              size={16}
+                                              state={subtaskGroup.state}
+                                            />
+                                            <h4
+                                              id={`subtask-group-${task.id}-${subtaskGroup.state}`}
+                                            >
+                                              {
+                                                statusDefinitions[
+                                                  subtaskGroup.state
+                                                ].label
+                                              }
+                                            </h4>
+                                            <span>
+                                              {subtaskGroup.subtasks.length}
+                                            </span>
+                                          </div>
+                                          <div className="subtask-group-items">
+                                            {subtaskGroup.subtasks.map(
+                                              (subtask) => {
+                                                const index =
+                                                  subtask.statusIndex;
+                                                const liveSubtaskState =
+                                                  isLiveWorkState(
+                                                    subtaskGroup.state,
+                                                  )
+                                                    ? subtaskGroup.state
+                                                    : null;
+                                                const subtaskStatus =
+                                                  status?.subtasks[index];
+                                                const history =
+                                                  subtaskHistories[subtask.id];
+                                                const subtaskEdit =
+                                                  subtaskEdits[subtask.id];
+                                                const subtaskArchived = Boolean(
+                                                  subtaskStatus?.archiveState,
                                                 );
-                                              const subtaskStateReason =
-                                                subtaskStatus?.reason ??
-                                                subtask.stateReason;
-                                              const subtaskRowKey = `subtask:${subtask.id}`;
-                                              const subtaskRowExpanded =
-                                                Boolean(
-                                                  expandedRows[subtaskRowKey],
-                                                );
-                                              const subtaskActionsSummary =
-                                                summarizeGitHubActions([
-                                                  githubStatuses[
-                                                    `subtask:${subtask.id}`
-                                                  ],
-                                                ]);
-                                              return (
-                                                <div
-                                                  className={`subtask ${
-                                                    subtaskRowExpanded
-                                                      ? "row-expanded"
-                                                      : "row-collapsed"
-                                                  } ${
-                                                    dragTarget?.kind ===
-                                                      "subtask" &&
-                                                    dragTarget.id === subtask.id
-                                                      ? "is-dragging"
-                                                      : ""
-                                                  } ${
-                                                    dragTarget?.overId ===
-                                                    subtask.id
-                                                      ? "is-drag-over"
-                                                      : ""
-                                                  }`}
-                                                  data-reorder-id={subtask.id}
-                                                  data-reorder-kind="subtask"
-                                                  data-work-state={
-                                                    subtaskGroup.state
-                                                  }
-                                                  key={subtask.id}
-                                                >
-                                                  <div className="subtask-content">
-                                                    <div className="subtask-title-row">
-                                                      {liveSubtaskState && (
-                                                        <ReorderHandle
-                                                          disabled={
-                                                            !snapshot.canMutate ||
-                                                            busy ||
-                                                            subtaskArchived
-                                                          }
-                                                          itemId={subtask.id}
-                                                          kind="subtask"
-                                                          onKeyDown={(event) =>
-                                                            keyboardReorder(
+                                                const subtaskWorkStatus: WorkStatus =
+                                                  subtaskWorkState(
+                                                    subtask,
+                                                    subtaskStatus,
+                                                  );
+                                                const subtaskStateReason =
+                                                  subtaskStatus?.reason ??
+                                                  subtask.stateReason;
+                                                const subtaskRowKey = `subtask:${subtask.id}`;
+                                                const subtaskRowExpanded =
+                                                  Boolean(
+                                                    expandedRows[subtaskRowKey],
+                                                  );
+                                                const subtaskActionsSummary =
+                                                  summarizeGitHubActions([
+                                                    githubStatuses[
+                                                      `subtask:${subtask.id}`
+                                                    ],
+                                                  ]);
+                                                return (
+                                                  <div
+                                                    className={`subtask ${
+                                                      subtaskRowExpanded
+                                                        ? "row-expanded"
+                                                        : "row-collapsed"
+                                                    } ${
+                                                      dragTarget?.kind ===
+                                                        "subtask" &&
+                                                      dragTarget.id ===
+                                                        subtask.id
+                                                        ? "is-dragging"
+                                                        : ""
+                                                    } ${
+                                                      dragTarget?.overId ===
+                                                      subtask.id
+                                                        ? "is-drag-over"
+                                                        : ""
+                                                    }`}
+                                                    id={`floor-subtask-${subtask.id}`}
+                                                    data-reorder-id={subtask.id}
+                                                    data-reorder-kind="subtask"
+                                                    data-work-state={
+                                                      subtaskGroup.state
+                                                    }
+                                                    key={subtask.id}
+                                                  >
+                                                    <div className="subtask-content">
+                                                      <div className="subtask-title-row">
+                                                        {liveSubtaskState && (
+                                                          <ReorderHandle
+                                                            disabled={
+                                                              !snapshot.canMutate ||
+                                                              busy ||
+                                                              subtaskArchived
+                                                            }
+                                                            itemId={subtask.id}
+                                                            kind="subtask"
+                                                            onKeyDown={(
                                                               event,
-                                                              {
+                                                            ) =>
+                                                              keyboardReorder(
+                                                                event,
+                                                                {
+                                                                  id: subtask.id,
+                                                                  kind: "subtask",
+                                                                  state:
+                                                                    liveSubtaskState,
+                                                                },
+                                                                subtaskGroup.subtasks.map(
+                                                                  (candidate) =>
+                                                                    candidate.id,
+                                                                ),
+                                                              )
+                                                            }
+                                                            onPointerDown={(
+                                                              event,
+                                                            ) =>
+                                                              beginDrag(event, {
                                                                 id: subtask.id,
                                                                 kind: "subtask",
                                                                 state:
                                                                   liveSubtaskState,
-                                                              },
-                                                              subtaskGroup.subtasks.map(
-                                                                (candidate) =>
-                                                                  candidate.id,
-                                                              ),
-                                                            )
-                                                          }
-                                                          onPointerDown={(
-                                                            event,
-                                                          ) =>
-                                                            beginDrag(event, {
+                                                              })
+                                                            }
+                                                            onPointerMove={
+                                                              updateDrag
+                                                            }
+                                                            onPointerUp={
+                                                              finishDrag
+                                                            }
+                                                            state={
+                                                              liveSubtaskState
+                                                            }
+                                                          />
+                                                        )}
+                                                        <div className="status-with-thread-dots">
+                                                          <ReportStatusMenu
+                                                            disabled={
+                                                              !snapshot.canMutate ||
+                                                              busy ||
+                                                              subtaskArchived
+                                                            }
+                                                            onSelect={(
+                                                              reportedState,
+                                                            ) =>
+                                                              void reportSubtask(
+                                                                subtask.id,
+                                                                reportedState,
+                                                                subtask.evidence ??
+                                                                  subtaskStatus?.evidence,
+                                                              )
+                                                            }
+                                                            onSelectWithReason={(
+                                                              reportedState,
+                                                              reason,
+                                                            ) =>
+                                                              void reportSubtask(
+                                                                subtask.id,
+                                                                reportedState,
+                                                                subtask.evidence ??
+                                                                  subtaskStatus?.evidence,
+                                                                reason,
+                                                              )
+                                                            }
+                                                            state={
+                                                              subtaskWorkStatus
+                                                            }
+                                                            onDisposition={(
+                                                              archiveState,
+                                                            ) =>
+                                                              void mutateAndRefresh(
+                                                                () =>
+                                                                  trpc.current!.subtasks.archive.mutate(
+                                                                    {
+                                                                      archiveState,
+                                                                      subtaskId:
+                                                                        subtask.id,
+                                                                    },
+                                                                  ),
+                                                              )
+                                                            }
+                                                          />
+                                                          <ThreadDots
+                                                            activity={
+                                                              t3Activity
+                                                            }
+                                                            onOpenThread={
+                                                              openT3ThreadDetail
+                                                            }
+                                                            target={{
                                                               id: subtask.id,
                                                               kind: "subtask",
-                                                              state:
-                                                                liveSubtaskState,
-                                                            })
-                                                          }
-                                                          onPointerMove={
-                                                            updateDrag
-                                                          }
-                                                          onPointerUp={
-                                                            finishDrag
-                                                          }
-                                                          state={
-                                                            liveSubtaskState
-                                                          }
-                                                        />
+                                                              label: `${task.name} / ${subtask.name}`,
+                                                            }}
+                                                          />
+                                                        </div>
+                                                        {subtaskEdit ? (
+                                                          <form
+                                                            className="subtask-edit-form"
+                                                            onSubmit={(event) =>
+                                                              void saveSubtaskEdit(
+                                                                event,
+                                                                subtask.id,
+                                                              )
+                                                            }
+                                                          >
+                                                            {/* <span>Evidence</span> is kept as the stable field label contract. */}
+                                                            <label>
+                                                              <span>
+                                                                Subtask title
+                                                              </span>
+                                                              <input
+                                                                autoFocus
+                                                                disabled={
+                                                                  !snapshot.canMutate ||
+                                                                  busy
+                                                                }
+                                                                onChange={(
+                                                                  event,
+                                                                ) =>
+                                                                  setSubtaskEdits(
+                                                                    (
+                                                                      current,
+                                                                    ) => ({
+                                                                      ...current,
+                                                                      [subtask.id]:
+                                                                        {
+                                                                          ...subtaskEdit,
+                                                                          title:
+                                                                            event
+                                                                              .target
+                                                                              .value,
+                                                                        },
+                                                                    }),
+                                                                  )
+                                                                }
+                                                                value={
+                                                                  subtaskEdit.title
+                                                                }
+                                                              />
+                                                            </label>
+                                                            <label>
+                                                              <span>
+                                                                Description
+                                                              </span>
+                                                              <textarea
+                                                                disabled={
+                                                                  !snapshot.canMutate ||
+                                                                  busy
+                                                                }
+                                                                onChange={(
+                                                                  event,
+                                                                ) =>
+                                                                  setSubtaskEdits(
+                                                                    (
+                                                                      current,
+                                                                    ) => ({
+                                                                      ...current,
+                                                                      [subtask.id]:
+                                                                        {
+                                                                          ...subtaskEdit,
+                                                                          description:
+                                                                            event
+                                                                              .target
+                                                                              .value,
+                                                                        },
+                                                                    }),
+                                                                  )
+                                                                }
+                                                                value={
+                                                                  subtaskEdit.description
+                                                                }
+                                                              />
+                                                            </label>
+                                                            <label>
+                                                              <span>
+                                                                Evidence
+                                                              </span>
+                                                              <textarea
+                                                                disabled={
+                                                                  !snapshot.canMutate ||
+                                                                  busy
+                                                                }
+                                                                onChange={(
+                                                                  event,
+                                                                ) =>
+                                                                  setSubtaskEdits(
+                                                                    (
+                                                                      current,
+                                                                    ) => ({
+                                                                      ...current,
+                                                                      [subtask.id]:
+                                                                        {
+                                                                          ...subtaskEdit,
+                                                                          evidence:
+                                                                            event
+                                                                              .target
+                                                                              .value,
+                                                                        },
+                                                                    }),
+                                                                  )
+                                                                }
+                                                                placeholder="Evidence (optional)"
+                                                                value={
+                                                                  subtaskEdit.evidence
+                                                                }
+                                                              />
+                                                            </label>
+                                                            <div className="edit-actions">
+                                                              <button
+                                                                disabled={
+                                                                  !snapshot.canMutate ||
+                                                                  busy ||
+                                                                  !subtaskEdit.title.trim()
+                                                                }
+                                                                type="submit"
+                                                              >
+                                                                Save subtask
+                                                              </button>
+                                                              <button
+                                                                className="secondary"
+                                                                disabled={busy}
+                                                                onClick={() =>
+                                                                  cancelSubtaskEdit(
+                                                                    subtask.id,
+                                                                  )
+                                                                }
+                                                                type="button"
+                                                              >
+                                                                Cancel
+                                                              </button>
+                                                            </div>
+                                                          </form>
+                                                        ) : (
+                                                          <RowToggle
+                                                            expanded={
+                                                              subtaskRowExpanded
+                                                            }
+                                                            kind="subtask"
+                                                            name={subtask.name}
+                                                            simpleId={
+                                                              subtask.simpleId
+                                                            }
+                                                            onToggle={() =>
+                                                              toggleRow(
+                                                                subtaskRowKey,
+                                                              )
+                                                            }
+                                                            actionsSummary={
+                                                              subtaskActionsSummary
+                                                            }
+                                                          />
+                                                        )}
+                                                      </div>
+                                                      {!subtaskEdit && (
+                                                        <div className="subtask-copy">
+                                                          {subtask.description && (
+                                                            <p className="subtask-description">
+                                                              {
+                                                                subtask.description
+                                                              }
+                                                            </p>
+                                                          )}
+                                                          {(subtask.evidence ??
+                                                            subtaskStatus?.evidence) && (
+                                                            <p className="evidence">
+                                                              {subtask.evidence ??
+                                                                subtaskStatus?.evidence}
+                                                            </p>
+                                                          )}
+                                                          {subtaskStateReason &&
+                                                            (subtaskWorkStatus ===
+                                                              "blocked" ||
+                                                              subtaskWorkStatus ===
+                                                                "awaiting_verification") && (
+                                                              <p className="state-reason">
+                                                                <strong>
+                                                                  {subtaskWorkStatus ===
+                                                                  "blocked"
+                                                                    ? "Why blocked"
+                                                                    : "What to verify"}
+                                                                  :
+                                                                </strong>{" "}
+                                                                {
+                                                                  subtaskStateReason
+                                                                }
+                                                              </p>
+                                                            )}
+                                                          {subtask.pullRequestUrl && (
+                                                            <GitHubStatusBadge
+                                                              pullRequestUrl={
+                                                                subtask.pullRequestUrl
+                                                              }
+                                                              status={
+                                                                githubStatuses[
+                                                                  `subtask:${subtask.id}`
+                                                                ]
+                                                              }
+                                                            />
+                                                          )}
+                                                        </div>
                                                       )}
-                                                      <div className="status-with-thread-dots">
-                                                        <ReportStatusMenu
+                                                    </div>
+                                                    <div className="subtask-actions">
+                                                      <button
+                                                        aria-label="Edit subtask"
+                                                        className="icon-button secondary"
+                                                        disabled={
+                                                          !snapshot.canMutate ||
+                                                          busy
+                                                        }
+                                                        onClick={() =>
+                                                          startSubtaskEdit(
+                                                            subtask,
+                                                            subtaskStatus,
+                                                          )
+                                                        }
+                                                        type="button"
+                                                        title="Edit subtask"
+                                                      >
+                                                        <SubtaskActionIcon action="edit" />
+                                                      </button>
+                                                      {subtaskArchived && (
+                                                        <button
+                                                          className="secondary"
                                                           disabled={
                                                             !snapshot.canMutate ||
-                                                            busy ||
-                                                            subtaskArchived
+                                                            busy
                                                           }
-                                                          onSelect={(
-                                                            reportedState,
-                                                          ) =>
-                                                            void reportSubtask(
-                                                              subtask.id,
-                                                              reportedState,
-                                                              subtask.evidence ??
-                                                                subtaskStatus?.evidence,
-                                                            )
-                                                          }
-                                                          onSelectWithReason={(
-                                                            reportedState,
-                                                            reason,
-                                                          ) =>
-                                                            void reportSubtask(
-                                                              subtask.id,
-                                                              reportedState,
-                                                              subtask.evidence ??
-                                                                subtaskStatus?.evidence,
-                                                              reason,
-                                                            )
-                                                          }
-                                                          state={
-                                                            subtaskWorkStatus
-                                                          }
-                                                          onDisposition={(
-                                                            archiveState,
-                                                          ) =>
+                                                          onClick={() =>
                                                             void mutateAndRefresh(
                                                               () =>
-                                                                trpc.current!.subtasks.archive.mutate(
+                                                                trpc.current!.subtasks.restore.mutate(
                                                                   {
-                                                                    archiveState,
                                                                     subtaskId:
                                                                       subtask.id,
                                                                   },
                                                                 ),
                                                             )
                                                           }
-                                                        />
-                                                        <ThreadDots
-                                                          activity={t3Activity}
-                                                          onOpenThread={
-                                                            openT3ThreadDetail
-                                                          }
-                                                          target={{
-                                                            id: subtask.id,
-                                                            kind: "subtask",
-                                                            label: `${task.name} / ${subtask.name}`,
-                                                          }}
-                                                        />
-                                                      </div>
-                                                      {subtaskEdit ? (
-                                                        <form
-                                                          className="subtask-edit-form"
-                                                          onSubmit={(event) =>
-                                                            void saveSubtaskEdit(
-                                                              event,
-                                                              subtask.id,
-                                                            )
-                                                          }
+                                                          type="button"
                                                         >
-                                                          {/* <span>Evidence</span> is kept as the stable field label contract. */}
-                                                          <label>
-                                                            <span>
-                                                              Subtask title
-                                                            </span>
-                                                            <input
-                                                              autoFocus
-                                                              disabled={
-                                                                !snapshot.canMutate ||
-                                                                busy
-                                                              }
-                                                              onChange={(
-                                                                event,
-                                                              ) =>
-                                                                setSubtaskEdits(
-                                                                  (
-                                                                    current,
-                                                                  ) => ({
-                                                                    ...current,
-                                                                    [subtask.id]:
-                                                                      {
-                                                                        ...subtaskEdit,
-                                                                        title:
-                                                                          event
-                                                                            .target
-                                                                            .value,
-                                                                      },
-                                                                  }),
-                                                                )
-                                                              }
-                                                              value={
-                                                                subtaskEdit.title
-                                                              }
-                                                            />
-                                                          </label>
-                                                          <label>
-                                                            <span>
-                                                              Description
-                                                            </span>
-                                                            <textarea
-                                                              disabled={
-                                                                !snapshot.canMutate ||
-                                                                busy
-                                                              }
-                                                              onChange={(
-                                                                event,
-                                                              ) =>
-                                                                setSubtaskEdits(
-                                                                  (
-                                                                    current,
-                                                                  ) => ({
-                                                                    ...current,
-                                                                    [subtask.id]:
-                                                                      {
-                                                                        ...subtaskEdit,
-                                                                        description:
-                                                                          event
-                                                                            .target
-                                                                            .value,
-                                                                      },
-                                                                  }),
-                                                                )
-                                                              }
-                                                              value={
-                                                                subtaskEdit.description
-                                                              }
-                                                            />
-                                                          </label>
-                                                          <label>
-                                                            <span>
-                                                              Evidence
-                                                            </span>
-                                                            <textarea
-                                                              disabled={
-                                                                !snapshot.canMutate ||
-                                                                busy
-                                                              }
-                                                              onChange={(
-                                                                event,
-                                                              ) =>
-                                                                setSubtaskEdits(
-                                                                  (
-                                                                    current,
-                                                                  ) => ({
-                                                                    ...current,
-                                                                    [subtask.id]:
-                                                                      {
-                                                                        ...subtaskEdit,
-                                                                        evidence:
-                                                                          event
-                                                                            .target
-                                                                            .value,
-                                                                      },
-                                                                  }),
-                                                                )
-                                                              }
-                                                              placeholder="Evidence (optional)"
-                                                              value={
-                                                                subtaskEdit.evidence
-                                                              }
-                                                            />
-                                                          </label>
-                                                          <div className="edit-actions">
-                                                            <button
-                                                              disabled={
-                                                                !snapshot.canMutate ||
-                                                                busy ||
-                                                                !subtaskEdit.title.trim()
-                                                              }
-                                                              type="submit"
-                                                            >
-                                                              Save subtask
-                                                            </button>
-                                                            <button
-                                                              className="secondary"
-                                                              disabled={busy}
-                                                              onClick={() =>
-                                                                cancelSubtaskEdit(
-                                                                  subtask.id,
-                                                                )
-                                                              }
-                                                              type="button"
-                                                            >
-                                                              Cancel
-                                                            </button>
-                                                          </div>
-                                                        </form>
-                                                      ) : (
-                                                        <RowToggle
-                                                          expanded={
-                                                            subtaskRowExpanded
-                                                          }
-                                                          kind="subtask"
-                                                          name={subtask.name}
-                                                          simpleId={
-                                                            subtask.simpleId
-                                                          }
-                                                          onToggle={() =>
-                                                            toggleRow(
-                                                              subtaskRowKey,
-                                                            )
-                                                          }
-                                                          actionsSummary={
-                                                            subtaskActionsSummary
-                                                          }
-                                                        />
+                                                          Restore
+                                                        </button>
                                                       )}
-                                                    </div>
-                                                    {!subtaskEdit && (
-                                                      <div className="subtask-copy">
-                                                        {subtask.description && (
-                                                          <p className="subtask-description">
-                                                            {
-                                                              subtask.description
-                                                            }
-                                                          </p>
-                                                        )}
-                                                        {(subtask.evidence ??
-                                                          subtaskStatus?.evidence) && (
-                                                          <p className="evidence">
-                                                            {subtask.evidence ??
-                                                              subtaskStatus?.evidence}
-                                                          </p>
-                                                        )}
-                                                        {subtaskStateReason &&
-                                                          (subtaskWorkStatus ===
-                                                            "blocked" ||
-                                                            subtaskWorkStatus ===
-                                                              "awaiting_verification") && (
-                                                            <p className="state-reason">
-                                                              <strong>
-                                                                {subtaskWorkStatus ===
-                                                                "blocked"
-                                                                  ? "Why blocked"
-                                                                  : "What to verify"}
-                                                                :
-                                                              </strong>{" "}
-                                                              {
-                                                                subtaskStateReason
-                                                              }
-                                                            </p>
-                                                          )}
-                                                        {subtask.pullRequestUrl && (
-                                                          <GitHubStatusBadge
-                                                            pullRequestUrl={
-                                                              subtask.pullRequestUrl
-                                                            }
-                                                            status={
-                                                              githubStatuses[
-                                                                `subtask:${subtask.id}`
-                                                              ]
-                                                            }
-                                                          />
-                                                        )}
-                                                      </div>
-                                                    )}
-                                                  </div>
-                                                  <div className="subtask-actions">
-                                                    <button
-                                                      aria-label="Edit subtask"
-                                                      className="icon-button secondary"
-                                                      disabled={
-                                                        !snapshot.canMutate ||
-                                                        busy
-                                                      }
-                                                      onClick={() =>
-                                                        startSubtaskEdit(
-                                                          subtask,
-                                                          subtaskStatus,
-                                                        )
-                                                      }
-                                                      type="button"
-                                                      title="Edit subtask"
-                                                    >
-                                                      <SubtaskActionIcon action="edit" />
-                                                    </button>
-                                                    {subtaskArchived && (
                                                       <button
                                                         className="secondary"
-                                                        disabled={
-                                                          !snapshot.canMutate ||
-                                                          busy
-                                                        }
                                                         onClick={() =>
-                                                          void mutateAndRefresh(
-                                                            () =>
-                                                              trpc.current!.subtasks.restore.mutate(
-                                                                {
-                                                                  subtaskId:
-                                                                    subtask.id,
-                                                                },
-                                                              ),
+                                                          void loadSubtaskHistory(
+                                                            subtask.id,
                                                           )
                                                         }
                                                         type="button"
                                                       >
-                                                        Restore
+                                                        History
                                                       </button>
-                                                    )}
-                                                    <button
-                                                      className="secondary"
-                                                      onClick={() =>
-                                                        void loadSubtaskHistory(
-                                                          subtask.id,
-                                                        )
-                                                      }
-                                                      type="button"
-                                                    >
-                                                      History
-                                                    </button>
-                                                    {subtaskStatus?.reportId &&
-                                                      subtaskStatus.verificationState ===
-                                                        "awaiting_verification" &&
-                                                      (human ? (
-                                                        <VerificationActions
-                                                          disabled={
-                                                            !snapshot.canMutate ||
-                                                            busy ||
-                                                            subtaskArchived
-                                                          }
-                                                          onVerify={(
-                                                            decision,
-                                                            reason,
-                                                          ) =>
-                                                            void verifySubtask(
-                                                              subtaskStatus.reportId!,
+                                                      {subtaskStatus?.reportId &&
+                                                        subtaskStatus.verificationState ===
+                                                          "awaiting_verification" &&
+                                                        (human ? (
+                                                          <VerificationActions
+                                                            disabled={
+                                                              !snapshot.canMutate ||
+                                                              busy ||
+                                                              subtaskArchived
+                                                            }
+                                                            onVerify={(
                                                               decision,
                                                               reason,
-                                                            )
-                                                          }
-                                                        />
-                                                      ) : (
-                                                        <span className="verify-hint">
-                                                          Sign in to verify
-                                                        </span>
-                                                      ))}
-                                                    <button
-                                                      aria-label={`Delete subtask “${subtask.name}”`}
-                                                      className="icon-button danger"
-                                                      disabled={
-                                                        !snapshot.canMutate ||
-                                                        busy
-                                                      }
-                                                      onClick={() => {
-                                                        if (
-                                                          !window.confirm(
-                                                            `Delete subtask “${subtask.name}”? This cannot be undone.`,
-                                                          )
-                                                        )
-                                                          return;
-                                                        void mutateAndRefresh(
-                                                          () =>
-                                                            trpc.current!.subtasks.remove.mutate(
-                                                              {
-                                                                confirm: true,
-                                                                subtaskId:
-                                                                  subtask.id,
-                                                              },
-                                                            ),
-                                                        );
-                                                      }}
-                                                      type="button"
-                                                      title="Delete subtask"
-                                                    >
-                                                      <SubtaskActionIcon action="delete" />
-                                                    </button>
-                                                  </div>
-                                                  {subtaskRowExpanded && (
-                                                    <ScreenshotProof
-                                                      busy={busy}
-                                                      canMutate={
-                                                        snapshot.canMutate
-                                                      }
-                                                      onGet={getScreenshot}
-                                                      onUpload={(input) =>
-                                                        uploadScreenshot(
-                                                          {
-                                                            subtaskId:
-                                                              subtask.id,
-                                                          },
-                                                          input,
-                                                        )
-                                                      }
-                                                      ownerLabel={`Subtask ${subtask.simpleId}`}
-                                                      screenshots={
-                                                        subtask.screenshots ??
-                                                        []
-                                                      }
-                                                    />
-                                                  )}
-                                                  {history && (
-                                                    <div className="history">
-                                                      <strong>History</strong>
-                                                      <HistoryThreadLinks
-                                                        onOpenThreadDetail={
-                                                          openT3ThreadDetail
+                                                            ) =>
+                                                              void verifySubtask(
+                                                                subtaskStatus.reportId!,
+                                                                decision,
+                                                                reason,
+                                                              )
+                                                            }
+                                                          />
+                                                        ) : (
+                                                          <span className="verify-hint">
+                                                            Sign in to verify
+                                                          </span>
+                                                        ))}
+                                                      <button
+                                                        aria-label={`Delete subtask “${subtask.name}”`}
+                                                        className="icon-button danger"
+                                                        disabled={
+                                                          !snapshot.canMutate ||
+                                                          busy
                                                         }
-                                                        threads={historyThreadsForTarget(
-                                                          t3Activity,
-                                                          subtask.id,
-                                                        )}
-                                                      />
-                                                      {history.reports.map(
-                                                        (report) => (
-                                                          <p key={report.id}>
-                                                            {
-                                                              report.reportedState
-                                                            }{" "}
-                                                            by{" "}
-                                                            {formatHistoryReportAttribution(
-                                                              report,
-                                                            )}
-                                                            {report.evidence
-                                                              ? " · " +
-                                                                report.evidence
-                                                              : ""}
-                                                          </p>
-                                                        ),
-                                                      )}
-                                                      {history.verifications.map(
-                                                        (verification) => (
-                                                          <p
-                                                            key={
-                                                              verification.id
-                                                            }
-                                                          >
-                                                            {
-                                                              verification.decision
-                                                            }{" "}
-                                                            by{" "}
-                                                            {
-                                                              verification.verifier
-                                                            }
-                                                          </p>
-                                                        ),
-                                                      )}
+                                                        onClick={() => {
+                                                          if (
+                                                            !window.confirm(
+                                                              `Delete subtask “${subtask.name}”? This cannot be undone.`,
+                                                            )
+                                                          )
+                                                            return;
+                                                          void mutateAndRefresh(
+                                                            () =>
+                                                              trpc.current!.subtasks.remove.mutate(
+                                                                {
+                                                                  confirm: true,
+                                                                  subtaskId:
+                                                                    subtask.id,
+                                                                },
+                                                              ),
+                                                          );
+                                                        }}
+                                                        type="button"
+                                                        title="Delete subtask"
+                                                      >
+                                                        <SubtaskActionIcon action="delete" />
+                                                      </button>
                                                     </div>
-                                                  )}
-                                                </div>
-                                              );
-                                            },
-                                          )}
-                                          {isLiveWorkState(
-                                            subtaskGroup.state,
-                                          ) && (
-                                            <div
-                                              aria-label={`Drop at end of ${statusDefinitions[subtaskGroup.state].label} subtasks`}
-                                              className={`reorder-tail ${
-                                                dragTarget?.kind ===
-                                                  "subtask" &&
-                                                dragTarget.overId ===
-                                                  DRAG_TAIL &&
-                                                dragTarget.state ===
+                                                    {subtaskRowExpanded && (
+                                                      <ScreenshotProof
+                                                        busy={busy}
+                                                        canMutate={
+                                                          snapshot.canMutate
+                                                        }
+                                                        onGet={getScreenshot}
+                                                        onUpload={(input) =>
+                                                          uploadScreenshot(
+                                                            {
+                                                              subtaskId:
+                                                                subtask.id,
+                                                            },
+                                                            input,
+                                                          )
+                                                        }
+                                                        ownerLabel={`Subtask ${subtask.simpleId}`}
+                                                        screenshots={
+                                                          subtask.screenshots ??
+                                                          []
+                                                        }
+                                                      />
+                                                    )}
+                                                    {history && (
+                                                      <div className="history">
+                                                        <strong>History</strong>
+                                                        <HistoryThreadLinks
+                                                          onOpenThreadDetail={
+                                                            openT3ThreadDetail
+                                                          }
+                                                          threads={historyThreadsForTarget(
+                                                            t3Activity,
+                                                            subtask.id,
+                                                          )}
+                                                        />
+                                                        {history.reports.map(
+                                                          (report) => (
+                                                            <p key={report.id}>
+                                                              {
+                                                                report.reportedState
+                                                              }{" "}
+                                                              by{" "}
+                                                              {formatHistoryReportAttribution(
+                                                                report,
+                                                              )}
+                                                              {report.evidence
+                                                                ? " · " +
+                                                                  report.evidence
+                                                                : ""}
+                                                            </p>
+                                                          ),
+                                                        )}
+                                                        {history.verifications.map(
+                                                          (verification) => (
+                                                            <p
+                                                              key={
+                                                                verification.id
+                                                              }
+                                                            >
+                                                              {
+                                                                verification.decision
+                                                              }{" "}
+                                                              by{" "}
+                                                              {
+                                                                verification.verifier
+                                                              }
+                                                            </p>
+                                                          ),
+                                                        )}
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                );
+                                              },
+                                            )}
+                                            {isLiveWorkState(
+                                              subtaskGroup.state,
+                                            ) && (
+                                              <div
+                                                aria-label={`Drop at end of ${statusDefinitions[subtaskGroup.state].label} subtasks`}
+                                                className={`reorder-tail ${
+                                                  dragTarget?.kind ===
+                                                    "subtask" &&
+                                                  dragTarget.overId ===
+                                                    DRAG_TAIL &&
+                                                  dragTarget.state ===
+                                                    subtaskGroup.state
+                                                    ? "is-drag-over"
+                                                    : ""
+                                                }`}
+                                                data-reorder-kind="subtask"
+                                                data-reorder-tail="true"
+                                                data-work-state={
                                                   subtaskGroup.state
-                                                  ? "is-drag-over"
-                                                  : ""
-                                              }`}
-                                              data-reorder-kind="subtask"
-                                              data-reorder-tail="true"
-                                              data-work-state={
-                                                subtaskGroup.state
-                                              }
-                                              role="presentation"
-                                            />
-                                          )}
-                                        </div>
-                                      </section>
-                                    ))}
-                                  </div>
+                                                }
+                                                role="presentation"
+                                              />
+                                            )}
+                                          </div>
+                                        </section>
+                                      ))}
+                                    </div>
 
-                                  <form
-                                    className="subtask-create"
-                                    onSubmit={(event) => {
-                                      event.preventDefault();
-                                      const name =
-                                        subtaskNames[task.id]?.trim();
-                                      if (!name || !trpc.current) return;
-                                      void mutateAndRefresh(async () => {
-                                        const result =
-                                          await trpc.current!.subtasks.create.mutate(
-                                            {
-                                              description:
-                                                subtaskDescriptions[
-                                                  task.id
-                                                ]?.trim() || undefined,
-                                              name,
-                                              taskId: task.id,
-                                            },
-                                          );
-                                        setSubtaskNames((current) => ({
-                                          ...current,
-                                          [task.id]: "",
-                                        }));
-                                        setSubtaskDescriptions((current) => ({
-                                          ...current,
-                                          [task.id]: "",
-                                        }));
-                                        return result;
-                                      });
-                                    }}
-                                  >
-                                    <input
-                                      aria-label={`New subtask for ${task.name}`}
-                                      disabled={!snapshot.canMutate || busy}
-                                      onChange={(event) =>
-                                        setSubtaskNames((current) => ({
-                                          ...current,
-                                          [task.id]: event.target.value,
-                                        }))
-                                      }
-                                      placeholder="New subtask"
-                                      value={subtaskNames[task.id] ?? ""}
-                                    />
-                                    <input
-                                      aria-label={`Description for new subtask of ${task.name}`}
-                                      disabled={!snapshot.canMutate || busy}
-                                      onChange={(event) =>
-                                        setSubtaskDescriptions((current) => ({
-                                          ...current,
-                                          [task.id]: event.target.value,
-                                        }))
-                                      }
-                                      placeholder="Description (optional)"
-                                      value={subtaskDescriptions[task.id] ?? ""}
-                                    />
-                                    <button
-                                      disabled={
-                                        !snapshot.canMutate ||
-                                        busy ||
-                                        !subtaskNames[task.id]?.trim()
-                                      }
-                                      type="submit"
+                                    <form
+                                      className="subtask-create"
+                                      onSubmit={(event) => {
+                                        event.preventDefault();
+                                        const name =
+                                          subtaskNames[task.id]?.trim();
+                                        if (!name || !trpc.current) return;
+                                        void mutateAndRefresh(async () => {
+                                          const result =
+                                            await trpc.current!.subtasks.create.mutate(
+                                              {
+                                                description:
+                                                  subtaskDescriptions[
+                                                    task.id
+                                                  ]?.trim() || undefined,
+                                                name,
+                                                taskId: task.id,
+                                              },
+                                            );
+                                          setSubtaskNames((current) => ({
+                                            ...current,
+                                            [task.id]: "",
+                                          }));
+                                          setSubtaskDescriptions((current) => ({
+                                            ...current,
+                                            [task.id]: "",
+                                          }));
+                                          return result;
+                                        });
+                                      }}
                                     >
-                                      Add subtask
-                                    </button>
-                                  </form>
-                                </>
-                              )}
-                            </article>
-                          );
-                        })}
-                        {isLiveWorkState(state) && (
-                          <div
-                            aria-label={`Drop at end of ${statusDefinitions[state].label} tasks`}
-                            className={`reorder-tail ${
-                              dragTarget?.kind === "task" &&
-                              dragTarget.overId === DRAG_TAIL &&
-                              dragTarget.state === state
-                                ? "is-drag-over"
-                                : ""
-                            }`}
-                            data-reorder-kind="task"
-                            data-reorder-tail="true"
-                            data-work-state={state}
-                            role="presentation"
-                          />
-                        )}
-                      </div>
-                    )}
-                  </section>
-                ))}
-              </div>
-            )}
-          </section>
-        )}
-    </main>
+                                      <input
+                                        aria-label={`New subtask for ${task.name}`}
+                                        disabled={!snapshot.canMutate || busy}
+                                        onChange={(event) =>
+                                          setSubtaskNames((current) => ({
+                                            ...current,
+                                            [task.id]: event.target.value,
+                                          }))
+                                        }
+                                        placeholder="New subtask"
+                                        value={subtaskNames[task.id] ?? ""}
+                                      />
+                                      <input
+                                        aria-label={`Description for new subtask of ${task.name}`}
+                                        disabled={!snapshot.canMutate || busy}
+                                        onChange={(event) =>
+                                          setSubtaskDescriptions((current) => ({
+                                            ...current,
+                                            [task.id]: event.target.value,
+                                          }))
+                                        }
+                                        placeholder="Description (optional)"
+                                        value={
+                                          subtaskDescriptions[task.id] ?? ""
+                                        }
+                                      />
+                                      <button
+                                        disabled={
+                                          !snapshot.canMutate ||
+                                          busy ||
+                                          !subtaskNames[task.id]?.trim()
+                                        }
+                                        type="submit"
+                                      >
+                                        Add subtask
+                                      </button>
+                                    </form>
+                                  </>
+                                )}
+                              </article>
+                            );
+                          })}
+                          {isLiveWorkState(state) && (
+                            <div
+                              aria-label={`Drop at end of ${statusDefinitions[state].label} tasks`}
+                              className={`reorder-tail ${
+                                dragTarget?.kind === "task" &&
+                                dragTarget.overId === DRAG_TAIL &&
+                                dragTarget.state === state
+                                  ? "is-drag-over"
+                                  : ""
+                              }`}
+                              data-reorder-kind="task"
+                              data-reorder-tail="true"
+                              data-work-state={state}
+                              role="presentation"
+                            />
+                          )}
+                        </div>
+                      )}
+                    </section>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+      </main>
+    </>
   );
 }
 

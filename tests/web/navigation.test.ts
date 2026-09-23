@@ -20,6 +20,11 @@ describe("dashboard navigation", () => {
     expect(dashboardPath(backupsView())).toBe("/backups");
   });
 
+  test("resolves the retired Ledger route to Floor", () => {
+    expect(dashboardViewFromPath("/ledger")).toEqual(homeView());
+    expect(dashboardPath(homeView())).toBe("/");
+  });
+
   test("a project link opens that project's task page", () => {
     expect(projectView("project-1")).toEqual({
       projectId: "project-1",

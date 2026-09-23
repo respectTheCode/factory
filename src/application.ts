@@ -38,6 +38,11 @@ import {
   type ScreenshotEvidence,
   type ScreenshotEvidenceSummary,
 } from "./screenshot-evidence";
+import {
+  buildFloorSnapshot,
+  type FloorProjectActivity,
+  type FloorSnapshot,
+} from "./floor";
 
 export type FactoryClock = () => Date;
 export type FactoryIdGenerator = () => string;
@@ -188,6 +193,8 @@ export type CodeSession = {
   externalThreadId: string;
   externalProjectId: string;
   title: string;
+  /** Provider/model identity reported by T3 when available; never inferred. */
+  agent?: string;
   workspaceRoot: string;
   repositoryIdentity?: string;
   branch?: string;
@@ -2039,6 +2046,52 @@ export class FactoryApplication {
         : {}),
       ...(project.t3Mappings ? { t3Mappings: project.t3Mappings } : {}),
     }));
+  }
+
+  getFloorSnapshot({
+    activities,
+    projectIds,
+    timezone,
+  }: {
+    activities: FloorProjectActivity[];
+    projectIds?: readonly string[];
+    timezone?: string;
+  }): FloorSnapshot {
+    this.refreshFromPersistence();
+    const allowedProjectIds = new Set(
+      projectIds ?? this.projects.map((project) => project.id),
+    );
+    const projects = this.projects.filter((project) =>
+      allowedProjectIds.has(project.id),
+    );
+    const tasks = this.tasks.filter((task) =>
+      allowedProjectIds.has(task.projectId),
+    );
+    const subtasks = this.subtasks.filter((subtask) =>
+      tasks.some((task) => task.id === subtask.taskId),
+    );
+    const subtaskIds = new Set(subtasks.map((subtask) => subtask.id));
+    const statusReports = this.statusReports.filter((report) =>
+      subtaskIds.has(report.subtaskId),
+    );
+    const reportIds = new Set(statusReports.map((report) => report.id));
+    return buildFloorSnapshot({
+      activities: activities.filter(({ projectId }) =>
+        allowedProjectIds.has(projectId),
+      ),
+      now: this.clock(),
+      projects,
+      statusReports,
+      tasks: tasks.map((task) => ({
+        status: this.getTaskStatusFromCurrentState(task.id),
+        subtasks: subtasks.filter((subtask) => subtask.taskId === task.id),
+        task,
+      })),
+      timezone,
+      verifications: this.verifications.filter((verification) =>
+        reportIds.has(verification.reportId),
+      ),
+    });
   }
 
   /**

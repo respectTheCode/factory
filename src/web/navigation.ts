@@ -24,6 +24,7 @@ export function dashboardViewFromPath(pathname: string): DashboardView {
   const segments = pathname.split("/").filter(Boolean);
   if (segments.length === 0) return homeView();
   if (segments.length === 1 && segments[0] === "backups") return backupsView();
+  if (segments.length === 1 && segments[0] === "ledger") return homeView();
   if (
     segments[0] !== "projects" ||
     (segments.length !== 2 && segments.length !== 3)

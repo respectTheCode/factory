@@ -1,6 +1,6 @@
 # Factory Design System — "Ledger"
 
-v0.2.1 · 2026-08-29 · dark-only · mobile-first · **clean records, dirty room**
+v0.3 · 2026-09-22 · dark-only · mobile-first · **clean records, dirty room**
 
 Factory is the fifth design system in the family, after Beacon, Forge ("Tally
 Console"), Grail, and Watchtower ("The Bridge"). Its language is called
@@ -17,7 +17,15 @@ dials, knurled textures, hazard paint. Conveyor belts, gears-as-workflow,
 and pipeline diagrams remain forbidden — the product analysis is explicit
 that Factory is a *run substrate, not a factory pipeline*.
 
+v0.3 puts people on the floor. The home screen becomes **the Floor** (§8):
+a room per project, a token per working agent, a counter where claims
+wait for the stamp. It is built to be left up on a spare display and
+glanced at, so it is the one place where the room is allowed to move.
+The Floor shows *who is where*; it never becomes a diagram of *how work
+flows* — that distinction is what keeps the machinery rule intact.
+
 Reference implementation: `docs/design/previews/factory-system.html`.
+Floor study: `docs/design/previews/factory-floor.html`.
 Mark study: `docs/design/previews/factory-marks.html`.
 
 ---
@@ -33,7 +41,8 @@ The family shares DNA at the semantic layer, never the component layer:
 | "Prose identifies; mono measures" (IBM Plex Mono) | Shopwear texture layer (§5) |
 | 1px rules instead of shadows; base-4 spacing | Status dials (§6) |
 | No fifth hue; color never the only signal | Signature: the Countersign (§7) |
-| A mark whose one live element reports state | Mark: the Countersigned F (§10) |
+| A mark whose one live element reports state | The Floor and worker tokens (§8) |
+| | Mark: the Countersigned F (§11) |
 
 Beacon, Forge, and Watchtower sit on a cool blue-black canvas ladder.
 **Factory steps off the ladder on purpose.** Grail proved a sibling may
@@ -54,8 +63,12 @@ at a glance — the cool lavender accent actually lands harder on warm ground.
 3. **Amber means "your turn."** `sig-warn` marks work awaiting a human
    decision — attention, not failure. The dashboard exists to drain the
    amber column.
-4. **Machinery is material, not process.** Dials, plates, hazard paint,
-   stamps: yes. Gears, conveyors, robots, pipelines: never.
+4. **Machinery is material, not process; people are tokens, not sprites.**
+   Dials, plates, hazard paint, stamps: yes. Gears, conveyors, pipelines,
+   flow diagrams: never. Agents may appear on the Floor as **worker
+   tokens** — a circle with mono initials and one over-head badge — but
+   never as robots, avatars, or pixel-art figures. A token shows *who is
+   at which station*; it never animates *how the work is done*.
 5. **Color is state, never decoration; never the only signal.** Four signal
    hues with fixed meanings; every dot, dial, and chip carries a mono text
    twin. Greyscale legibility is a release test.
@@ -204,14 +217,144 @@ dot on **defer**. No claim, no slot. The Attention lane is the column of
 empty slots. Claims are mono (`agent · complete · 2h ago`); verdicts are
 prose (`Accepted · 14:20`).
 
-## 8. Motion
+## 8. The Floor
 
-Exactly three animations: countersign stamp (120ms ease-out), live report
-flash (`--sig-info` → `--ink`, 400ms), one indeterminate spinner (800ms
-linear). The active dial's wedge does not rotate. Reduced motion: flash
-becomes a persistent `--sig-info` left border; the stamp is instant.
+The Floor is the home screen and the ambient display. One glance answers
+three questions in order: **what needs me**, **who is working where**, and
+**what just happened**. It replaces the attention list of v0.2, which
+ranked nothing and never changed in front of you.
 
-## 9. Voice
+### 8.1 Layout
+
+Desktop (≥1280px): floor on the left, a fixed 440px **sidecar** on the
+right, masthead above with a live mono clock. The floor is a grid of
+**bays**, one per project, `auto-fit` at a 300px minimum, so six projects
+fill 3×2 on a 1440 display and 2×3 on a portrait one. No scrolling at
+1080p — the Floor is a display, not a document; overflow within a bay
+collapses to `+N more`. Phone (≤540px): bays stack, the sidecar's Your
+Turn section moves to the top, Shift Log to the bottom, and the
+scoreboard becomes one mono line. The v0.2 list survives as **the
+Ledger**, one tap away, for editing and drag-ordering.
+
+### 8.2 Bays
+
+A bay is a `--panel` room with a `--raised` **plate** across the top:
+project name (Plex Sans 600, 15px) and a three-dot tally (`sig-info`
+working · `sig-warn` waiting · `sig-down` blocked, each with its mono
+count). Below the plate runs the **track**, three zones stacked top to
+bottom, divided by dashed `--rule` lines:
+
+| Zone | Holds | Reads as |
+| --- | --- | --- |
+| **Bench** | planned and backlog work | seats waiting to be filled |
+| **Stations** | active work, blocked work | where the tokens sit |
+| **Counter** | claims awaiting the stamp | papers stacked for you |
+
+The track is the only sequence the Floor draws, and it is chronological,
+not procedural: work enters at the bench, sits at a station, and lands
+on the counter. Nothing flows between bays.
+
+A bay with something on its counter or an over-head badge takes a
+45%-alpha `sig-warn` border. A bay with no activity at all dims to 70%
+opacity, its tally replaced by a `--ink-faint` dot and `lights off`.
+The Counter zone carries the hatch utility (§5); when it holds papers it
+also takes a 5% `sig-warn` wash — the one place amber is allowed to tint
+a surface.
+
+### 8.3 Stations and worker tokens
+
+A **station** is a 44px-minimum row: token, name, mono sub-line. An
+empty station is a dashed `--rule` outline with `--ink-faint` text — an
+unlit position, the same grammar as the planned dial. Blocked stations
+take the 45% `sig-down` border.
+
+The **worker token** is the character. 30px circle, `--raised` fill,
+1.5px border, Plex Mono 700 10px initials. Circles remain machine state
+(§7), so the token is a circle; the human's stamps stay square.
+
+| Reporter | Initials | Border |
+| --- | --- | --- |
+| Claude | `CL` | `--accent` |
+| Codex | `CX` | `--ink` |
+| no session observed | `—` | `--ink-dim`, dashed, 45% opacity |
+
+Token states, each with a mono text twin in the station sub-line:
+
+| State | Rendering |
+| --- | --- |
+| working | 2px `sig-info` arc orbiting the token, 1.6s linear, with `--glow-info` |
+| idle / stopped | 45% opacity, dashed border |
+| waiting for approval | over-head badge `?`, `sig-warn` fill, `--glow-warn`, 1.2s two-step blink |
+| waiting for user input | over-head badge `?`, `sig-warn` fill, no blink |
+| blocked / error | over-head badge `!`, `sig-down` fill, `--glow-down` |
+| turn just completed | over-head badge `✓`, `sig-ok` fill, held 10s then removed |
+
+The **over-head badge** is a 16px rounded square pinned to the token's
+top-right. It is the Floor's "icon above the agent": exactly one badge
+per token, and the badge is the only element on a station that may
+glow. A token never has a face, limbs, a desk graphic, or a walk cycle.
+
+### 8.4 Counter and papers
+
+Claims awaiting verification render as **papers**: `--tint-warn` fill,
+35% `sig-warn` border, Countersign slot (§7) at the left, name, and the
+claim's age in mono `sig-warn` at the right. Age is the pressure: papers
+older than three days step the border to 60% alpha and the age to 700
+weight. A bay shows at most three papers and a `+N more waiting` line,
+oldest first. Accepting a paper fills its slot with the 120ms stamp
+(§9) and the paper leaves the counter on the next render.
+
+### 8.5 Sidecar
+
+- **Your Turn** — the amber column, now a queue. A 56px mono count of
+  everything only the human can do, a Plex Sans sub-line breaking it
+  into approvals, stamps, and unblocks, then rows ordered oldest first.
+  Each row carries a 9px mono verb chip — `APPROVE` and `STAMP` in
+  `sig-warn`, `UNBLOCK` in `sig-down` — a prose line saying what is
+  wanted, and a mono line naming the task and its wait. Verbs are the
+  human vocabulary of §10; agent verbs never appear here. When the
+  queue is empty the panel says `Nothing needs you` and its border drops
+  to `--rule`.
+- **Shift Log** — a live, newest-first list of events: reports, turn
+  completions, sessions clocking in, stamps. Rows are `time · initials ·
+  sentence`; the sentence names the actor first (`Claude reported …`,
+  `You stamped …`). New rows arrive with the report flash (§9) and keep
+  a 2px `sig-info` left border until the next event. Twenty rows, then
+  the log truncates.
+- **Scoreboard** — four tiles in mono 600 22px: stamped today (`sig-ok`),
+  reports today, working now, oldest unstamped. These are the only
+  counters on the Floor; the v0.2 stat tiles (`Total tasks`, `Tasks
+  complete`) are retired because they counted Work State and misread a
+  released project as an unfinished one.
+
+### 8.6 What the Floor never does
+
+No transcript bodies, no file lists, no model names, no worktree paths.
+That is the Ledger's job. The Floor tells you where to look; it does not
+show you the work. It never writes: every control on it is a link into
+the Ledger row except the stamp on a paper, which is the one action a
+glance should be able to finish.
+
+## 9. Motion
+
+Five animations, and no others:
+
+| Animation | Spec | Where |
+| --- | --- | --- |
+| countersign stamp | 120ms ease-out scale 1.6→1 | slot on accept |
+| live report flash | `--tint-info` → transparent, 400ms | Ledger row, Shift Log row |
+| indeterminate spinner | 800ms linear | loading only |
+| working arc | 2px `sig-info` arc, 1.6s linear orbit | worker token, working state |
+| approval blink | 1.2s `steps(2)` opacity 1→.35 | over-head `?` badge only |
+
+The active dial's wedge still does not rotate; the dial is a gauge and
+the token is the thing that moves. Tokens do not travel between zones —
+a state change re-renders the station in its new zone; a 200ms opacity
+crossfade is permitted, position tweening is not. Reduced motion: flash
+becomes a persistent `--sig-info` left border, the stamp is instant, the
+arc becomes a static `sig-info` ring, and the badge does not blink.
+
+## 10. Voice
 
 Unchanged from v0.1: plain, calm, second person, no exclamation marks.
 Agents **Report**; humans **Accept / Reject / Defer** — the vocabularies
@@ -219,7 +362,7 @@ never mix. `CONTEXT.md`'s controlled nouns and `_Avoid_` lists bind copy.
 Empty states direct the next action; errors state what happened and what
 to do.
 
-## 10. The mark — the Countersigned F
+## 11. The mark — the Countersigned F
 
 Geometry unchanged from v0.1 (it already reads as stamped plate-work): an
 F built as two record bars on a spine, with the detached countersign chip
@@ -269,7 +412,7 @@ Source: `src/web/icon.svg`.
 **Wordmark:** `FACTORY`, IBM Plex Sans 700, `.18em`, uppercase, mark at
 left, 10px gap. Never recolor a letter; never box the mark.
 
-## 11. Implementation wiring
+## 12. Implementation wiring
 
 1. **Token layer** — `:root` block below into `src/web/styles.css` +
    `color-scheme: dark`; migrate hexes (`#111827→--canvas`,
@@ -313,7 +456,14 @@ left, 10px gap. Never recolor a letter; never box the mark.
 }
 ```
 
-### 11.1 Open decisions
+6. **The Floor** — new `home` view in `main.tsx` fed by the existing
+   attention and portfolio queries plus the T3 shell observation (session
+   status, active turn, pending approvals, pending input, branch); the
+   current home list moves to a `ledger` route. Shift Log needs a
+   server-side event feed (status reports, verifications, turn
+   completions) over the existing WebSocket; the first cut may poll.
+
+### 12.1 Open decisions
 
 - **Released vs Complete** — hollow-vs-stamped dial may make the chip
   distinction (§3 outline chip) redundant; revisit once dials are live.
@@ -324,3 +474,12 @@ left, 10px gap. Never recolor a letter; never box the mark.
   only if it costs frames.
 - **`button.primary`** — `main.tsx` references `.primary` which CSS never
   defined; define (accent fill) or remove in the token pass.
+- **Floor on phone** — whether a phone ever shows bays at all, or only
+  Your Turn and Shift Log with a per-project tally strip. Decide after
+  the desktop Floor is live.
+- **Legacy threads** — unmatched T3 threads from before Factory (26 in
+  the Factory project alone) must not appear as idle tokens; the Floor
+  should draw only sessions with a Work Association or a running turn.
+- **Stamp from the Floor** — accepting from a paper needs the reason and
+  evidence flow of the Ledger row; decide whether the Floor stamp opens
+  the row or accepts inline with no reason.
