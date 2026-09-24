@@ -28,6 +28,37 @@ function isT3Failure(value: { ok: boolean }): value is T3Failure {
   return value.ok === false;
 }
 
+async function readShellSafely(
+  reader: T3ActivityReader,
+): Promise<T3ShellObservation> {
+  try {
+    return await reader.readShell();
+  } catch {
+    return {
+      error: "The T3 source could not be reached.",
+      fetchedAt: new Date().toISOString(),
+      ok: false,
+      status: "unreachable",
+    };
+  }
+}
+
+async function readThreadSafely(
+  reader: T3ActivityReader,
+  input: { threadId: string; turnLimit: number },
+): Promise<T3ThreadObservation> {
+  try {
+    return await reader.readThread(input);
+  } catch {
+    return {
+      error: "The T3 source could not be reached.",
+      fetchedAt: new Date().toISOString(),
+      ok: false,
+      status: "unreachable",
+    };
+  }
+}
+
 export type T3RouteStatus = T3TransportState | "ok" | "unmatched" | "ambiguous";
 
 export type T3ObservedConnection = {
@@ -194,10 +225,12 @@ export type T3CoordinatorSource = {
   machineId: string;
   label?: string;
   reader: T3ActivityReader;
+  suppressPersistedLastSuccess?: boolean;
 };
 
 type SourceRuntime = T3CoordinatorSource & {
   lastSuccessfulFetchAt?: string;
+  suppressPersistedLastSuccess?: boolean;
 };
 
 const LEGACY_T3_MACHINE_ID = "legacy";
@@ -796,7 +829,7 @@ function failureStatus(
   const connection = failureConnection(result, source);
   const lastSuccessfulFetchAt =
     source.lastSuccessfulFetchAt ??
-    (observedLastSuccessful === undefined
+    (source.suppressPersistedLastSuccess || observedLastSuccessful === undefined
       ? undefined
       : new Date(observedLastSuccessful).toISOString());
   if (lastSuccessfulFetchAt !== undefined) {
@@ -1078,7 +1111,7 @@ export function createT3Coordinator(input: {
     throw new Error("T3 coordinator requires a reader or at least one source.");
 
   const seenSourceIds = new Set<string>();
-  const sources: SourceRuntime[] = configured.map((source) => {
+  let sources: SourceRuntime[] = configured.map((source) => {
     const sourceId = normalizeT3SourceId(source.sourceId);
     const machineId = source.machineId.trim();
     if (!machineId)
@@ -1086,7 +1119,13 @@ export function createT3Coordinator(input: {
     if (seenSourceIds.has(sourceId))
       throw new Error(`T3 source ${sourceId} is configured more than once.`);
     seenSourceIds.add(sourceId);
-    return { ...source, machineId, sourceId };
+    return {
+      ...source,
+      machineId,
+      sourceId,
+      suppressPersistedLastSuccess:
+        source.suppressPersistedLastSuccess ?? false,
+    };
   });
   const projects = () => application.listProjects();
   const sourceById = (sourceId?: string): SourceRuntime | undefined =>
@@ -1147,11 +1186,72 @@ export function createT3Coordinator(input: {
     );
   };
 
+  const sourceIsCurrent = (source: SourceRuntime): boolean =>
+    sources.includes(source);
+
+  const sourceChangedFailure = (
+    source: SourceRuntime,
+  ): T3ObservationFailure => ({
+    error: "The T3 source changed during refresh. Refresh again.",
+    fetchedAt: new Date().toISOString(),
+    ok: false,
+    status: "unavailable",
+  });
+
+  const statusForSourceChanged = (source: SourceRuntime): T3StatusSource => {
+    const failure = sourceChangedFailure(source);
+    return {
+      counts: emptyCounts(),
+      connection: failureConnection(failure, source),
+      ...(source.label === undefined ? {} : { label: source.label }),
+      machineId: source.machineId,
+      sourceId: source.sourceId,
+      status: "unavailable",
+      error: failure.error,
+    };
+  };
+
+  const activityForSourceChanged = (
+    source: SourceRuntime,
+  ): T3ObservedActivity => {
+    const failure = sourceChangedFailure(source);
+    const connection = failureConnection(failure, source);
+    const counts = emptyCounts();
+    const error = failure.error;
+    const sourceView: T3ObservedActivitySource = {
+      connection,
+      counts,
+      error,
+      findings: [],
+      label: source.label,
+      machineId: source.machineId,
+      projectName: undefined,
+      sourceId: source.sourceId,
+      status: "unavailable",
+      targets: [],
+      threads: [],
+    };
+    return {
+      connection,
+      counts,
+      error,
+      findings: [],
+      machineId: source.machineId,
+      projectName: undefined,
+      sourceId: source.sourceId,
+      sources: [sourceView],
+      status: "unavailable",
+      targets: [],
+      threads: [],
+    };
+  };
+
   const makeStatusForSource = async (
     source: SourceRuntime,
     selected?: FactoryProject,
   ): Promise<T3StatusSource> => {
-    const shell = await source.reader.readShell();
+    const shell = await readShellSafely(source.reader);
+    if (!sourceIsCurrent(source)) return statusForSourceChanged(source);
     if (isT3Failure(shell)) {
       const connection = failureConnection(shell, source);
       const observedLastSuccessful = (selected ? [selected] : projects())
@@ -1164,7 +1264,8 @@ export function createT3Coordinator(input: {
         .at(0);
       const lastSuccessfulFetchAt =
         source.lastSuccessfulFetchAt ??
-        (observedLastSuccessful === undefined
+        (source.suppressPersistedLastSuccess ||
+        observedLastSuccessful === undefined
           ? undefined
           : new Date(observedLastSuccessful).toISOString());
       if (lastSuccessfulFetchAt !== undefined)
@@ -1313,7 +1414,8 @@ export function createT3Coordinator(input: {
     source: SourceRuntime,
     project: FactoryProject,
   ): Promise<T3ObservedActivity> => {
-    const shell = await source.reader.readShell();
+    const shell = await readShellSafely(source.reader);
+    if (!sourceIsCurrent(source)) return activityForSourceChanged(source);
     if (isT3Failure(shell))
       return failureStatus(application, project, shell, source);
     source.lastSuccessfulFetchAt = shell.fetchedAt;
@@ -1372,6 +1474,7 @@ export function createT3Coordinator(input: {
           thread,
         }),
       );
+    if (!sourceIsCurrent(source)) return activityForSourceChanged(source);
     refreshObservations(application, {
       observations,
       refreshedProjects: [
@@ -1464,7 +1567,11 @@ export function createT3Coordinator(input: {
     const candidatesSources = sourceId === undefined ? sources : [scoped!];
     await Promise.all(
       candidatesSources.map(async (source) => {
-        const shell = await source.reader.readShell();
+        const shell = await readShellSafely(source.reader);
+        if (!sourceIsCurrent(source)) {
+          errors.push({ source, result: sourceChangedFailure(source) });
+          return;
+        }
         if (isT3Failure(shell)) {
           errors.push({ source, result: shell });
           return;
@@ -1523,6 +1630,47 @@ export function createT3Coordinator(input: {
   };
 
   return {
+    replaceSources(nextSources: readonly T3CoordinatorSource[]): void {
+      const seen = new Set<string>();
+      const previous = new Map(
+        sources.map((source) => [source.sourceId, source]),
+      );
+      const next: SourceRuntime[] = nextSources.map((source) => {
+        const sourceId = normalizeT3SourceId(source.sourceId);
+        const machineId = source.machineId.trim();
+        if (!machineId)
+          throw new Error(`T3 source ${sourceId} requires a machine ID.`);
+        if (seen.has(sourceId))
+          throw new Error(
+            `T3 source ${sourceId} is configured more than once.`,
+          );
+        seen.add(sourceId);
+        const prior = previous.get(sourceId);
+        if (
+          prior &&
+          prior.reader === source.reader &&
+          prior.machineId === machineId
+        ) {
+          if (prior.label === source.label) return prior;
+          return { ...prior, label: source.label };
+        }
+        return {
+          ...source,
+          machineId,
+          sourceId,
+          suppressPersistedLastSuccess:
+            source.suppressPersistedLastSuccess ?? true,
+        };
+      });
+      if (next.length === 0)
+        throw new Error("T3 coordinator requires at least one source.");
+      sources = next;
+    },
+
+    async connectionStatus(sourceId?: string): Promise<T3StatusResult> {
+      return this.status(undefined, sourceId);
+    },
+
     async status(
       projectId?: string,
       sourceId?: string,
@@ -1643,7 +1791,20 @@ export function createT3Coordinator(input: {
           status: resolution.status,
           threadId,
         };
-      const detail = await source.reader.readThread({ threadId, turnLimit });
+      const detail = await readThreadSafely(source.reader, {
+        threadId,
+        turnLimit,
+      });
+      if (!sourceIsCurrent(source)) {
+        return {
+          connection: failureConnection(sourceChangedFailure(source), source),
+          error: "The T3 source changed during refresh. Refresh again.",
+          machineId: source.machineId,
+          sourceId: source.sourceId,
+          status: "unavailable",
+          threadId,
+        };
+      }
       if (isT3Failure(detail)) return resultFailure(threadId, detail, source);
       if (
         detail.thread.id !== shellThread.id ||

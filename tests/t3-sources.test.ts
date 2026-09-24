@@ -5,12 +5,28 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import {
+  createLegacyT3SourceFromToken,
   normalizeT3SourceBaseUrl,
   readT3SourceConfigFile,
   resolveT3Sources,
 } from "../src/t3-sources";
 
 describe("T3 source configuration", () => {
+  test("keeps legacy environment URL compatibility while managed URLs stay strict", () => {
+    const legacy = createLegacyT3SourceFromToken(
+      {
+        accessTokenFile: "<legacy-server-config>",
+        baseUrl: "http://localhost:3773/",
+        machineId: "mac-mini",
+        sourceId: "legacy",
+      },
+      "legacy-token",
+    );
+    expect(legacy.baseUrl).toBe("http://localhost:3773");
+    expect(() => normalizeT3SourceBaseUrl("http://localhost:3773")).toThrow();
+    expect(JSON.stringify(legacy)).not.toContain("legacy-token");
+  });
+
   test("loads a strict registry without returning credentials", () => {
     const directory = mkdtempSync(join(tmpdir(), "factory-t3-sources-"));
     const tokenA = join(directory, "a-token");

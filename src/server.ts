@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { accessSync, constants, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { getWSConnectionHandler } from "@trpc/server/adapters/ws";
@@ -33,19 +33,21 @@ import {
   type GitHubStatusSnapshot,
 } from "./github";
 import { createT3Coordinator } from "./t3-coordinator";
-import {
-  createT3ActivityReader,
-  normalizeT3BaseUrl,
-  type T3ActivityReader,
-} from "./t3";
+import { normalizeT3BaseUrl, type T3ActivityReader } from "./t3";
 import { FLOOR_DEFAULT_TIMEZONE } from "./floor";
 import { resolveT3AccessToken } from "./t3-credential";
 import {
   DEFAULT_T3_MACHINE_ID,
   LEGACY_T3_SOURCE_ID,
+  createLegacyT3SourceFromToken,
   resolveT3Sources,
   type T3Source,
 } from "./t3-sources";
+import {
+  createT3ConnectionStore,
+  safeT3ConnectionError,
+  t3ManagedDirectoryForDatabase,
+} from "./t3-connections";
 import {
   createHumanSessionStore,
   getHumanSessionToken,
@@ -429,17 +431,18 @@ function createRouter(
   idempotencyStore: ReturnType<typeof createIdempotencyStore>,
   mutationMutex = createMutationMutex(),
   backupRestore: BackupRestoreCoordinator,
-  t3Sources: readonly T3Source[] = [],
+  t3ConnectionStore: ReturnType<typeof createT3ConnectionStore>,
 ) {
   const sourceAwareCoordinator = t3Coordinator;
-  const sourceById = new Map(
-    t3Sources.map((source) => [source.sourceId, source]),
-  );
   const resolveSourceForContext = (
     ctx: FactoryContext,
     requestedSourceId: string | undefined,
     options: { requireMachineSource?: boolean } = {},
   ): string | undefined => {
+    const t3Sources = t3ConnectionStore.getSources();
+    const sourceById = new Map(
+      t3Sources.map((source) => [source.sourceId, source]),
+    );
     if (requestedSourceId !== undefined) {
       const source = sourceById.get(requestedSourceId);
       if (!source) {
@@ -977,6 +980,106 @@ function createRouter(
         ),
     }),
     t3: trpc.router({
+      connections: trpc.router({
+        list: humanProcedure()
+          .input(z.object({}).optional())
+          .query(() => ({ sources: t3ConnectionStore.list() })),
+        refresh: humanProcedure()
+          .input(z.object({ sourceId: sourceIdSchema.optional() }).optional())
+          .query(async ({ input }) => {
+            const status = await sourceAwareCoordinator.connectionStatus(
+              input?.sourceId,
+            );
+            const statusById = new Map(
+              status.sources.map((source) => [source.sourceId, source]),
+            );
+            return t3ConnectionStore
+              .list()
+              .filter(
+                (source) =>
+                  input?.sourceId === undefined ||
+                  source.sourceId === input.sourceId,
+              )
+              .map((source) => {
+                const observed = statusById.get(source.sourceId);
+                const state = observed?.connection.state ?? "unavailable";
+                return {
+                  ...source,
+                  state,
+                  ...(observed?.connection.observedAt === undefined
+                    ? {}
+                    : { observedAt: observed.connection.observedAt }),
+                  ...(observed?.connection.lastSuccessfulFetchAt === undefined
+                    ? {}
+                    : {
+                        lastSuccessfulFetchAt:
+                          observed.connection.lastSuccessfulFetchAt,
+                      }),
+                  ...(observed?.connection.sourceVersion === undefined
+                    ? {}
+                    : { sourceVersion: observed.connection.sourceVersion }),
+                  ...(observed?.projectCount === undefined
+                    ? {}
+                    : { projectCount: observed.projectCount }),
+                  ...(observed?.threadCount === undefined
+                    ? {}
+                    : { threadCount: observed.threadCount }),
+                  ...(safeT3ConnectionError(state) === undefined
+                    ? {}
+                    : { error: safeT3ConnectionError(state) }),
+                };
+              });
+          }),
+        save: humanProcedure()
+          .input(
+            z.object({
+              accessToken: z
+                .string()
+                .max(16 * 1024)
+                .optional(),
+              baseUrl: z.string().trim().min(1).max(2000),
+              label: z.string().trim().min(1).max(100),
+              machineId: z.string().trim().min(1).max(200),
+              sourceId: sourceIdSchema.optional(),
+            }),
+          )
+          .use(serializedMutation)
+          .mutation(({ input }) => {
+            try {
+              const source = t3ConnectionStore.save(input);
+              sourceAwareCoordinator.replaceSources(
+                t3ConnectionStore.getSources(),
+              );
+              return { source };
+            } catch (error) {
+              const message =
+                error instanceof Error
+                  ? error.message
+                  : "T3 connection could not be saved.";
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message:
+                  input.accessToken && message.includes(input.accessToken)
+                    ? "T3 connection could not be saved. Check its fields and try again."
+                    : message,
+              });
+            }
+          }),
+        test: humanProcedure()
+          .input(
+            z.object({
+              accessToken: z
+                .string()
+                .max(16 * 1024)
+                .optional(),
+              baseUrl: z.string().trim().min(1).max(2000),
+              label: z.string().trim().min(1).max(100),
+              machineId: z.string().trim().min(1).max(200),
+              sourceId: sourceIdSchema.optional(),
+            }),
+          )
+          .mutation(({ input }) => t3ConnectionStore.testDraft(input)),
+      }),
       status: scopedProcedure((input) => {
         const projectId = (input as { projectId?: unknown } | null | undefined)
           ?.projectId;
@@ -1652,7 +1755,9 @@ export type FactoryServerOptions = {
   allowedOrigins?: string[];
   t3AccessToken?: string;
   t3BaseUrl?: string;
+  t3MachineId?: string;
   t3Sources?: T3Source[];
+  t3ConnectionsDirectory?: string;
   t3TimeoutMs?: number;
   onRestorePrepared?: (prepared: RestorePreparation) => void | Promise<void>;
 };
@@ -1727,6 +1832,15 @@ export function getFactoryServerOptions(
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
+  const databasePath = environment.FACTORY_DB ?? "factory.sqlite";
+  const configuredT3ConnectionsDirectory =
+    environment.FACTORY_T3_CONNECTIONS_DIR?.trim();
+  if (
+    configuredT3ConnectionsDirectory &&
+    !isAbsolute(configuredT3ConnectionsDirectory)
+  ) {
+    throw new Error("FACTORY_T3_CONNECTIONS_DIR must be an absolute path.");
+  }
 
   return {
     ...(environment.FACTORY_BACKUP_DIR?.trim()
@@ -1740,7 +1854,7 @@ export function getFactoryServerOptions(
           ),
         }
       : {}),
-    databasePath: environment.FACTORY_DB ?? "factory.sqlite",
+    databasePath,
     ...(environment.FACTORY_ENVIRONMENT?.trim()
       ? { environment: factoryEnvironment }
       : {}),
@@ -1760,6 +1874,12 @@ export function getFactoryServerOptions(
     ...(t3AccessToken ? { t3AccessToken } : {}),
     ...(t3BaseUrl ? { t3BaseUrl } : {}),
     ...(t3Sources === undefined ? {} : { t3Sources }),
+    ...(environment.FACTORY_T3_MACHINE_ID?.trim()
+      ? { t3MachineId: environment.FACTORY_T3_MACHINE_ID.trim() }
+      : {}),
+    ...(configuredT3ConnectionsDirectory
+      ? { t3ConnectionsDirectory: configuredT3ConnectionsDirectory }
+      : {}),
     ...(t3TimeoutMs === undefined ? {} : { t3TimeoutMs }),
   };
 }
@@ -1790,7 +1910,9 @@ export function createFactoryServer({
   shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
   t3AccessToken: _t3AccessToken,
   t3BaseUrl: _t3BaseUrl,
+  t3MachineId: _t3MachineId,
   t3Sources: configuredT3Sources,
+  t3ConnectionsDirectory: configuredT3ConnectionsDirectory,
   t3TimeoutMs: _t3TimeoutMs,
   t3ActivityReader,
   onRestorePrepared: configuredOnRestorePrepared,
@@ -1811,7 +1933,9 @@ export function createFactoryServer({
   shutdownTimeoutMs?: number;
   t3AccessToken?: string;
   t3BaseUrl?: string;
+  t3MachineId?: string;
   t3Sources?: T3Source[];
+  t3ConnectionsDirectory?: string;
   t3TimeoutMs?: number;
   t3ActivityReader?: T3ActivityReader;
   onRestorePrepared?: (prepared: RestorePreparation) => void | Promise<void>;
@@ -1863,30 +1987,32 @@ export function createFactoryServer({
         : createDisabledBackupService()),
     onRestorePrepared: (prepared) => onRestorePrepared(prepared),
   });
-  const legacyReader =
-    t3ActivityReader ??
-    createT3ActivityReader({
-      baseUrl: _t3BaseUrl,
-      timeoutMs: _t3TimeoutMs,
-      token: _t3AccessToken,
-    });
-  const t3Sources =
-    configuredT3Sources ??
-    ([
-      {
-        accessTokenFile: "<legacy-server-config>",
-        baseUrl: _t3BaseUrl ?? "http://127.0.0.1:3773",
-        label: "Legacy T3",
-        machineId:
-          Bun.env.FACTORY_T3_MACHINE_ID?.trim() || DEFAULT_T3_MACHINE_ID,
-        reader: legacyReader,
-        sourceId: LEGACY_T3_SOURCE_ID,
-      },
-    ] satisfies T3Source[]);
+  const legacySource = createLegacyT3SourceFromToken(
+    {
+      accessTokenFile: _t3AccessToken
+        ? "<legacy-inline-token>"
+        : "<legacy-server-config>",
+      baseUrl: _t3BaseUrl ?? "http://127.0.0.1:3773",
+      label: "Legacy T3",
+      machineId: _t3MachineId?.trim() || DEFAULT_T3_MACHINE_ID,
+      sourceId: LEGACY_T3_SOURCE_ID,
+    },
+    _t3AccessToken,
+    _t3TimeoutMs,
+  );
+  if (t3ActivityReader) legacySource.reader = t3ActivityReader;
+  const t3Sources = configuredT3Sources ?? [legacySource];
+  const t3ConnectionStore = createT3ConnectionStore({
+    baseSources: t3Sources,
+    directory:
+      configuredT3ConnectionsDirectory ??
+      t3ManagedDirectoryForDatabase(databasePath),
+    timeoutMs: _t3TimeoutMs,
+  });
+  const effectiveT3Sources = t3ConnectionStore.getSources();
   const t3Coordinator = createT3Coordinator({
     application,
-    reader: legacyReader,
-    sources: t3Sources,
+    sources: effectiveT3Sources,
   });
   const router = createRouter(
     application,
@@ -1896,7 +2022,7 @@ export function createFactoryServer({
     idempotencyStore,
     mutationMutex,
     backupRestore,
-    t3Sources,
+    t3ConnectionStore,
   );
   const deploymentIdentity = {
     apiVersion: FACTORY_API_VERSION,
@@ -1909,7 +2035,7 @@ export function createFactoryServer({
   const optionalIntegrations = {
     github: githubToken ? "configured" : "unavailable",
     t3:
-      configuredT3Sources?.length || _t3BaseUrl || _t3AccessToken
+      t3ConnectionStore.list().length || _t3BaseUrl || _t3AccessToken
         ? "configured"
         : "unavailable",
   } as const;
@@ -2415,7 +2541,9 @@ function getStaticFile(pathname: string): string | null {
   if (
     pathname.startsWith("/projects/") ||
     pathname === "/backups" ||
-    pathname === "/backups/"
+    pathname === "/backups/" ||
+    pathname === "/connections" ||
+    pathname === "/connections/"
   ) {
     return resolve(sourceRoot, "web/index.html");
   }

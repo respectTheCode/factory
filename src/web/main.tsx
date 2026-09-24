@@ -12,6 +12,7 @@ import type {
 } from "../t3-coordinator";
 import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
 import { BackupsPage } from "./backups";
+import { ConnectionsPage } from "./connections";
 import {
   Floor,
   floorPaperMatches,
@@ -33,6 +34,7 @@ import {
   dashboardPath,
   dashboardViewFromPath,
   backupsView,
+  connectionsView,
   editProjectView,
   homeView,
   projectView,
@@ -1492,6 +1494,11 @@ function Dashboard() {
     navigateToView(backupsView());
   };
 
+  const openConnections = () => {
+    stopProjectSubscription();
+    navigateToView(connectionsView());
+  };
+
   const openProjectEditor = (projectId: string) => {
     navigateToView(editProjectView(projectId));
   };
@@ -1500,7 +1507,11 @@ function Dashboard() {
     const handlePopState = () => {
       const nextView = dashboardViewFromPath(window.location.pathname);
       setView(nextView);
-      if (nextView.screen === "home" || nextView.screen === "backups") {
+      if (
+        nextView.screen === "home" ||
+        nextView.screen === "backups" ||
+        nextView.screen === "connections"
+      ) {
         stopProjectSubscription();
         return;
       }
@@ -1821,6 +1832,21 @@ function Dashboard() {
             >
               Backups
             </a>
+            <a
+              aria-current={view.screen === "connections" ? "page" : undefined}
+              className={
+                view.screen === "connections"
+                  ? "global-nav-link selected"
+                  : "global-nav-link"
+              }
+              href="/connections"
+              onClick={(event) => {
+                event.preventDefault();
+                openConnections();
+              }}
+            >
+              T3 connections
+            </a>
           </nav>
           <div className="header-status">
             {sessionLoading ? (
@@ -1865,10 +1891,16 @@ function Dashboard() {
           <BackupsPage client={trpc.current} connection={snapshot} />
         )}
 
+        {view.screen === "connections" && (
+          <ConnectionsPage
+            canManage={snapshot.canMutate && snapshot.state === "connected"}
+            client={trpc.current}
+          />
+        )}
+
         {projects &&
           projects.length > 0 &&
-          view.screen !== "home" &&
-          view.screen !== "backups" && (
+          (view.screen === "project" || view.screen === "edit_project") && (
             <nav aria-label="Projects" className="project-tabs">
               {projects.map((project) => (
                 <button

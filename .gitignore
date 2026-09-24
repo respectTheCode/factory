@@ -8,3 +8,6 @@ dist/
 # Local browser diagnostics and database recovery copies
 .playwright-cli/
 *.sqlite.bak*
+
+# Private operator-managed T3 connection registry and read-only tokens
+t3-connections/

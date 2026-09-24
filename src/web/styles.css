@@ -2157,6 +2157,263 @@ textarea:focus {
   }
 }
 
+.connections-page {
+  display: grid;
+  gap: 16px;
+  margin: 0 auto;
+  max-width: 1040px;
+  min-width: 0;
+}
+
+.connections-heading,
+.connection-card-heading,
+.connection-editor-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.connections-heading > div:first-child,
+.connection-editor-heading > div:first-child {
+  display: grid;
+  gap: 6px;
+}
+
+.connections-intro {
+  color: var(--ink-dim);
+  max-width: 60ch;
+}
+
+.connections-heading-actions,
+.connection-form-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.connections-guidance,
+.connections-empty-state,
+.connection-card,
+.connection-editor {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-card);
+  box-shadow: var(--edge-machined);
+  padding: 16px;
+}
+
+.connections-guidance {
+  background: var(--tint-info);
+  border-color: rgba(74, 163, 224, 0.4);
+  display: grid;
+  gap: 5px;
+}
+
+.connections-guidance strong {
+  color: var(--ink);
+}
+
+.connections-guidance p,
+.connections-empty-state p,
+.connection-test-result p {
+  color: var(--ink-dim);
+  line-height: 1.5;
+}
+
+.connections-list {
+  display: grid;
+  gap: 10px;
+}
+
+.connection-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.connection-card-title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  min-width: 0;
+}
+
+.connection-card-title h2 {
+  overflow-wrap: anywhere;
+}
+
+.connection-health {
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  display: inline-flex;
+  font: 600 0.68rem/1 var(--mono);
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.connection-health-good {
+  background: var(--tint-ok);
+  border-color: rgba(47, 190, 107, 0.45);
+  color: var(--sig-ok);
+}
+
+.connection-health-down {
+  background: var(--tint-down);
+  border-color: rgba(229, 72, 77, 0.45);
+  color: var(--sig-down);
+}
+
+.connection-health-neutral {
+  background: var(--raised);
+  color: var(--ink-dim);
+}
+
+.connection-fields {
+  display: grid;
+  gap: 12px 18px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  margin: 0;
+  min-width: 0;
+}
+
+.connection-fields > div {
+  min-width: 0;
+}
+
+.connection-fields dt,
+.connection-stable-id > span {
+  color: var(--ink-faint);
+  font: 600 0.66rem/1.3 var(--mono);
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.connection-fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.connections-observed,
+.connections-empty,
+.connection-stable-id small {
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+}
+
+.connections-status-error,
+.connections-error {
+  color: var(--sig-down);
+  line-height: 1.45;
+}
+
+.connections-success {
+  color: var(--sig-ok);
+}
+
+.connections-empty-state {
+  display: grid;
+  gap: 8px;
+}
+
+.connections-empty-state > button {
+  justify-self: start;
+}
+
+.connection-editor {
+  display: grid;
+  gap: 16px;
+}
+
+.connection-editor-heading {
+  align-items: flex-start;
+}
+
+.connection-form {
+  display: grid;
+  gap: 12px;
+}
+
+.connection-form > label {
+  color: var(--ink-dim);
+  display: grid;
+  font-size: 0.75rem;
+  gap: 5px;
+}
+
+.connection-form input {
+  min-width: 0;
+  width: 100%;
+}
+
+.connection-stable-id {
+  background: var(--raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-field);
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.connection-stable-id code {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.connection-test-result {
+  background: var(--raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-field);
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+}
+
+.connection-test-result > div {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.connection-test-result > p {
+  margin: 0;
+}
+
+.connection-form-actions {
+  justify-content: flex-end;
+}
+
+@media (max-width: 540px) {
+  .connections-heading,
+  .connection-card-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .connections-heading-actions,
+  .connection-form-actions {
+    width: 100%;
+  }
+
+  .connections-heading-actions > *,
+  .connection-form-actions > * {
+    flex: 1 1 0;
+  }
+
+  .connections-guidance,
+  .connections-empty-state,
+  .connection-card,
+  .connection-editor {
+    padding: 12px;
+  }
+}
+
 @media (max-width: 540px) {
   .global-nav {
     margin: 0;

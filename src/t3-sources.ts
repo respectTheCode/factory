@@ -23,7 +23,19 @@ export type T3SourceConfig = {
 /** A server-side source. Credentials are intentionally absent from this type. */
 export type T3Source = T3SourceConfig & {
   reader: T3ActivityReader;
+  /** Do not infer this config's last success from observations made before it was saved. */
+  suppressPersistedLastSuccess?: boolean;
+  /** Internal capability used to rebuild this reader for an edited endpoint. */
+  [T3_SOURCE_READER_FACTORY]?: (baseUrl: string) => T3ActivityReader;
+  /** Internal flag for redacted management summaries. */
+  [T3_SOURCE_HAS_TOKEN]?: boolean;
 };
+
+/** Not included in JSON; keeps the resolved credential inside the server process. */
+export const T3_SOURCE_READER_FACTORY: unique symbol = Symbol(
+  "t3-source-reader-factory",
+);
+export const T3_SOURCE_HAS_TOKEN: unique symbol = Symbol("t3-source-has-token");
 
 export const DEFAULT_T3_MACHINE_ID = "mac-mini";
 export const MAX_T3_SOURCES_FILE_BYTES = 256 * 1024;
@@ -278,16 +290,58 @@ function isIpv4(
   return predicate(octets);
 }
 
+export function createT3SourceFromToken(
+  config: T3SourceConfig,
+  token: string | undefined,
+  timeoutMs?: number,
+): T3Source {
+  const baseUrl = normalizeT3SourceBaseUrl(config.baseUrl);
+  const makeReader = (nextBaseUrl: string) =>
+    createT3ActivityReader({
+      baseUrl: normalizeT3SourceBaseUrl(nextBaseUrl),
+      timeoutMs,
+      token,
+    });
+  const source = {
+    ...config,
+    baseUrl,
+    reader: makeReader(baseUrl),
+  } as T3Source;
+  Object.defineProperty(source, T3_SOURCE_READER_FACTORY, {
+    value: makeReader,
+  });
+  Object.defineProperty(source, T3_SOURCE_HAS_TOKEN, { value: Boolean(token) });
+  return source;
+}
+
+/** Preserve the looser URL behavior of the historical T3_* environment variables. */
+export function createLegacyT3SourceFromToken(
+  config: T3SourceConfig,
+  token: string | undefined,
+  timeoutMs?: number,
+): T3Source {
+  const makeReader = (baseUrl: string) =>
+    createT3ActivityReader({
+      baseUrl: normalizeT3BaseUrl(baseUrl),
+      timeoutMs,
+      token,
+    });
+  const baseUrl = normalizeT3BaseUrl(config.baseUrl);
+  const source = {
+    ...config,
+    baseUrl,
+    reader: makeReader(baseUrl),
+  } as T3Source;
+  Object.defineProperty(source, T3_SOURCE_READER_FACTORY, {
+    value: makeReader,
+  });
+  Object.defineProperty(source, T3_SOURCE_HAS_TOKEN, { value: Boolean(token) });
+  return source;
+}
+
 function createSource(config: T3SourceConfig, timeoutMs?: number): T3Source {
   const token = resolveT3AccessToken({
     T3_ACCESS_TOKEN_FILE: config.accessTokenFile,
   });
-  return {
-    ...config,
-    reader: createT3ActivityReader({
-      baseUrl: config.baseUrl,
-      timeoutMs,
-      token,
-    }),
-  };
+  return createT3SourceFromToken(config, token, timeoutMs);
 }

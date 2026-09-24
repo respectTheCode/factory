@@ -4,6 +4,7 @@ import {
   backupsView,
   dashboardPath,
   dashboardViewFromPath,
+  connectionsView,
   editProjectView,
   homeView,
   projectView,
@@ -18,6 +19,12 @@ describe("dashboard navigation", () => {
     expect(backupsView()).toEqual({ screen: "backups" });
     expect(dashboardViewFromPath("/backups")).toEqual(backupsView());
     expect(dashboardPath(backupsView())).toBe("/backups");
+  });
+
+  test("opens the global T3 connections page and preserves it on reload", () => {
+    expect(connectionsView()).toEqual({ screen: "connections" });
+    expect(dashboardViewFromPath("/connections")).toEqual(connectionsView());
+    expect(dashboardPath(connectionsView())).toBe("/connections");
   });
 
   test("resolves the retired Ledger route to Floor", () => {

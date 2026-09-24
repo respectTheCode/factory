@@ -45,6 +45,38 @@ machine (default `mac-mini`). The Mac service launcher also discovers an existin
 `secrets/t3-sources.json` beneath its service root unless an explicit registry
 path is supplied.
 
+## Manage connections in Factory
+
+Signed-in human operators can open **T3 connections** from the global navigation
+or at `/connections`. The page lists each source and its latest tested state and
+successful fetch time. Use **Refresh status** to check saved sources, or test an
+edited draft before saving it. A new source needs a label, the Factory machine ID
+assigned to that Mac, a reachable T3 endpoint, and a read-only token. In T3, enable
+trusted-LAN access for the reader and provision a token with
+`orchestration:read`; keep T3 Connect's account approval and Factory's reader token
+separate. The Factory connection test checks reachability, authentication, and read
+permission without displaying or returning the token.
+
+Saved sources are adopted immediately, without a Factory restart. Editing a
+source keeps its source ID, so its Factory history and associations remain in
+place. When the endpoint, machine identity, or credential changes, Factory clears
+the displayed last-success time for the prior connection until the replacement
+is successfully fetched. A failed check reports the current state while retaining
+the last successful fetch for that same connection; an untested connection has no
+known success time.
+
+The UI-managed overlay is stored as one atomically replaced document,
+`managed-sources.json`, in a private directory adjacent to the configured Factory
+database by default. Set `FACTORY_T3_CONNECTIONS_DIR` to use another absolute
+directory. Factory creates the directory with mode `0700` and the document with
+mode `0600`; it keeps tokens in this document and never includes them in list,
+test, or refresh responses. Existing environment or mounted source files remain
+read-only base configuration, and managed rows override them by source ID. Keep
+the overlay directory backed up and protected separately: the existing
+database-only backup does not include managed T3 credentials. For a repository-
+local development database, the default `t3-connections/` directory is
+git-ignored.
+
 ## Project and session identity
 
 Normalized Git origin identifies a repository across machines even when checkout

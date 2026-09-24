@@ -5,7 +5,11 @@ import {
   createT3Coordinator,
   resolveT3Project,
 } from "../../src/t3-coordinator";
-import type { T3ShellObservation, T3ThreadObservation } from "../../src/t3";
+import type {
+  T3ActivityReader,
+  T3ShellObservation,
+  T3ThreadObservation,
+} from "../../src/t3";
 
 const observedAt = "2026-09-18T12:00:00.000Z";
 
@@ -404,5 +408,109 @@ describe("T3 coordinator multiple sources", () => {
       ),
     ).toMatchObject({ status: "unmatched" });
     expect(mapped.id).not.toBe(portable.id);
+  });
+
+  test("discards an in-flight refresh after its source is replaced", async () => {
+    const app = createApplication();
+    const project = app.createProject({
+      gitOriginUrl: "git@github.com:app/watchtower.git",
+      name: "Watchtower",
+    });
+    let resolveOldShell: ((shell: T3ShellObservation) => void) | undefined;
+    const oldReader: T3ActivityReader = {
+      readShell: () =>
+        new Promise((resolve) => {
+          resolveOldShell = resolve;
+        }),
+      readThread: async () => ({
+        error: "unused",
+        fetchedAt: observedAt,
+        ok: false,
+        status: "unavailable",
+      }),
+    };
+    const coordinator = createT3Coordinator({
+      application: app,
+      sources: [{ machineId: "mac", reader: oldReader, sourceId: "mac" }],
+    });
+    const pending = coordinator.projectActivity(project.id, "mac");
+    coordinator.replaceSources([
+      {
+        machineId: "mac",
+        reader: reader({ sourceId: "mac", threadId: "new-thread" }),
+        sourceId: "mac",
+      },
+    ]);
+    const resolved = reader({ sourceId: "mac", threadId: "old-thread" });
+    resolveOldShell?.(await resolved.readShell());
+
+    const stale = await pending;
+    expect(stale).toMatchObject({
+      sourceId: "mac",
+      status: "unavailable",
+      error: "The T3 source changed during refresh. Refresh again.",
+      threads: [],
+    });
+    expect(app.listProjectT3Activity(project.id, "mac")).toEqual([]);
+
+    const current = await coordinator.projectActivity(project.id, "mac");
+    expect(current.threads.map((thread) => thread.threadId)).toEqual([
+      "new-thread",
+    ]);
+    expect(app.listProjectT3Activity(project.id, "mac")).toHaveLength(1);
+  });
+
+  test("clears last success for a replaced endpoint but keeps it for a failing current endpoint", async () => {
+    const app = createApplication();
+    const project = app.createProject({
+      gitOriginUrl: "git@github.com:app/watchtower.git",
+      name: "Watchtower",
+    });
+    const working = reader({ sourceId: "mac", threadId: "same-endpoint" });
+    let failing = false;
+    const currentEndpoint: T3ActivityReader = {
+      readShell: async () => {
+        if (failing) {
+          return {
+            error: "offline",
+            fetchedAt: observedAt,
+            ok: false,
+            status: "unreachable",
+          };
+        }
+        return working.readShell();
+      },
+      readThread: (input) => working.readThread(input),
+    };
+    const coordinator = createT3Coordinator({
+      application: app,
+      sources: [{ machineId: "mac", reader: currentEndpoint, sourceId: "mac" }],
+    });
+    await coordinator.projectActivity(project.id, "mac");
+    failing = true;
+    const currentFailure = await coordinator.connectionStatus("mac");
+    expect(currentFailure.sources[0]?.connection).toMatchObject({
+      state: "unreachable",
+      lastSuccessfulFetchAt: observedAt,
+    });
+
+    coordinator.replaceSources([
+      {
+        machineId: "mac",
+        reader: reader({
+          fail: true,
+          sourceId: "mac",
+          threadId: "new-endpoint",
+        }),
+        sourceId: "mac",
+      },
+    ]);
+    const replacedFailure = await coordinator.connectionStatus("mac");
+    expect(replacedFailure.sources[0]?.connection).toMatchObject({
+      state: "unreachable",
+    });
+    expect(
+      replacedFailure.sources[0]?.connection.lastSuccessfulFetchAt,
+    ).toBeUndefined();
   });
 });
