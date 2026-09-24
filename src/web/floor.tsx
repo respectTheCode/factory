@@ -101,6 +101,86 @@ export type FloorSnapshot = {
   stale?: boolean;
 };
 
+export const FLOOR_BAY_STORAGE_KEY = "factory.floor.collapsed-bays.v1";
+export const FLOOR_BAY_STORAGE_VERSION = 1;
+type FloorBayStorage = Pick<Storage, "getItem" | "setItem">;
+
+function browserStorage(): FloorBayStorage | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+export function parseCollapsedBayIds(raw: string | null): Set<string> {
+  if (!raw) return new Set();
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return new Set();
+    const payload = parsed as {
+      collapsed?: unknown;
+      version?: unknown;
+    };
+    if (
+      payload.version !== FLOOR_BAY_STORAGE_VERSION ||
+      !Array.isArray(payload.collapsed)
+    ) {
+      return new Set();
+    }
+    return new Set(
+      payload.collapsed.filter(
+        (id): id is string => typeof id === "string" && id.trim().length > 0,
+      ),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+export function serializeCollapsedBayIds(ids: ReadonlySet<string>): string {
+  return JSON.stringify({
+    collapsed: Array.from(ids)
+      .filter((id) => id.trim().length > 0)
+      .sort(),
+    version: FLOOR_BAY_STORAGE_VERSION,
+  });
+}
+
+export function readCollapsedBayIds(
+  storage: FloorBayStorage | null | undefined = browserStorage(),
+): Set<string> {
+  if (!storage) return new Set();
+  try {
+    return parseCollapsedBayIds(storage.getItem(FLOOR_BAY_STORAGE_KEY));
+  } catch {
+    return new Set();
+  }
+}
+
+export function writeCollapsedBayIds(
+  ids: ReadonlySet<string>,
+  storage: FloorBayStorage | null | undefined = browserStorage(),
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(FLOOR_BAY_STORAGE_KEY, serializeCollapsedBayIds(ids));
+  } catch {
+    // Private browsing and quota restrictions must not block the Floor.
+  }
+}
+
+export function toggleCollapsedBayIds(
+  ids: ReadonlySet<string>,
+  projectId: string,
+): Set<string> {
+  const next = new Set(ids);
+  if (next.has(projectId)) next.delete(projectId);
+  else next.add(projectId);
+  return next;
+}
+
 function date(value: string | undefined): Date | undefined {
   if (!value) return undefined;
   const parsed = new Date(value);
@@ -383,6 +463,9 @@ export function Floor({
   const [stamping, setStamping] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [projectError, setProjectError] = useState<string | null>(null);
+  const [collapsedBayIds, setCollapsedBayIds] = useState<Set<string>>(() =>
+    readCollapsedBayIds(),
+  );
   const observedEventIds = useRef<Set<string>>(new Set());
   const eventLogInitialized = useRef(false);
   const [freshEventIds, setFreshEventIds] = useState<Set<string>>(new Set());
@@ -390,6 +473,9 @@ export function Floor({
     const timer = window.setInterval(() => setNow(new Date()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
+  useEffect(() => {
+    writeCollapsedBayIds(collapsedBayIds);
+  }, [collapsedBayIds]);
   useEffect(() => {
     const entries = snapshot?.shiftLog;
     if (!entries) return;
@@ -421,6 +507,9 @@ export function Floor({
   );
   const open = (target: FloorTarget) => {
     if (target.projectId) onOpenTarget(target);
+  };
+  const toggleBay = (projectId: string) => {
+    setCollapsedBayIds((current) => toggleCollapsedBayIds(current, projectId));
   };
   const openReview = (paper: FloorPaper, trigger: HTMLElement) => {
     reviewTrigger.current = trigger;
@@ -647,133 +736,154 @@ export function Floor({
         </aside>
         <section className="floor-bays" aria-label="Project bays">
           {snapshot?.projects.length ? (
-            snapshot.projects.map((bay) => (
-              <article
-                className={`floor-bay${bay.quiet ? " quiet" : ""}${bay.counter.length || bay.stations.some((entry) => entry.badge) ? " attention" : ""}`}
-                key={bay.id}
-              >
-                <div className="floor-plate">
-                  <button
-                    className="floor-bay-title"
-                    onClick={() => open({ projectId: bay.id })}
-                    type="button"
-                  >
-                    <h2>{bay.name}</h2>
-                  </button>
-                  <div className="floor-tally" aria-label={`${bay.name} tally`}>
-                    {bay.quiet ? (
-                      <span>
-                        <i className="floor-tally-dot faint" />
-                        lights off
-                      </span>
-                    ) : (
-                      <>
+            snapshot.projects.map((bay) => {
+              const collapsed = collapsedBayIds.has(bay.id);
+              const bayContentId = `floor-bay-content-${encodeURIComponent(bay.id)}`;
+              return (
+                <article
+                  className={`floor-bay${bay.quiet ? " quiet" : ""}${bay.counter.length || bay.stations.some((entry) => entry.badge) ? " attention" : ""}${collapsed ? " collapsed" : ""}`}
+                  key={bay.id}
+                >
+                  <div className="floor-plate">
+                    <button
+                      className="floor-bay-title"
+                      onClick={() => open({ projectId: bay.id })}
+                      type="button"
+                    >
+                      <h2>{bay.name}</h2>
+                    </button>
+                    <div
+                      className="floor-tally"
+                      aria-label={`${bay.name} tally`}
+                    >
+                      {bay.quiet ? (
                         <span>
-                          <i className="floor-tally-dot info" />
-                          {bay.working} working
+                          <i className="floor-tally-dot faint" />
+                          lights off
                         </span>
-                        <span>
-                          <i className="floor-tally-dot warn" />
-                          {bay.waiting} waiting
-                        </span>
-                        <span>
-                          <i className="floor-tally-dot down" />
-                          {bay.blocked} blocked
-                        </span>
-                      </>
-                    )}
+                      ) : (
+                        <>
+                          <span>
+                            <i className="floor-tally-dot info" />
+                            {bay.working} working
+                          </span>
+                          <span>
+                            <i className="floor-tally-dot warn" />
+                            {bay.waiting} waiting
+                          </span>
+                          <span>
+                            <i className="floor-tally-dot down" />
+                            {bay.blocked} blocked
+                          </span>
+                        </>
+                      )}
+                    </div>
+                    <button
+                      aria-controls={bayContentId}
+                      aria-expanded={!collapsed}
+                      aria-label={`${collapsed ? "Expand" : "Collapse"} ${bay.name} bay`}
+                      className="floor-bay-toggle"
+                      onClick={() => toggleBay(bay.id)}
+                      type="button"
+                    >
+                      <span aria-hidden="true">{collapsed ? "+" : "−"}</span>
+                    </button>
                   </div>
-                </div>
-                <div className="floor-track">
-                  <FloorZone className="bench" label="Bench">
-                    {bay.bench.length ? (
-                      bay.bench
-                        .slice(0, 3)
-                        .map((entry) => (
-                          <FloorWorkRow
-                            entry={entry}
-                            key={entry.id}
-                            onOpen={open}
-                            stale={stale}
-                          />
-                        ))
-                    ) : (
-                      <EmptyRow label="No planned work" />
-                    )}
-                    {bay.bench.length > 3 && (
-                      <button
-                        className="floor-more"
-                        onClick={() => open({ projectId: bay.id })}
-                        type="button"
-                      >
-                        +{bay.bench.length - 3} more planned
-                      </button>
-                    )}
-                  </FloorZone>
-                  <FloorZone className="stations" label="Stations">
-                    {bay.stations.length ? (
-                      bay.stations
-                        .slice(0, 4)
-                        .map((entry) => (
-                          <FloorWorkRow
-                            entry={entry}
-                            key={entry.id}
-                            onOpen={open}
-                            stale={stale}
-                          />
-                        ))
-                    ) : (
-                      <EmptyRow label="Station open" />
-                    )}
-                    {bay.stations.length > 4 && (
-                      <button
-                        className="floor-more"
-                        onClick={() => open({ projectId: bay.id })}
-                        type="button"
-                      >
-                        +{bay.stations.length - 4} more working
-                      </button>
-                    )}
-                  </FloorZone>
-                  <FloorZone
-                    className={`counter${bay.counter.length ? " hot" : ""}`}
-                    label="Counter · stamp"
+                  <div
+                    className="floor-track"
+                    hidden={collapsed}
+                    id={bayContentId}
                   >
-                    {bay.counter.slice(0, 3).map((paper) => (
-                      <button
-                        className={`floor-paper${ageClass(paper)}`}
-                        key={paper.id}
-                        onClick={(event) =>
-                          openReview(paper, event.currentTarget)
-                        }
-                        type="button"
-                      >
-                        <span className="floor-slot" aria-hidden="true" />
-                        <span className="floor-paper-name">
-                          <span className="floor-ref">{paper.simpleId}</span>
-                          {paper.name}
-                        </span>
-                        <span className="floor-paper-age">
-                          {paper.ageLabel}
-                        </span>
-                      </button>
-                    ))}
-                    {bay.counter.length > 3 && (
-                      <button
-                        className="floor-more"
-                        onClick={() => open(bay.counter[3]!)}
-                        type="button"
-                      >
-                        +{bay.counter.length - 3} more waiting
-                      </button>
-                    )}
-                    {!bay.counter.length && (
-                      <p className="floor-more">Nothing waiting</p>
-                    )}
-                  </FloorZone>
-                </div>
-              </article>
-            ))
+                    <FloorZone className="bench" label="Bench">
+                      {bay.bench.length ? (
+                        bay.bench
+                          .slice(0, 3)
+                          .map((entry) => (
+                            <FloorWorkRow
+                              entry={entry}
+                              key={entry.id}
+                              onOpen={open}
+                              stale={stale}
+                            />
+                          ))
+                      ) : (
+                        <EmptyRow label="No planned work" />
+                      )}
+                      {bay.bench.length > 3 && (
+                        <button
+                          className="floor-more"
+                          onClick={() => open({ projectId: bay.id })}
+                          type="button"
+                        >
+                          +{bay.bench.length - 3} more planned
+                        </button>
+                      )}
+                    </FloorZone>
+                    <FloorZone className="stations" label="Stations">
+                      {bay.stations.length ? (
+                        bay.stations
+                          .slice(0, 4)
+                          .map((entry) => (
+                            <FloorWorkRow
+                              entry={entry}
+                              key={entry.id}
+                              onOpen={open}
+                              stale={stale}
+                            />
+                          ))
+                      ) : (
+                        <EmptyRow label="Station open" />
+                      )}
+                      {bay.stations.length > 4 && (
+                        <button
+                          className="floor-more"
+                          onClick={() => open({ projectId: bay.id })}
+                          type="button"
+                        >
+                          +{bay.stations.length - 4} more working
+                        </button>
+                      )}
+                    </FloorZone>
+                    <FloorZone
+                      className={`counter${bay.counter.length ? " hot" : ""}`}
+                      label="Counter · stamp"
+                    >
+                      {bay.counter.slice(0, 3).map((paper) => (
+                        <button
+                          className={`floor-paper${ageClass(paper)}`}
+                          key={paper.id}
+                          onClick={(event) =>
+                            openReview(paper, event.currentTarget)
+                          }
+                          type="button"
+                        >
+                          <span className="floor-slot" aria-hidden="true" />
+                          <span className="floor-paper-name">
+                            <span className="floor-ref">{paper.simpleId}</span>
+                            {paper.name}
+                          </span>
+                          <span className="floor-paper-age">
+                            {paper.ageLabel}
+                          </span>
+                        </button>
+                      ))}
+                      {bay.counter.length > 3 && (
+                        <button
+                          className="floor-more"
+                          onClick={() => open(bay.counter[3]!)}
+                          type="button"
+                        >
+                          +{bay.counter.length - 3} more waiting
+                        </button>
+                      )}
+                      {!bay.counter.length && (
+                        <p className="floor-more">Nothing waiting</p>
+                      )}
+                    </FloorZone>
+                  </div>
+                </article>
+              );
+            })
           ) : (
             <div className="floor-notice">
               {loading

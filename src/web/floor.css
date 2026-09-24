@@ -197,6 +197,27 @@
   color: var(--accent);
 }
 
+.floor-bay-toggle {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-chip);
+  color: var(--ink-dim);
+  display: grid;
+  flex: 0 0 44px;
+  font: 600 1rem/1 var(--mono);
+  height: 44px;
+  justify-content: center;
+  padding: 0;
+  width: 44px;
+}
+
+.floor-bay-toggle:hover,
+.floor-bay-toggle:focus-visible {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
 .floor-tally {
   align-items: center;
   color: var(--ink-dim);
@@ -240,6 +261,10 @@
   display: grid;
   grid-template-rows: auto 1fr auto;
   min-height: 0;
+}
+
+.floor-track[hidden] {
+  display: none;
 }
 
 .floor-zone {

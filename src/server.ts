@@ -34,7 +34,8 @@ import {
 } from "./github";
 import { createT3Coordinator } from "./t3-coordinator";
 import { normalizeT3BaseUrl, type T3ActivityReader } from "./t3";
-import { FLOOR_DEFAULT_TIMEZONE } from "./floor";
+import { FLOOR_DEFAULT_TIMEZONE, type FloorSnapshot } from "./floor";
+import { createFloorUpdateBus, type FloorUpdateBus } from "./floor-updates";
 import { resolveT3AccessToken } from "./t3-credential";
 import {
   DEFAULT_T3_MACHINE_ID,
@@ -153,10 +154,16 @@ class ProjectUpdateBus {
     string,
     Set<(snapshot: DashboardSnapshot) => void>
   >();
+  private readonly invalidators = new Set<() => void>();
 
   constructor(
     private readonly application: ReturnType<typeof createFactoryApplication>,
   ) {}
+
+  onPublish(invalidator: () => void): () => void {
+    this.invalidators.add(invalidator);
+    return () => this.invalidators.delete(invalidator);
+  }
 
   subscribe(
     projectId: string,
@@ -172,6 +179,7 @@ class ProjectUpdateBus {
   }
 
   publish(projectId: string): DashboardSnapshot | undefined {
+    this.invalidators.forEach((invalidate) => invalidate());
     const listeners = this.listeners.get(projectId);
     if (!listeners || listeners.size === 0) return undefined;
     const snapshot = this.application.getDashboardSnapshot(projectId);
@@ -180,6 +188,7 @@ class ProjectUpdateBus {
   }
 
   publishAll(): void {
+    this.invalidators.forEach((invalidate) => invalidate());
     if (this.listeners.size === 0) return;
     const projectIds = new Set(
       this.application.listProjects().map(({ id }) => id),
@@ -432,6 +441,13 @@ function createRouter(
   mutationMutex = createMutationMutex(),
   backupRestore: BackupRestoreCoordinator,
   t3ConnectionStore: ReturnType<typeof createT3ConnectionStore>,
+  projectUpdates: ProjectUpdateBus,
+  floorUpdates: FloorUpdateBus,
+  loadFloorSnapshot: (input: {
+    projectIds?: readonly string[];
+    sourceId?: string;
+    timezone?: string;
+  }) => Promise<FloorSnapshot>,
 ) {
   const sourceAwareCoordinator = t3Coordinator;
   const resolveSourceForContext = (
@@ -515,7 +531,6 @@ function createRouter(
       "Provide exactly one Task or Subtask ID.",
     );
 
-  const projectUpdates = new ProjectUpdateBus(application);
   const serializedMutation = trpc.middleware(async ({ next }) => {
     try {
       return await mutationMutex.run(async () => {
@@ -753,13 +768,15 @@ function createRouter(
           }),
         )
         .use(serializedMutation)
-        .mutation(({ ctx, input }) =>
-          withContextDashboard(
+        .mutation(({ ctx, input }) => {
+          const project = application.createProject(input);
+          projectUpdates.publishAll();
+          return withContextDashboard(
             ctx,
-            application.createProject(input),
+            project,
             application.getDashboardSnapshot(),
-          ),
-        ),
+          );
+        }),
       update: humanProcedure()
         .input(
           z.object({
@@ -832,26 +849,21 @@ function createRouter(
           const sourceId = resolveSourceForContext(ctx, input.sourceId, {
             requireMachineSource: true,
           });
-          const projects = application
-            .listProjects()
-            .filter(
-              (project) =>
-                !ctx.machine || ctx.machine.projectIds.includes(project.id),
-            );
-          const activities = await Promise.all(
-            projects.map(async (project) => ({
-              activity: await sourceAwareCoordinator.projectActivity(
-                project.id,
-                sourceId,
-              ),
-              projectId: project.id,
-            })),
-          );
-          return application.getFloorSnapshot({
-            activities,
-            projectIds: projects.map((project) => project.id),
+          return loadFloorSnapshot({
+            projectIds: ctx.machine?.projectIds,
+            sourceId,
             timezone: input.timezone,
           });
+        }),
+      floorUpdates: humanProcedure()
+        .input(z.object({}).optional())
+        .subscription(() => {
+          return observable<FloorSnapshot>((emit) =>
+            floorUpdates.subscribe(
+              (snapshot) => emit.next(snapshot),
+              (error) => emit.error(error),
+            ),
+          );
         }),
       attention: scopedProcedure().query(({ ctx }) => {
         const attention = application.getAttentionProjection();
@@ -1050,6 +1062,7 @@ function createRouter(
               sourceAwareCoordinator.replaceSources(
                 t3ConnectionStore.getSources(),
               );
+              projectUpdates.publishAll();
               return { source };
             } catch (error) {
               const message =
@@ -1745,6 +1758,7 @@ export type FactoryServerOptions = {
   backupService?: BackupService;
   databasePath: string;
   environment?: FactoryEnvironment;
+  floorUpdatesIntervalMs?: number;
   githubToken?: string;
   hostname: string;
   operator?: FactoryOperator;
@@ -1900,6 +1914,7 @@ export function createFactoryServer({
   allowedOrigins = [],
   databasePath = "factory.sqlite",
   environment: configuredFactoryEnvironment,
+  floorUpdatesIntervalMs = 5_000,
   githubStatusReader,
   githubToken,
   hostname = "127.0.0.1",
@@ -1923,6 +1938,7 @@ export function createFactoryServer({
   allowedOrigins?: string[];
   databasePath?: string;
   environment?: FactoryEnvironment;
+  floorUpdatesIntervalMs?: number;
   githubStatusReader?: GitHubStatusReader;
   githubToken?: string;
   hostname?: string;
@@ -2014,6 +2030,41 @@ export function createFactoryServer({
     application,
     sources: effectiveT3Sources,
   });
+  const loadFloorSnapshot = async ({
+    projectIds,
+    sourceId,
+    timezone,
+  }: {
+    projectIds?: readonly string[];
+    sourceId?: string;
+    timezone?: string;
+  }): Promise<FloorSnapshot> => {
+    const allowedProjectIds =
+      projectIds === undefined ? undefined : new Set(projectIds);
+    const projects = application
+      .listProjects()
+      .filter(
+        (project) =>
+          allowedProjectIds === undefined || allowedProjectIds.has(project.id),
+      );
+    const activities = await Promise.all(
+      projects.map(async (project) => ({
+        activity: await t3Coordinator.projectActivity(project.id, sourceId),
+        projectId: project.id,
+      })),
+    );
+    return application.getFloorSnapshot({
+      activities,
+      projectIds: projects.map((project) => project.id),
+      timezone,
+    });
+  };
+  const projectUpdates = new ProjectUpdateBus(application);
+  const floorUpdates = createFloorUpdateBus({
+    intervalMs: floorUpdatesIntervalMs,
+    refresh: () => loadFloorSnapshot({}),
+  });
+  projectUpdates.onPublish(floorUpdates.invalidate);
   const router = createRouter(
     application,
     githubStatusReader ?? createGitHubStatusReader({ token: githubToken }),
@@ -2023,6 +2074,9 @@ export function createFactoryServer({
     mutationMutex,
     backupRestore,
     t3ConnectionStore,
+    projectUpdates,
+    floorUpdates,
+    loadFloorSnapshot,
   );
   const deploymentIdentity = {
     apiVersion: FACTORY_API_VERSION,
@@ -2286,6 +2340,7 @@ export function createFactoryServer({
       const timeoutMs = options.timeoutMs ?? shutdownTimeoutMs;
       stopPromise = (async () => {
         backupRestore.stop();
+        floorUpdates.stop();
         await backupStartPromise?.catch(() => undefined);
         return stopServerResources({
           application,

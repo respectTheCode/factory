@@ -233,8 +233,8 @@ fill 3×2 on a 1440 display and 2×3 on a portrait one. No scrolling at
 1080p — the Floor is a display, not a document; overflow within a bay
 collapses to `+N more`. Phone (≤540px): bays stack, the sidecar's Your
 Turn section moves to the top, Shift Log to the bottom, and the
-scoreboard becomes one mono line. The v0.2 list survives as **the
-Ledger**, one tap away, for editing and drag-ordering.
+scoreboard becomes one mono line. Project names open the project detail
+for editing and drag-ordering; the retired Ledger route redirects home.
 
 ### 8.2 Bays
 
@@ -249,6 +249,11 @@ bottom, divided by dashed `--rule` lines:
 | **Bench** | planned and backlog work | seats waiting to be filled |
 | **Stations** | active work, blocked work | where the tokens sit |
 | **Counter** | claims awaiting the stamp | papers stacked for you |
+
+A separate expand/collapse button hides the track while keeping the project
+name and tally visible. Bays start expanded. Collapsed project IDs persist
+in local storage on each device, so reloads and live updates preserve the
+display's layout.
 
 The track is the only sequence the Floor draws, and it is chronological,
 not procedural: work enters at the bench, sits at a station, and lands
@@ -456,12 +461,13 @@ left, 10px gap. Never recolor a letter; never box the mark.
 }
 ```
 
-6. **The Floor** — new `home` view in `main.tsx` fed by the existing
-   attention and portfolio queries plus the T3 shell observation (session
-   status, active turn, pending approvals, pending input, branch); the
-   current home list moves to a `ledger` route. Shift Log needs a
-   server-side event feed (status reports, verifications, turn
-   completions) over the existing WebSocket; the first cut may poll.
+6. **The Floor** — the `home` view in `main.tsx` receives authoritative
+   snapshots through the human-authenticated `projects.floorUpdates`
+   WebSocket subscription. Factory mutations invalidate the shared feed
+   immediately. While viewers are subscribed, one server refresh loop
+   checks T3 observations every five seconds and broadcasts activity,
+   freshness, bays, Your Turn, Shift Log and scoreboard updates together.
+   Reconnecting viewers receive a fresh snapshot before actions are enabled.
 
 ### 12.1 Open decisions
 

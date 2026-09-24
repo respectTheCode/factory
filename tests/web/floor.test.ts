@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
 import type { FloorSnapshot as ServerFloorSnapshot } from "../../src/floor";
-import { normalizeFloorSnapshot } from "../../src/web/floor";
+import {
+  normalizeFloorSnapshot,
+  parseCollapsedBayIds,
+  readCollapsedBayIds,
+  serializeCollapsedBayIds,
+  toggleCollapsedBayIds,
+  writeCollapsedBayIds,
+} from "../../src/web/floor";
 
 const target = {
   projectId: "project-1",
@@ -146,5 +153,53 @@ describe("Floor projection view model", () => {
     expect(view.stale).toBe(true);
     expect(view.yourTurn.items[0]?.kind).toBe("unblock");
     expect(view.yourTurn.items[0]?.paper).toBeUndefined();
+  });
+});
+
+describe("Floor bay persistence", () => {
+  test("round trips versioned collapsed IDs and toggles one project", () => {
+    let stored: string | null = null;
+    const storage = {
+      getItem: () => stored,
+      setItem: (_key: string, value: string) => {
+        stored = value;
+      },
+    };
+    const initial = new Set(["project-b", "project-a"]);
+
+    expect(serializeCollapsedBayIds(initial)).toBe(
+      '{"collapsed":["project-a","project-b"],"version":1}',
+    );
+    writeCollapsedBayIds(initial, storage);
+    expect(readCollapsedBayIds(storage)).toEqual(initial);
+    expect(toggleCollapsedBayIds(initial, "project-a")).toEqual(
+      new Set(["project-b"]),
+    );
+    expect(toggleCollapsedBayIds(initial, "project-c")).toEqual(
+      new Set(["project-b", "project-a", "project-c"]),
+    );
+  });
+
+  test("fails closed for malformed, old-version, and unavailable storage", () => {
+    expect(parseCollapsedBayIds("not json")).toEqual(new Set());
+    expect(
+      parseCollapsedBayIds('{"collapsed":["project-a"],"version":0}'),
+    ).toEqual(new Set());
+    expect(
+      parseCollapsedBayIds('{"collapsed":["project-a",7,""],"version":1}'),
+    ).toEqual(new Set(["project-a"]));
+
+    const unavailable = {
+      getItem: () => {
+        throw new Error("storage unavailable");
+      },
+      setItem: () => {
+        throw new Error("storage unavailable");
+      },
+    };
+    expect(readCollapsedBayIds(unavailable)).toEqual(new Set());
+    expect(() =>
+      writeCollapsedBayIds(new Set(["project-a"]), unavailable),
+    ).not.toThrow();
   });
 });

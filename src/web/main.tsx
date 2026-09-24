@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import type { DashboardSnapshot } from "../application";
+import type { FloorSnapshot as ServerFloorSnapshot } from "../floor";
 import type { FactoryRouter } from "../server";
 import type { GitHubStatusSnapshot } from "../github";
 import type {
@@ -72,6 +73,8 @@ import { ThreadDots } from "./thread-dots";
 import "./styles.css";
 
 type ProjectSummary = { id: string; name: string };
+type FloorViewSnapshot = ReturnType<typeof normalizeFloorSnapshot>;
+type FloorConnections = ServerFloorSnapshot["connections"];
 type WorkCounts = {
   backlog: number;
   planned: number;
@@ -251,6 +254,22 @@ const DRAG_TAIL = "__factory_reorder_tail__";
 
 function isLiveWorkState(state: WorkStatus): state is LiveWorkState {
   return (liveWorkStatusOrder as readonly string[]).includes(state);
+}
+
+function summarizeFloorConnections(
+  connections: FloorConnections | undefined,
+): ReturnType<typeof summarizeT3Connections> {
+  if (!connections) return { state: "unknown" };
+  const configured = connections.filter(
+    (connection) => connection.state !== "not_configured",
+  );
+  return {
+    connected: configured.filter(
+      (connection) => connection.state === "connected",
+    ).length,
+    state: "ready",
+    total: configured.length,
+  };
 }
 
 type TRPCClient = ReturnType<typeof createTRPCProxyClient<FactoryRouter>>;
@@ -517,6 +536,7 @@ function Dashboard() {
   const [floorSnapshot, setFloorSnapshot] = useState<ReturnType<
     typeof normalizeFloorSnapshot
   > | null>(null);
+  const [floorAuthoritative, setFloorAuthoritative] = useState(false);
   const [floorError, setFloorError] = useState<string | null>(null);
   const [floorLoading, setFloorLoading] = useState(false);
   const [portfolioStatus, setPortfolioStatus] =
@@ -548,6 +568,9 @@ function Dashboard() {
   const [t3Status, setT3Status] = useState<T3StatusResult | undefined>(
     undefined,
   );
+  const [floorConnections, setFloorConnections] = useState<
+    FloorConnections | undefined
+  >(undefined);
   const [t3Busy, setT3Busy] = useState(false);
   const [t3ThreadDetails, setT3ThreadDetails] = useState<
     Record<string, ObservedThreadDetail>
@@ -571,6 +594,9 @@ function Dashboard() {
   const [webSocketGeneration, setWebSocketGeneration] = useState(0);
   const trpc = useRef<TRPCClient | null>(null);
   const subscriptionCleanup = useRef<(() => void) | null>(null);
+  const floorSubscriptionCleanup = useRef<(() => void) | null>(null);
+  const floorSubscriptionGeneration = useRef(0);
+  const floorSubscriptionRetry = useRef<number | null>(null);
   const t3RefreshGeneration = useRef(0);
   const t3StatusGeneration = useRef(0);
   const t3StatusRequest = useRef<symbol | null>(null);
@@ -579,8 +605,15 @@ function Dashboard() {
   const floorRequestPromise = useRef<Promise<
     ReturnType<typeof normalizeFloorSnapshot> | undefined
   > | null>(null);
+  const floorSnapshotRef = useRef<FloorViewSnapshot | null>(null);
+  const floorAuthoritativeRef = useRef(false);
   const webSocketGenerationRef = useRef(webSocketGeneration);
   webSocketGenerationRef.current = webSocketGeneration;
+
+  const updateFloorAuthority = (value: boolean) => {
+    floorAuthoritativeRef.current = value;
+    setFloorAuthoritative(value);
+  };
 
   useEffect(() => {
     const dismissOpenMenus = (event: PointerEvent) => {
@@ -642,8 +675,9 @@ function Dashboard() {
           trpc.current !== client ||
           floorRefreshGeneration.current !== generation
         )
-          return undefined;
+          return floorSnapshotRef.current ?? undefined;
         const next = normalizeFloorSnapshot(result);
+        floorSnapshotRef.current = next;
         setFloorSnapshot(next);
         setFloorError(null);
         return next;
@@ -652,7 +686,7 @@ function Dashboard() {
           trpc.current !== client ||
           floorRefreshGeneration.current !== generation
         )
-          return undefined;
+          return floorSnapshotRef.current ?? undefined;
         setFloorError(
           error instanceof Error
             ? error.message
@@ -677,6 +711,129 @@ function Dashboard() {
         floorRequestPromise.current = null;
       }
     }
+  };
+
+  const clearFloorState = (error?: string | null) => {
+    floorRefreshGeneration.current += 1;
+    floorRequest.current = null;
+    floorRequestPromise.current = null;
+    floorSnapshotRef.current = null;
+    setFloorConnections(undefined);
+    setFloorSnapshot(null);
+    updateFloorAuthority(false);
+    if (error !== undefined) setFloorError(error);
+    setFloorLoading(false);
+  };
+
+  const stopFloorSubscription = (
+    options: {
+      clear?: boolean;
+      error?: string;
+    } = {},
+  ) => {
+    floorSubscriptionGeneration.current += 1;
+    if (floorSubscriptionRetry.current !== null) {
+      window.clearTimeout(floorSubscriptionRetry.current);
+      floorSubscriptionRetry.current = null;
+    }
+    const cleanup = floorSubscriptionCleanup.current;
+    floorSubscriptionCleanup.current = null;
+    cleanup?.();
+    if (options.clear) clearFloorState(options.error);
+  };
+
+  const scheduleFloorSubscriptionRetry = (
+    client: TRPCClient,
+    generation: number,
+  ) => {
+    if (floorSubscriptionRetry.current !== null) return;
+    floorSubscriptionRetry.current = window.setTimeout(() => {
+      floorSubscriptionRetry.current = null;
+      if (
+        trpc.current !== client ||
+        floorSubscriptionGeneration.current !== generation ||
+        connection.snapshot().state !== "connected"
+      )
+        return;
+      const cleanup = floorSubscriptionCleanup.current;
+      floorSubscriptionCleanup.current = null;
+      cleanup?.();
+      startFloorSubscription(client);
+    }, 1_000);
+  };
+
+  const startFloorSubscription = (client: TRPCClient) => {
+    const generation = ++floorSubscriptionGeneration.current;
+    const isCurrent = () =>
+      trpc.current === client &&
+      floorSubscriptionGeneration.current === generation;
+    const subscription = client.projects.floorUpdates.subscribe(
+      {},
+      {
+        onConnectionStateChange: (state) => {
+          if (!isCurrent()) return;
+          if (state.state !== "idle") {
+            floorRefreshGeneration.current += 1;
+            updateFloorAuthority(false);
+            setFloorConnections(undefined);
+            setFloorLoading(true);
+          }
+        },
+        onData: (result) => {
+          if (!isCurrent()) return;
+          // A pushed snapshot is newer authority than any outstanding query.
+          floorRefreshGeneration.current += 1;
+          const next = normalizeFloorSnapshot(result);
+          floorSnapshotRef.current = next;
+          setFloorConnections(result.connections);
+          setFloorSnapshot(next);
+          updateFloorAuthority(true);
+          setFloorError(null);
+          setFloorLoading(false);
+          connection.markAuthoritativeRefresh();
+          setSnapshot(connection.snapshot());
+        },
+        onError: (error) => {
+          if (!isCurrent()) return;
+          floorRefreshGeneration.current += 1;
+          updateFloorAuthority(false);
+          setFloorConnections(undefined);
+          setFloorError(
+            error instanceof Error
+              ? error.message
+              : "Floor data stream could not be refreshed.",
+          );
+          setFloorSnapshot((current) => {
+            if (!current) return current;
+            const next = { ...current, stale: true };
+            floorSnapshotRef.current = next;
+            return next;
+          });
+          setFloorLoading(false);
+          scheduleFloorSubscriptionRetry(client, generation);
+        },
+        onComplete: () => {
+          if (!isCurrent()) return;
+          floorRefreshGeneration.current += 1;
+          updateFloorAuthority(false);
+          setFloorConnections(undefined);
+          setFloorError("Floor data stream closed; reconnecting.");
+          setFloorSnapshot((current) => {
+            if (!current) return current;
+            const next = { ...current, stale: true };
+            floorSnapshotRef.current = next;
+            return next;
+          });
+          setFloorLoading(false);
+          scheduleFloorSubscriptionRetry(client, generation);
+        },
+        onStarted: () => {
+          if (!isCurrent()) return;
+          setFloorLoading(true);
+        },
+      },
+    );
+    floorSubscriptionCleanup.current = () => subscription.unsubscribe();
   };
 
   const refreshT3Status = async (client: TRPCClient) => {
@@ -740,14 +897,12 @@ function Dashboard() {
         t3StatusRequest.current = null;
         subscriptionCleanup.current?.();
         subscriptionCleanup.current = null;
+        stopFloorSubscription({
+          clear: true,
+          error: "Factory connection closed; Floor data is unavailable.",
+        });
         connection.markDisconnected();
         setProjects(null);
-        floorRefreshGeneration.current += 1;
-        floorRequest.current = null;
-        floorRequestPromise.current = null;
-        setFloorSnapshot(null);
-        setFloorError("Factory connection closed; Floor data is unavailable.");
-        setFloorLoading(false);
         setPortfolioStatus(null);
         setProjectDetail(null);
         setTaskDetails({});
@@ -757,6 +912,7 @@ function Dashboard() {
         setSubtaskHistories({});
         setGithubStatuses({});
         setT3Activity(null);
+        setFloorConnections(undefined);
         setT3Status(undefined);
         setT3Busy(false);
         setT3ThreadDetails({});
@@ -767,8 +923,6 @@ function Dashboard() {
         if (webSocketGenerationRef.current !== generation) return;
         connection.markConnected(new Date());
         setSnapshot(connection.snapshot());
-        const client = trpc.current;
-        if (client) void refreshT3Status(client);
         void Promise.all([
           trpc.current?.projects.list.query(),
           trpc.current?.projects.portfolio.query(),
@@ -792,6 +946,7 @@ function Dashboard() {
       setT3Status(undefined);
       subscriptionCleanup.current?.();
       subscriptionCleanup.current = null;
+      stopFloorSubscription({ clear: true });
       void client.close();
     };
   }, [connection, human, sessionLoading, webSocketGeneration]);
@@ -806,12 +961,13 @@ function Dashboard() {
       return;
     const client = trpc.current;
     if (!client) return;
-    void refreshFloor(client);
-    const interval = window.setInterval(() => {
-      if (connection.snapshot().state === "connected")
-        void refreshFloor(client);
-    }, 5_000);
-    return () => window.clearInterval(interval);
+    stopFloorSubscription();
+    updateFloorAuthority(false);
+    setFloorConnections(undefined);
+    setFloorError(null);
+    setFloorLoading(true);
+    startFloorSubscription(client);
+    return () => stopFloorSubscription({ clear: true });
   }, [
     connection,
     human,
@@ -822,13 +978,16 @@ function Dashboard() {
   ]);
 
   useEffect(() => {
-    if (sessionLoading || !human) return;
+    if (sessionLoading || !human || view.screen === "home") return;
     let active = true;
     const pollT3Status = () => {
       if (!active || connection.snapshot().state !== "connected") return;
       const client = trpc.current;
       if (client) void refreshT3Status(client);
     };
+    // Floor owns live T3 freshness on home; keep this query for the shared
+    // header on project, connection, and backup screens where Floor is absent.
+    pollT3Status();
     const interval = window.setInterval(
       pollT3Status,
       T3_STATUS_POLL_INTERVAL_MS,
@@ -837,7 +996,11 @@ function Dashboard() {
       active = false;
       window.clearInterval(interval);
     };
-  }, [connection, human, sessionLoading, webSocketGeneration]);
+  }, [connection, human, sessionLoading, view.screen, webSocketGeneration]);
+
+  useEffect(() => {
+    if (view.screen === "home") setT3Status(undefined);
+  }, [view.screen]);
 
   const refreshGitHubStatuses = async (detail: ProjectDetail) => {
     const client = trpc.current;
@@ -1266,12 +1429,28 @@ function Dashboard() {
 
   const stampFloorPaper = async (paper: FloorPaper) => {
     const client = trpc.current;
-    if (!client || !paper.reportId || !snapshot.canMutate || busy) return;
+    if (
+      !client ||
+      !paper.reportId ||
+      !snapshot.canMutate ||
+      !floorAuthoritativeRef.current ||
+      busy
+    )
+      return;
+    const streamGeneration = floorSubscriptionGeneration.current;
     const latest = await refreshFloor(client);
     const currentClaim = latest?.projects
       .flatMap((project) => project.counter)
       .find((claim) => claim.reportId === paper.reportId);
-    if (!currentClaim || !floorPaperMatches(currentClaim, paper)) {
+    if (
+      trpc.current !== client ||
+      connection.snapshot().state !== "connected" ||
+      floorSubscriptionGeneration.current !== streamGeneration ||
+      !floorAuthoritativeRef.current ||
+      !latest ||
+      !currentClaim ||
+      !floorPaperMatches(currentClaim, paper)
+    ) {
       const message =
         "This report changed while you were reviewing it. Refresh the Floor and review the current claim and evidence.";
       setFloorError(message);
@@ -1720,6 +1899,8 @@ function Dashboard() {
         setSessionError(result.error ?? "Sign out failed.");
         return;
       }
+      clearFloorState();
+      stopFloorSubscription();
       setHuman(null);
       setWebSocketGeneration((current) => current + 1);
     } catch (error: unknown) {
@@ -1866,7 +2047,14 @@ function Dashboard() {
             ) : null}
             <ConnectionIndicator
               snapshot={snapshot}
-              t3Status={snapshot.state === "connected" ? t3Status : undefined}
+              floorConnections={
+                view.screen === "home" ? floorConnections : undefined
+              }
+              t3Status={
+                view.screen !== "home" && snapshot.state === "connected"
+                  ? t3Status
+                  : undefined
+              }
             />
           </div>
         </header>
@@ -1876,7 +2064,11 @@ function Dashboard() {
         {view.screen === "home" && (
           <Floor
             busy={busy}
-            canMutate={snapshot.canMutate && snapshot.state === "connected"}
+            canMutate={
+              snapshot.canMutate &&
+              snapshot.state === "connected" &&
+              floorAuthoritative
+            }
             connected={snapshot.state === "connected"}
             error={floorError}
             loading={floorLoading}
@@ -3669,9 +3861,11 @@ function Dashboard() {
 }
 
 function ConnectionIndicator({
+  floorConnections,
   snapshot,
   t3Status,
 }: {
+  floorConnections?: FloorConnections;
   snapshot: ConnectionSnapshot;
   t3Status: T3StatusResult | undefined;
 }) {
@@ -3681,7 +3875,9 @@ function ConnectionIndicator({
     lastConnected && snapshot.state !== "connected"
       ? `last connected ${lastConnected}`
       : undefined;
-  const t3Summary = summarizeT3Connections(t3Status);
+  const t3Summary = floorConnections
+    ? summarizeFloorConnections(floorConnections)
+    : summarizeT3Connections(t3Status);
   const t3Label = t3ConnectionLabel(t3Summary);
   const t3Health =
     t3Summary.state === "unknown"
