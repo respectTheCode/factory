@@ -2032,13 +2032,20 @@ export function createFactoryServer({
       ? { environment: factoryEnvironment }
       : {}),
   };
-  const optionalIntegrations = {
-    github: githubToken ? "configured" : "unavailable",
-    t3:
-      t3ConnectionStore.list().length || _t3BaseUrl || _t3AccessToken
-        ? "configured"
-        : "unavailable",
-  } as const;
+  const getOptionalIntegrations = () => {
+    const configuredConnections = t3ConnectionStore.list();
+    const t3Configured =
+      Boolean(_t3BaseUrl || _t3AccessToken || configuredT3Sources?.length) ||
+      configuredConnections.some(
+        (source) =>
+          source.sourceId !== LEGACY_T3_SOURCE_ID || source.tokenConfigured,
+      );
+
+    return {
+      github: githubToken ? "configured" : "unavailable",
+      t3: t3Configured ? "configured" : "unavailable",
+    } as const;
+  };
   const checkReadiness = (): {
     database: "ok" | "unavailable";
     staticAssets: "ok" | "unavailable";
@@ -2200,7 +2207,7 @@ export function createFactoryServer({
         return jsonResponse(
           {
             checks,
-            integrations: optionalIntegrations,
+            integrations: getOptionalIntegrations(),
             ready,
             status: ready ? "ready" : "not_ready",
           },

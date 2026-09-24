@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 
 import { createFactoryApplication } from "../../src/application";
 import { createFactoryServer, getFactoryServerOptions } from "../../src/server";
+import { createTestServer, loginTestOperator } from "./helpers";
 
 function temporaryDirectory(prefix = "factory-server-runtime-"): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -138,11 +139,13 @@ describe("Factory server runtime", () => {
     }
   });
 
-  test("reports optional integrations as degraded without blocking readiness", async () => {
-    const server = createFactoryServer({
+  test("reports optional integrations and updates readiness after a T3 source is added", async () => {
+    const directory = temporaryDirectory("factory-server-readiness-");
+    const server = createTestServer({
       databasePath: ":memory:",
       environment: "pilot",
       port: 0,
+      t3ConnectionsDirectory: join(directory, "t3-connections"),
     });
 
     try {
@@ -159,6 +162,33 @@ describe("Factory server runtime", () => {
         status: "ready",
       });
 
+      const cookie = await loginTestOperator(server);
+      const saved = await fetch(
+        new URL("/api/t3.connections.save", server.url),
+        {
+          body: JSON.stringify({
+            accessToken: "t3-readiness-test-token",
+            baseUrl: "http://127.0.0.1:3774",
+            label: "Readiness source",
+            machineId: "readiness-machine",
+          }),
+          headers: {
+            "Content-Type": "application/json",
+            Cookie: cookie,
+          },
+          method: "POST",
+        },
+      );
+      expect(saved.status).toBe(200);
+
+      const readinessWithT3 = await fetch(new URL("/readyz", server.url));
+      expect(readinessWithT3.status).toBe(200);
+      expect(await readinessWithT3.json()).toMatchObject({
+        integrations: { github: "unavailable", t3: "configured" },
+        ready: true,
+        status: "ready",
+      });
+
       for (const pathname of ["/version", "/deployment.json"]) {
         const response = await fetch(new URL(pathname, server.url));
         expect(response.status).toBe(200);
@@ -170,6 +200,7 @@ describe("Factory server runtime", () => {
       }
     } finally {
       await server.stop();
+      rmSync(directory, { force: true, recursive: true });
     }
   });
 
