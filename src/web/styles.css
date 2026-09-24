@@ -2873,6 +2873,16 @@ option {
   border-radius: var(--r-chip);
   color: var(--ink);
   min-height: 44px;
+  text-decoration: none;
+}
+.connection:hover,
+.connection:focus-visible {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+.connection:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .connection-dot {
   background: var(--sig-warn);

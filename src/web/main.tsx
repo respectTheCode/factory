@@ -2013,21 +2013,6 @@ function Dashboard() {
             >
               Backups
             </a>
-            <a
-              aria-current={view.screen === "connections" ? "page" : undefined}
-              className={
-                view.screen === "connections"
-                  ? "global-nav-link selected"
-                  : "global-nav-link"
-              }
-              href="/connections"
-              onClick={(event) => {
-                event.preventDefault();
-                openConnections();
-              }}
-            >
-              T3 connections
-            </a>
           </nav>
           <div className="header-status">
             {sessionLoading ? (
@@ -2047,6 +2032,7 @@ function Dashboard() {
             ) : null}
             <ConnectionIndicator
               snapshot={snapshot}
+              onOpenConnections={openConnections}
               floorConnections={
                 view.screen === "home" ? floorConnections : undefined
               }
@@ -3862,10 +3848,12 @@ function Dashboard() {
 
 function ConnectionIndicator({
   floorConnections,
+  onOpenConnections,
   snapshot,
   t3Status,
 }: {
   floorConnections?: FloorConnections;
+  onOpenConnections: () => void;
   snapshot: ConnectionSnapshot;
   t3Status: T3StatusResult | undefined;
 }) {
@@ -3889,9 +3877,10 @@ function ConnectionIndicator({
           : t3Summary.connected === t3Summary.total
             ? "healthy"
             : "partial";
+  const connectionLabel = `T3 connections · ${t3Label} · WebSocket ${websocketState}${lastConnectedLabel ? ` · ${lastConnectedLabel}` : ""}`;
   return (
-    <div
-      aria-label={`${t3Label} · WebSocket ${websocketState}${lastConnectedLabel ? ` · ${lastConnectedLabel}` : ""}`}
+    <a
+      aria-label={connectionLabel}
       aria-live="polite"
       className={`connection ${snapshot.state}`}
       data-t3-connection-state={t3Summary.state}
@@ -3900,7 +3889,21 @@ function ConnectionIndicator({
         t3Summary.state === "ready" ? String(t3Summary.total) : undefined
       }
       data-websocket-state={websocketState}
-      title={`${t3Label} · WebSocket ${websocketState}${lastConnectedLabel ? ` · ${lastConnectedLabel}` : ""}`}
+      href="/connections"
+      onClick={(event) => {
+        if (
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey
+        )
+          return;
+        event.preventDefault();
+        onOpenConnections();
+      }}
+      title={connectionLabel}
     >
       <span className="connection-service">
         <span aria-hidden="true" className="connection-dot t3-dot" />
@@ -3910,7 +3913,7 @@ function ConnectionIndicator({
         <span aria-hidden="true" className="connection-dot websocket-dot" />
         <span>WS</span>
       </span>
-    </div>
+    </a>
   );
 }
 
