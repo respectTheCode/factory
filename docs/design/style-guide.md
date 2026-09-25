@@ -250,10 +250,12 @@ bottom, divided by dashed `--rule` lines:
 | **Stations** | active work, blocked work | where the tokens sit |
 | **Counter** | claims awaiting the stamp | papers stacked for you |
 
-A separate expand/collapse button hides the track while keeping the project
-name and tally visible. Bays start expanded. Collapsed project IDs persist
-in local storage on each device, so reloads and live updates preserve the
-display's layout.
+A horizontal project strip below the Floor header controls which bays are
+visible. Each project bubble toggles its entire card; a separate icon opens
+the project page. Hidden cards occupy no grid space. Projects start visible,
+and hidden project IDs persist in local storage on each device through reloads
+and live updates. Existing collapsed-project preferences carry over as hidden
+projects. Your Turn and the scoreboard continue to cover every project.
 
 The track is the only sequence the Floor draws, and it is chronological,
 not procedural: work enters at the bench, sits at a station, and lands

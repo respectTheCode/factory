@@ -156,8 +156,8 @@ describe("Floor projection view model", () => {
   });
 });
 
-describe("Floor bay persistence", () => {
-  test("round trips versioned collapsed IDs and toggles one project", () => {
+describe("Floor project visibility persistence", () => {
+  test("round trips versioned hidden IDs and toggles one project", () => {
     let stored: string | null = null;
     const storage = {
       getItem: () => stored,

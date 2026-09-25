@@ -463,7 +463,7 @@ export function Floor({
   const [stamping, setStamping] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [projectError, setProjectError] = useState<string | null>(null);
-  const [collapsedBayIds, setCollapsedBayIds] = useState<Set<string>>(() =>
+  const [hiddenBayIds, setHiddenBayIds] = useState<Set<string>>(() =>
     readCollapsedBayIds(),
   );
   const observedEventIds = useRef<Set<string>>(new Set());
@@ -474,8 +474,8 @@ export function Floor({
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
-    writeCollapsedBayIds(collapsedBayIds);
-  }, [collapsedBayIds]);
+    writeCollapsedBayIds(hiddenBayIds);
+  }, [hiddenBayIds]);
   useEffect(() => {
     const entries = snapshot?.shiftLog;
     if (!entries) return;
@@ -493,6 +493,8 @@ export function Floor({
   const visibleTurnItems = showAllTurn
     ? (snapshot?.yourTurn.items ?? [])
     : (snapshot?.yourTurn.items.slice(0, 5) ?? []);
+  const visibleProjects =
+    snapshot?.projects.filter((bay) => !hiddenBayIds.has(bay.id)) ?? [];
   const freshness = useMemo(() => {
     const observed = date(snapshot?.generatedAt);
     return observed
@@ -508,8 +510,8 @@ export function Floor({
   const open = (target: FloorTarget) => {
     if (target.projectId) onOpenTarget(target);
   };
-  const toggleBay = (projectId: string) => {
-    setCollapsedBayIds((current) => toggleCollapsedBayIds(current, projectId));
+  const toggleBayVisibility = (projectId: string) => {
+    setHiddenBayIds((current) => toggleCollapsedBayIds(current, projectId));
   };
   const openReview = (paper: FloorPaper, trigger: HTMLElement) => {
     reviewTrigger.current = trigger;
@@ -610,6 +612,57 @@ export function Floor({
           {stale && <span className="floor-stale"> · stale</span>}
         </div>
       </div>
+      {snapshot?.projects.length ? (
+        <nav className="floor-project-strip" aria-label="Projects">
+          {snapshot.projects.map((bay) => {
+            const hidden = hiddenBayIds.has(bay.id);
+            const toggleLabel = `${hidden ? "Show" : "Hide"} ${bay.name} on the Floor`;
+            return (
+              <div
+                className={`floor-project-chip${hidden ? " hidden" : " visible"}`}
+                key={bay.id}
+              >
+                <button
+                  aria-label={toggleLabel}
+                  aria-pressed={!hidden}
+                  className={`floor-project-toggle${hidden ? " hidden" : " visible"}`}
+                  onClick={() => toggleBayVisibility(bay.id)}
+                  title={toggleLabel}
+                  type="button"
+                >
+                  <span className="floor-project-name">{bay.name}</span>
+                  <span aria-hidden="true" className="floor-project-visibility">
+                    {hidden ? "○" : "✓"}
+                  </span>
+                </button>
+                <button
+                  aria-label={`Open ${bay.name}`}
+                  className="floor-project-open"
+                  onClick={() => open({ projectId: bay.id })}
+                  title={`Open ${bay.name}`}
+                  type="button"
+                >
+                  <svg
+                    aria-hidden="true"
+                    fill="none"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    width="16"
+                  >
+                    <path
+                      d="M9 2h5v5M14 2 7.5 8.5M12 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h4"
+                      stroke="currentColor"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="1.5"
+                    />
+                  </svg>
+                </button>
+              </div>
+            );
+          })}
+        </nav>
+      ) : null}
       {(error || (!connected && !snapshot)) && (
         <div className="floor-notice floor-notice-error" role="alert">
           {error ?? "Floor data is unavailable until Factory reconnects."}
@@ -736,12 +789,10 @@ export function Floor({
         </aside>
         <section className="floor-bays" aria-label="Project bays">
           {snapshot?.projects.length ? (
-            snapshot.projects.map((bay) => {
-              const collapsed = collapsedBayIds.has(bay.id);
-              const bayContentId = `floor-bay-content-${encodeURIComponent(bay.id)}`;
-              return (
+            visibleProjects.length ? (
+              visibleProjects.map((bay) => (
                 <article
-                  className={`floor-bay${bay.quiet ? " quiet" : ""}${bay.counter.length || bay.stations.some((entry) => entry.badge) ? " attention" : ""}${collapsed ? " collapsed" : ""}`}
+                  className={`floor-bay${bay.quiet ? " quiet" : ""}${bay.counter.length || bay.stations.some((entry) => entry.badge) ? " attention" : ""}`}
                   key={bay.id}
                 >
                   <div className="floor-plate">
@@ -778,22 +829,8 @@ export function Floor({
                         </>
                       )}
                     </div>
-                    <button
-                      aria-controls={bayContentId}
-                      aria-expanded={!collapsed}
-                      aria-label={`${collapsed ? "Expand" : "Collapse"} ${bay.name} bay`}
-                      className="floor-bay-toggle"
-                      onClick={() => toggleBay(bay.id)}
-                      type="button"
-                    >
-                      <span aria-hidden="true">{collapsed ? "+" : "−"}</span>
-                    </button>
                   </div>
-                  <div
-                    className="floor-track"
-                    hidden={collapsed}
-                    id={bayContentId}
-                  >
+                  <div className="floor-track">
                     <FloorZone className="bench" label="Bench">
                       {bay.bench.length ? (
                         bay.bench
@@ -882,13 +919,18 @@ export function Floor({
                     </FloorZone>
                   </div>
                 </article>
-              );
-            })
+              ))
+            ) : (
+              <p className="floor-hidden-empty">
+                All {snapshot.projects.length} projects are hidden. Select one
+                above to show its card.
+              </p>
+            )
           ) : (
             <div className="floor-notice">
               {loading
                 ? "Loading observed project bays…"
-                : "No project activity has been observed."}
+                : "No projects are available."}
             </div>
           )}
         </section>
