@@ -42,8 +42,12 @@ digests. Factory copies the snapshot and manifest to a temporary directory on
 NFS, verifies that copy, then publishes it atomically. Retention follows a
 successful backup and only removes Factory-owned backup directories. Unrelated
 files are preserved. Partial work is never offered as a successful restore point.
-Listings verify snapshot contents against their manifests before reporting a
-recovery point as verified. Corrupt copies do not count toward freshness or the
+Listings reuse integrity results for unchanged snapshots for up to 24 hours,
+so routine scheduling does not repeatedly scan the entire archive. The cache
+lives beside the local database and survives service restarts; missing, expired,
+or invalid evidence requires verification. Changes to a snapshot or manifest
+invalidate its cached result immediately. New backups are fully verified before
+publication. Corrupt copies do not count toward freshness or the
 retention quota, so they cannot displace valid recovery points. Restore rechecks
 the selected snapshot and manifest before use. Verification runs in the backup
 worker under the operation timeout; large collections or a slow NAS can take

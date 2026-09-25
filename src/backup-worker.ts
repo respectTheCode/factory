@@ -138,6 +138,38 @@ type OwnedBackup = {
   summary: BackupSummary;
 };
 
+type BackupFileFingerprint = {
+  ctimeNs: string;
+  dev: string;
+  ino: string;
+  mtimeNs: string;
+  size: string;
+};
+
+type BackupFingerprints = {
+  manifest: BackupFileFingerprint;
+  snapshot: BackupFileFingerprint;
+};
+
+type CachedBackupIntegrity = {
+  checkedAt: string;
+  integrity: "verified" | "corrupt";
+  manifest: BackupFileFingerprint;
+  snapshot: BackupFileFingerprint;
+};
+
+type BackupIntegrityCache = {
+  backups: Record<string, CachedBackupIntegrity>;
+  directory: string;
+  directoryIdentity: { dev: string; ino: string };
+  path: string;
+  version: 1;
+  dirty: boolean;
+};
+
+const INTEGRITY_CACHE_SUFFIX = ".backup-integrity-cache.json";
+const INTEGRITY_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 function run(request: BackupWorkerRequest): unknown {
   switch (request.kind) {
     case "create":
@@ -167,6 +199,8 @@ function createBackup(
   const root = requireBackupDirectory(request.directory, request.requireNfs);
   const databasePath = resolve(request.databasePath);
   reclaimOwnedTemporaryArtifacts(root, databasePath);
+  const cachePath = integrityCachePath(databasePath);
+  const cache = readIntegrityCache(cachePath, root);
   const id = createBackupId();
   const createdAt = new Date().toISOString();
   const localDirectory = createMarkedArtifactDirectory(
@@ -247,9 +281,9 @@ function createBackup(
       // The marker is ignored by backup reads and is safe to leave behind.
     }
     syncDirectory(root);
-    const owned = readOwnedBackup(root, id);
+    const owned = readOwnedBackup(root, id, cache);
     if (!owned) throw new Error("Published backup could not be read back.");
-    pruneBackups(root, request.settings);
+    pruneBackups(root, request.settings, cache);
     return owned.summary;
   } catch (error) {
     if (stagingDirectory)
@@ -266,8 +300,15 @@ function listBackups(
   databasePath?: string,
 ): BackupSummary[] {
   const root = requireBackupDirectory(directory, requireNfs);
-  if (databasePath) reclaimOwnedTemporaryArtifacts(root, resolve(databasePath));
-  return discoverOwnedBackups(root)
+  const resolvedDatabasePath = databasePath ? resolve(databasePath) : undefined;
+  if (resolvedDatabasePath)
+    reclaimOwnedTemporaryArtifacts(root, resolvedDatabasePath);
+  const cache = resolvedDatabasePath
+    ? readIntegrityCache(integrityCachePath(resolvedDatabasePath), root)
+    : undefined;
+  const backups = discoverOwnedBackups(root, cache);
+  if (cache) persistIntegrityCache(cache);
+  return backups
     .map((entry) => entry.summary)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
@@ -280,11 +321,21 @@ function deleteBackup(
 ): void {
   assertSafeId(id);
   const root = requireBackupDirectory(directory, requireNfs);
-  if (databasePath) reclaimOwnedTemporaryArtifacts(root, resolve(databasePath));
-  const owned = readOwnedBackup(root, id);
+  const resolvedDatabasePath = databasePath ? resolve(databasePath) : undefined;
+  if (resolvedDatabasePath)
+    reclaimOwnedTemporaryArtifacts(root, resolvedDatabasePath);
+  const cache = resolvedDatabasePath
+    ? readIntegrityCache(integrityCachePath(resolvedDatabasePath), root)
+    : undefined;
+  const owned = readOwnedBackup(root, id, cache);
   if (!owned)
     throw new Error("Backup does not exist or is not owned by Factory.");
   rmSync(owned.directory, { force: false, recursive: true });
+  if (cache) {
+    delete cache.backups[id];
+    cache.dirty = true;
+    persistIntegrityCache(cache);
+  }
 }
 
 function prepareRestore(
@@ -294,16 +345,31 @@ function prepareRestore(
   const root = requireBackupDirectory(request.directory, request.requireNfs);
   const databasePath = resolve(request.databasePath);
   reclaimOwnedTemporaryArtifacts(root, databasePath);
-  const selected = readOwnedBackup(root, request.id);
+  const cache = readIntegrityCache(integrityCachePath(databasePath), root);
+  const selected = readOwnedBackup(root, request.id, cache);
   if (!selected)
     throw new Error("Backup does not exist or is not owned by Factory.");
 
   const selectedSnapshot = join(selected.directory, SNAPSHOT_FILE);
   const selectedManifest = join(selected.directory, MANIFEST_FILE);
+  const beforeRestoreVerification = getBackupFingerprints(
+    selectedSnapshot,
+    selectedManifest,
+  );
   verifyFactorySnapshot({
     databasePath: selectedSnapshot,
     manifestPath: selectedManifest,
   });
+  const afterRestoreVerification = getBackupFingerprints(
+    selectedSnapshot,
+    selectedManifest,
+  );
+  if (
+    !fingerprintPairMatches(beforeRestoreVerification, afterRestoreVerification)
+  )
+    throw new Error("Selected backup changed during restore verification.");
+  cacheBackupIntegrity(cache, request.id, afterRestoreVerification, "verified");
+  persistIntegrityCache(cache);
 
   const localDirectory = mkdtempSync(
     join(dirname(databasePath), ".factory-restore-"),
@@ -344,8 +410,12 @@ function prepareRestore(
   }
 }
 
-function pruneBackups(root: string, settings: BackupSettings): string[] {
-  const entries = discoverOwnedBackups(root);
+function pruneBackups(
+  root: string,
+  settings: BackupSettings,
+  cache: BackupIntegrityCache,
+): string[] {
+  const entries = discoverOwnedBackups(root, cache);
   const scheduled = entries
     .filter(
       (entry) =>
@@ -382,14 +452,21 @@ function pruneBackups(root: string, settings: BackupSettings): string[] {
   for (const entry of [...scheduled, ...preDeploy]) {
     if (keep.has(entry.metadata.id)) continue;
     rmSync(entry.directory, { force: false, recursive: true });
+    delete cache.backups[entry.metadata.id];
+    cache.dirty = true;
     deleted.push(entry.metadata.id);
   }
+  persistIntegrityCache(cache);
   return deleted;
 }
 
-function discoverOwnedBackups(root: string): OwnedBackup[] {
+function discoverOwnedBackups(
+  root: string,
+  cache?: BackupIntegrityCache,
+): OwnedBackup[] {
   const entries = readdirSync(root, { withFileTypes: true });
   const results: OwnedBackup[] = [];
+  const ownedIds = new Set<string>();
   for (const entry of entries) {
     if (
       !entry.isDirectory() ||
@@ -397,13 +474,28 @@ function discoverOwnedBackups(root: string): OwnedBackup[] {
       !SAFE_ID.test(entry.name)
     )
       continue;
-    const owned = readOwnedBackup(root, entry.name);
-    if (owned) results.push(owned);
+    const owned = readOwnedBackup(root, entry.name, cache);
+    if (owned) {
+      results.push(owned);
+      ownedIds.add(entry.name);
+    }
+  }
+  if (cache) {
+    for (const id of Object.keys(cache.backups)) {
+      if (!ownedIds.has(id)) {
+        delete cache.backups[id];
+        cache.dirty = true;
+      }
+    }
   }
   return results;
 }
 
-function readOwnedBackup(root: string, id: string): OwnedBackup | undefined {
+function readOwnedBackup(
+  root: string,
+  id: string,
+  cache?: BackupIntegrityCache,
+): OwnedBackup | undefined {
   assertSafeId(id);
   const directory = join(root, id);
   let directoryStat;
@@ -491,13 +583,44 @@ function readOwnedBackup(root: string, id: string): OwnedBackup | undefined {
     setSize(fileStat.size);
   }
 
-  const integrity: BackupIntegrity =
+  let integrity: BackupIntegrity;
+  if (
     incomplete ||
     metadata.verification !== "verified" ||
     snapshotSizeBytes !== metadata.snapshotSizeBytes ||
     manifestSizeBytes !== metadata.manifestSizeBytes
-      ? "incomplete"
-      : verifyBackupIntegrity(snapshotPath, manifestPath);
+  ) {
+    integrity = "incomplete";
+    if (cache?.backups[id]) {
+      delete cache.backups[id];
+      cache.dirty = true;
+    }
+  } else {
+    const before = getBackupFingerprints(snapshotPath, manifestPath);
+    const cached = cache?.backups[id];
+    if (
+      cached &&
+      isCacheFresh(cached.checkedAt) &&
+      fingerprintsMatch(cached, before)
+    ) {
+      integrity = cached.integrity;
+    } else {
+      integrity = verifyBackupIntegrity(snapshotPath, manifestPath);
+      const after = getBackupFingerprints(snapshotPath, manifestPath);
+      if (!fingerprintPairMatches(before, after)) {
+        integrity = "incomplete";
+        if (cache) {
+          delete cache.backups[id];
+          cache.dirty = true;
+        }
+      } else if (cache && integrity !== "incomplete") {
+        cacheBackupIntegrity(cache, id, after, integrity);
+        // Flush each verified entry so a long first pass can resume after a
+        // worker timeout or process restart.
+        persistIntegrityCache(cache);
+      }
+    }
+  }
   return {
     directory,
     metadata,
@@ -528,6 +651,218 @@ function verifyBackupIntegrity(
     if (isIntegrityVerificationFailure(error)) return "corrupt";
     throw error;
   }
+}
+
+function integrityCachePath(databasePath: string): string {
+  return `${resolve(databasePath)}${INTEGRITY_CACHE_SUFFIX}`;
+}
+
+function readIntegrityCache(path: string, root: string): BackupIntegrityCache {
+  const empty: BackupIntegrityCache = {
+    backups: {},
+    directory: resolve(root),
+    directoryIdentity: getDirectoryIdentity(root),
+    dirty: false,
+    path,
+    version: 1,
+  };
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) return empty;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      (parsed as Record<string, unknown>).version !== 1 ||
+      (parsed as Record<string, unknown>).directory !== resolve(root) ||
+      !directoryIdentityMatches(
+        (parsed as Record<string, unknown>).directoryIdentity,
+        empty.directoryIdentity,
+      ) ||
+      !isRecord((parsed as Record<string, unknown>).backups)
+    ) {
+      return empty;
+    }
+    const backups: Record<string, CachedBackupIntegrity> = {};
+    for (const [id, value] of Object.entries(
+      (parsed as { backups: Record<string, unknown> }).backups,
+    )) {
+      const record = parseCachedIntegrity(value);
+      if (SAFE_ID.test(id) && record) backups[id] = record;
+    }
+    return { ...empty, backups };
+  } catch {
+    // A missing, malformed, unreadable, or future-format cache grants no
+    // integrity claims. The normal scan rebuilds it from verified files.
+    return empty;
+  }
+}
+
+function parseCachedIntegrity(value: unknown): CachedBackupIntegrity | null {
+  if (!isRecord(value)) return null;
+  const snapshot = parseFingerprint(value.snapshot);
+  const manifest = parseFingerprint(value.manifest);
+  if (
+    typeof value.checkedAt !== "string" ||
+    !Number.isFinite(Date.parse(value.checkedAt)) ||
+    (value.integrity !== "verified" && value.integrity !== "corrupt") ||
+    !snapshot ||
+    !manifest
+  ) {
+    return null;
+  }
+  return {
+    checkedAt: value.checkedAt,
+    integrity: value.integrity,
+    manifest,
+    snapshot,
+  };
+}
+
+function parseFingerprint(value: unknown): BackupFileFingerprint | null {
+  if (!isRecord(value)) return null;
+  const fields = ["ctimeNs", "dev", "ino", "mtimeNs", "size"] as const;
+  for (const field of fields) {
+    if (typeof value[field] !== "string" || !/^[0-9]+$/.test(value[field]))
+      return null;
+  }
+  return {
+    ctimeNs: value.ctimeNs as string,
+    dev: value.dev as string,
+    ino: value.ino as string,
+    mtimeNs: value.mtimeNs as string,
+    size: value.size as string,
+  };
+}
+
+function getBackupFingerprints(
+  snapshotPath: string,
+  manifestPath: string,
+): BackupFingerprints {
+  return {
+    manifest: getFileFingerprint(manifestPath),
+    snapshot: getFileFingerprint(snapshotPath),
+  };
+}
+
+function getFileFingerprint(path: string): BackupFileFingerprint {
+  const stat = lstatSync(path, { bigint: true });
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error("Backup file changed to a non-file during verification.");
+  }
+  return {
+    ctimeNs: stat.ctimeNs.toString(),
+    dev: stat.dev.toString(),
+    ino: stat.ino.toString(),
+    mtimeNs: stat.mtimeNs.toString(),
+    size: stat.size.toString(),
+  };
+}
+
+function getDirectoryIdentity(path: string): { dev: string; ino: string } {
+  const stat = lstatSync(path, { bigint: true });
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error("Backup directory changed during integrity cache access.");
+  }
+  return { dev: stat.dev.toString(), ino: stat.ino.toString() };
+}
+
+function directoryIdentityMatches(
+  value: unknown,
+  expected: { dev: string; ino: string },
+): boolean {
+  return (
+    isRecord(value) && value.dev === expected.dev && value.ino === expected.ino
+  );
+}
+
+function fingerprintsMatch(
+  cached: CachedBackupIntegrity,
+  current: BackupFingerprints,
+): boolean {
+  return (
+    fingerprintMatches(cached.snapshot, current.snapshot) &&
+    fingerprintMatches(cached.manifest, current.manifest)
+  );
+}
+
+function fingerprintPairMatches(
+  left: BackupFingerprints,
+  right: BackupFingerprints,
+): boolean {
+  return (
+    fingerprintMatches(left.snapshot, right.snapshot) &&
+    fingerprintMatches(left.manifest, right.manifest)
+  );
+}
+
+function fingerprintMatches(
+  left: BackupFileFingerprint,
+  right: BackupFileFingerprint,
+): boolean {
+  return (
+    left.ctimeNs === right.ctimeNs &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mtimeNs === right.mtimeNs &&
+    left.size === right.size
+  );
+}
+
+function isCacheFresh(checkedAt: string): boolean {
+  const checkedAtMs = Date.parse(checkedAt);
+  const age = Date.now() - checkedAtMs;
+  return Number.isFinite(age) && age >= 0 && age < INTEGRITY_CACHE_MAX_AGE_MS;
+}
+
+function cacheBackupIntegrity(
+  cache: BackupIntegrityCache,
+  id: string,
+  fingerprints: BackupFingerprints,
+  integrity: "verified" | "corrupt",
+): void {
+  cache.backups[id] = {
+    checkedAt: new Date().toISOString(),
+    integrity,
+    manifest: fingerprints.manifest,
+    snapshot: fingerprints.snapshot,
+  };
+  cache.dirty = true;
+}
+
+function persistIntegrityCache(cache: BackupIntegrityCache): void {
+  if (!cache.dirty) return;
+  const temporaryPath = `${cache.path}.tmp-${process.pid}-${Date.now()}-${randomBytes(4).toString("hex")}`;
+  try {
+    writeFileSync(
+      temporaryPath,
+      `${JSON.stringify(
+        {
+          backups: cache.backups,
+          directory: cache.directory,
+          directoryIdentity: cache.directoryIdentity,
+          version: cache.version,
+        },
+        null,
+        2,
+      )}\n`,
+      { flag: "wx", mode: 0o600 },
+    );
+    renameSync(temporaryPath, cache.path);
+    cache.dirty = false;
+  } catch (error) {
+    try {
+      rmSync(temporaryPath, { force: true });
+    } catch {
+      // Preserve the cache write error.
+    }
+    throw error;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function isIntegrityVerificationFailure(error: unknown): boolean {

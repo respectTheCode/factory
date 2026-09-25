@@ -161,6 +161,114 @@ describe("Factory app-owned backup service", () => {
     }
   });
 
+  test("reuses persisted integrity checks for 24 hours and refreshes expired or future cache entries", async () => {
+    const { backupDirectory, databasePath, directory } = fixture();
+    const cachePath = `${databasePath}.backup-integrity-cache.json`;
+    try {
+      const service = createBackupService({
+        databasePath,
+        directory: backupDirectory,
+      });
+      const backup = await service.create("manual");
+      const readCache = () =>
+        JSON.parse(readFileSync(cachePath, "utf8")) as {
+          backups: Record<string, { checkedAt: string }>;
+          directory: string;
+        };
+      const firstCheckedAt = readCache().backups[backup.id]?.checkedAt;
+      expect(firstCheckedAt).toBeDefined();
+
+      await service.list();
+      expect(readCache().backups[backup.id]?.checkedAt).toBe(firstCheckedAt);
+
+      const restarted = createBackupService({
+        databasePath,
+        directory: backupDirectory,
+      });
+      await restarted.list();
+      expect(readCache().backups[backup.id]?.checkedAt).toBe(firstCheckedAt);
+
+      const expiredCache = readCache();
+      expiredCache.backups[backup.id]!.checkedAt = new Date(
+        Date.now() - 25 * 60 * 60 * 1000,
+      ).toISOString();
+      writeFileSync(cachePath, `${JSON.stringify(expiredCache)}\n`);
+      await restarted.list();
+      const refreshedCheckedAt = readCache().backups[backup.id]?.checkedAt;
+      expect(Date.parse(refreshedCheckedAt ?? "")).toBeGreaterThan(
+        Date.now() - 5_000,
+      );
+
+      const futureCache = readCache();
+      futureCache.backups[backup.id]!.checkedAt = new Date(
+        Date.now() + 60_000,
+      ).toISOString();
+      writeFileSync(cachePath, `${JSON.stringify(futureCache)}\n`);
+      await restarted.list();
+      const correctedCheckedAt = Date.parse(
+        readCache().backups[backup.id]?.checkedAt ?? "",
+      );
+      expect(correctedCheckedAt).toBeLessThanOrEqual(Date.now());
+      expect(correctedCheckedAt).toBeGreaterThan(Date.now() - 5_000);
+
+      writeFileSync(cachePath, "not json");
+      await restarted.list();
+      expect(readCache().backups[backup.id]?.checkedAt).toBeDefined();
+
+      const wrongDirectoryCache = readCache();
+      wrongDirectoryCache.directory = join(directory, "other-backups");
+      writeFileSync(cachePath, `${JSON.stringify(wrongDirectoryCache)}\n`);
+      await restarted.list();
+      expect(readCache().directory).toBe(resolve(backupDirectory));
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  test("restore performs a fresh integrity check even when the cache matches changed files", async () => {
+    const { backupDirectory, databasePath, directory } = fixture();
+    const cachePath = `${databasePath}.backup-integrity-cache.json`;
+    try {
+      const service = createBackupService({
+        databasePath,
+        directory: backupDirectory,
+      });
+      const backup = await service.create("manual");
+      const snapshotPath = join(backupDirectory, backup.id, "snapshot.sqlite");
+      const bytes = readFileSync(snapshotPath);
+      bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff;
+      writeFileSync(snapshotPath, bytes);
+
+      const stat = lstatSync(snapshotPath, { bigint: true });
+      const cache = JSON.parse(readFileSync(cachePath, "utf8")) as {
+        backups: Record<
+          string,
+          {
+            checkedAt: string;
+            integrity: string;
+            snapshot: Record<string, string>;
+          }
+        >;
+      };
+      cache.backups[backup.id]!.checkedAt = new Date().toISOString();
+      cache.backups[backup.id]!.integrity = "verified";
+      cache.backups[backup.id]!.snapshot = {
+        ctimeNs: stat.ctimeNs.toString(),
+        dev: stat.dev.toString(),
+        ino: stat.ino.toString(),
+        mtimeNs: stat.mtimeNs.toString(),
+        size: stat.size.toString(),
+      };
+      writeFileSync(cachePath, `${JSON.stringify(cache)}\n`);
+
+      await expect(service.prepareRestore(backup.id)).rejects.toThrow(
+        "Snapshot checksum does not match",
+      );
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   test("retains manual and pre-restore backups while pruning scheduled backups by union policy", async () => {
     const { backupDirectory, databasePath, directory } = fixture();
     try {
