@@ -151,6 +151,7 @@ type ProjectDetail = {
 type TaskStatus = {
   taskId: string;
   taskSimpleId: string;
+  taskRevision: number;
   taskCompleted: boolean;
   taskState:
     | "backlog"
@@ -171,6 +172,8 @@ type TaskStatus = {
       | "blocked"
       | "complete";
     effectiveState: WorkStatus;
+    subtaskId: string;
+    revision: number;
     subtaskSimpleId?: string;
     reason?: string;
     verificationState:
@@ -180,6 +183,7 @@ type TaskStatus = {
       | "rejected"
       | "unreported";
     reportId?: string;
+    verificationId?: string;
     evidence?: string;
     reporter?: string;
     sortOrder?: number;
@@ -2634,6 +2638,39 @@ function Dashboard() {
                                     <div className="task-summary-heading">
                                       <div className="status-with-thread-dots">
                                         <TaskStatusMenu
+                                          acceptTaskDisabled={
+                                            !snapshot.canMutate ||
+                                            busy ||
+                                            task.subtasks.length === 0 ||
+                                            !status
+                                          }
+                                          onAcceptTask={() => {
+                                            if (!status) return;
+                                            void mutateAndRefresh(() =>
+                                              trpc.current!.tasks.accept.mutate(
+                                                {
+                                                  expectedTaskRevision:
+                                                    status.taskRevision,
+                                                  reviewedSubtasks:
+                                                    status.subtasks.map(
+                                                      (subtask) => ({
+                                                        currentReportId:
+                                                          subtask.reportId ??
+                                                          null,
+                                                        currentVerificationId:
+                                                          subtask.verificationId ??
+                                                          null,
+                                                        revision:
+                                                          subtask.revision,
+                                                        subtaskId:
+                                                          subtask.subtaskId,
+                                                      }),
+                                                    ),
+                                                  taskId: task.id,
+                                                },
+                                              ),
+                                            );
+                                          }}
                                           onResumeRollup={
                                             task.archiveState
                                               ? undefined
@@ -4103,12 +4140,16 @@ function SubtaskActionIcon({ action }: { action: "edit" | "delete" }) {
 }
 
 function TaskStatusMenu({
+  acceptTaskDisabled,
+  onAcceptTask,
   onDisposition,
   onResumeRollup,
   onState,
   state,
   taskName,
 }: {
+  acceptTaskDisabled: boolean;
+  onAcceptTask: () => void;
   onDisposition?: (state: "released" | "wont_do") => void;
   onResumeRollup?: () => void;
   onState: (state: TaskEditableWorkState, reason?: string) => void;
@@ -4155,6 +4196,25 @@ function TaskStatusMenu({
         role="listbox"
       >
         <p className="status-menu-heading">Task status</p>
+        <button
+          aria-selected={false}
+          className="status-option"
+          disabled={acceptTaskDisabled}
+          onClick={(event) => {
+            onAcceptTask();
+            closeMenu(event);
+          }}
+          role="option"
+          title={
+            acceptTaskDisabled
+              ? "Add at least one Subtask and wait for the current review data before accepting."
+              : "Accept every Subtask and the Task together."
+          }
+          type="button"
+        >
+          <StatusIcon state="completed" size={19} />
+          <span>Accept task and all subtasks</span>
+        </button>
         {onResumeRollup && (
           <button
             className="status-option"

@@ -23,11 +23,21 @@ dashboard, CLI, and Codex skills.
 - Task Work State is durable and directly editable except for completion. Subtask rollup may
   promote a parent through non-completed states. An explicit human Task state remains in force
   until a later higher Subtask transition or an explicit resume-rollup action; same-state
-  reports and human acceptance do not silently release a manual hold.
+  reports do not silently release a manual hold. Task-wide human acceptance explicitly clears
+  the hold after accepting every Subtask.
 - Tasks and Subtasks retain a durable order within each Work State. Live state groups use the
   canonical display order: completed, blocked, awaiting verification, active, planned, backlog.
 - `released` and `wont_do` are explicit Archive States for quick Task/Subtask disposition;
   they are retained in history and restored rather than deleted.
+- Releasing a Task also marks every child Subtask `released`, including children with an
+  earlier disposition, while preserving their reports and verifications. Restoring the Task
+  leaves each child released until that child is restored separately.
+- **Accept task and all subtasks** is a human-only action. It reuses each child's current
+  complete report, or appends a human-attributed completion report before accepting an
+  unfinished child. It clears Task and Subtask archive dispositions and the Task's manual
+  hold, then rolls the parent up to completed. Already accepted reports are not stamped again.
+  The action checks the Task revision and every child's revision, current report, and current
+  verification before changing anything. Empty Tasks and changed review snapshots are rejected.
 - The parent agent owns the working tree, test execution, UI checks, and commits. Bounded
   research, drafting, and review work may be delegated to Luna xhigh subagents; agents must
   not edit overlapping files.
