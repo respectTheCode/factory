@@ -307,6 +307,7 @@ export type AttentionItem = {
 export type TaskStatus = {
   taskId: string;
   taskSimpleId: string;
+  taskRevision: number;
   taskCompleted: boolean;
   taskState: ProjectWorkState;
   stateReason?: string;
@@ -323,9 +324,11 @@ export type TaskStatus = {
       | "rejected"
       | "unreported";
     id?: string;
-    subtaskId?: string;
+    subtaskId: string;
+    revision: number;
     subtaskSimpleId?: string;
     reportId?: string;
+    verificationId?: string;
     evidence?: string;
     reporter?: string;
     archiveState?: ArchiveState;
@@ -1462,7 +1465,166 @@ export class FactoryApplication {
     const previousFingerprint = recordRevisionFingerprint(task);
 
     task.archiveState = archiveState;
+    if (archiveState === "released") {
+      for (const subtask of this.subtasks) {
+        if (subtask.taskId !== task.id) continue;
+        const previousSubtaskFingerprint = recordRevisionFingerprint(subtask);
+        subtask.archiveState = "released";
+        bumpRevisionIfChanged(subtask, previousSubtaskFingerprint);
+      }
+    }
     bumpRevisionIfChanged(task, previousFingerprint);
+    this.save();
+  }
+
+  acceptTask({
+    expectedTaskRevision,
+    reason,
+    reviewedSubtasks,
+    taskId,
+    verifier,
+  }: {
+    expectedTaskRevision: number;
+    reason: string;
+    reviewedSubtasks: Array<{
+      currentReportId: string | null;
+      currentVerificationId: string | null;
+      revision: number;
+      subtaskId: string;
+    }>;
+    taskId: string;
+    verifier: string;
+  }): void {
+    this.refreshFromPersistence();
+    const task = this.requireTask(taskId);
+    const subtasks = this.subtasks
+      .filter((subtask) => subtask.taskId === task.id)
+      .sort((left, right) => this.compareSubtasks(left, right));
+    if (subtasks.length === 0) {
+      throw new Error("Tasks without Subtasks cannot be accepted.");
+    }
+
+    const currentTaskRevision = normalizeRevision(task.revision);
+    if (currentTaskRevision !== expectedTaskRevision) {
+      throw new FactoryConflictError(
+        "Task",
+        task.id,
+        currentTaskRevision,
+        expectedTaskRevision,
+      );
+    }
+    if (
+      reviewedSubtasks.length !== subtasks.length ||
+      new Set(reviewedSubtasks.map(({ subtaskId }) => subtaskId)).size !==
+        reviewedSubtasks.length
+    ) {
+      throw new Error(
+        "Task acceptance must include every current Subtask exactly once.",
+      );
+    }
+
+    const reviewedById = new Map(
+      reviewedSubtasks.map((reviewed) => [reviewed.subtaskId, reviewed]),
+    );
+    for (const subtask of subtasks) {
+      const reviewed = reviewedById.get(subtask.id);
+      if (!reviewed) {
+        throw new Error(
+          "Task acceptance must include every current Subtask exactly once.",
+        );
+      }
+      const currentRevision = normalizeRevision(subtask.revision);
+      if (currentRevision !== reviewed.revision) {
+        throw new FactoryConflictError(
+          "Subtask",
+          subtask.id,
+          currentRevision,
+          reviewed.revision,
+        );
+      }
+      const report = this.getCurrentStatusReport(subtask.id);
+      const verification = report
+        ? this.getCurrentVerification(report.id)
+        : undefined;
+      if (
+        (report?.id ?? null) !== reviewed.currentReportId ||
+        (verification?.id ?? null) !== reviewed.currentVerificationId
+      ) {
+        throw new Error(
+          `Subtask ${subtask.id} changed its current report or verification after review.`,
+        );
+      }
+    }
+
+    const normalizedReason = requireReason(
+      reason,
+      "Task acceptance requires a reason.",
+    );
+    const verifierName = verifier.trim();
+    if (!verifierName) throw new Error("A human verifier is required.");
+    const previousTaskFingerprint = recordRevisionFingerprint(task);
+    let acceptanceChanged = false;
+
+    for (const subtask of subtasks) {
+      const previousSubtaskFingerprint = recordRevisionFingerprint(subtask);
+      const previousState = this.getSubtaskEffectiveWorkState(subtask);
+      let report = this.getCurrentStatusReport(subtask.id);
+      let subtaskAcceptanceChanged = false;
+
+      if (!report || report.reportedState !== "complete") {
+        const evidence =
+          subtask.evidence === undefined
+            ? report?.evidence
+            : subtask.evidence.trim() || undefined;
+        report = {
+          id: this.idGenerator(),
+          subtaskId: subtask.id,
+          reportedState: "complete",
+          reporter: verifierName,
+          ...(evidence ? { evidence } : {}),
+          reason: normalizedReason,
+          createdAt: this.clock(),
+        };
+        this.statusReports.push(report);
+        subtask.evidence = evidence ?? "";
+        subtaskAcceptanceChanged = true;
+      }
+
+      const currentVerification = this.getCurrentVerification(report.id);
+      if (currentVerification?.decision !== "accepted") {
+        this.verifications.push({
+          id: this.idGenerator(),
+          reportId: report.id,
+          decision: "accepted",
+          verifier: verifierName,
+          reason: normalizedReason,
+          createdAt: this.clock(),
+        });
+        subtaskAcceptanceChanged = true;
+      }
+
+      if (subtask.archiveState !== undefined) {
+        subtaskAcceptanceChanged = true;
+      }
+      delete subtask.archiveState;
+      this.moveSubtaskToStateIfChanged(subtask, previousState);
+      acceptanceChanged ||= subtaskAcceptanceChanged;
+      bumpRevisionIfChanged(
+        subtask,
+        previousSubtaskFingerprint,
+        subtaskAcceptanceChanged,
+      );
+    }
+
+    const taskAcceptanceChanged =
+      acceptanceChanged ||
+      task.archiveState !== undefined ||
+      task.workStateSource !== "rollup" ||
+      task.workState !== "completed" ||
+      task.stateReason !== undefined;
+    delete task.archiveState;
+    this.setTaskRollupState(task, "completed");
+    bumpRevisionIfChanged(task, previousTaskFingerprint, taskAcceptanceChanged);
     this.save();
   }
 
@@ -1674,6 +1836,7 @@ export class FactoryApplication {
           return {
             id: subtask.id,
             subtaskId: subtask.id,
+            revision: normalizeRevision(subtask.revision),
             subtaskSimpleId: requiredSimpleId(subtask, "Subtask"),
             ...(subtask.archiveState
               ? { archiveState: subtask.archiveState }
@@ -1703,8 +1866,10 @@ export class FactoryApplication {
             : {}),
           id: report.id,
           subtaskId: subtask.id,
+          revision: normalizeRevision(subtask.revision),
           subtaskSimpleId: requiredSimpleId(subtask, "Subtask"),
           reportId: report.id,
+          ...(verification ? { verificationId: verification.id } : {}),
           reportedState: report.reportedState,
           effectiveState,
           ...(subtask.sortOrder !== undefined
@@ -1743,6 +1908,7 @@ export class FactoryApplication {
     return {
       taskId: task.id,
       taskSimpleId: requiredSimpleId(task, "Task"),
+      taskRevision: normalizeRevision(task.revision),
       taskCompleted,
       ...(task.archiveState ? { archiveState: task.archiveState } : {}),
       taskState,

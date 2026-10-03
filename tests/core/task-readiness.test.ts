@@ -134,6 +134,8 @@ describe("whole-task readiness", () => {
       reporter: "codex",
     });
     app.restoreTask(task.id);
+    app.restoreSubtask(first.id);
+    app.restoreSubtask(second.id);
     expect(app.getTaskStatus(task.id).taskState).toBe("active");
     expect(app.getTaskDetail(task.id).sortOrder).toBeGreaterThan(
       app.getTaskDetail(peer.id).sortOrder!,

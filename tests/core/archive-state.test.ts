@@ -97,6 +97,79 @@ describe("archived task and subtask states", () => {
     expect(app.getSubtaskReportHistory(releasedSubtask.id)).toEqual([report]);
   });
 
+  test("releasing a task releases every child and restore leaves children released", () => {
+    const app = createInMemoryApplication();
+    const project = app.createProject({ name: "Factory V1" });
+    const task = app.createTask({
+      name: "Release the task",
+      projectId: project.id,
+    });
+    const releasedChild = app.createSubtask({
+      name: "Previously released",
+      taskId: task.id,
+    });
+    const wontDoChild = app.createSubtask({
+      name: "Previously wont do",
+      taskId: task.id,
+    });
+    const activeChild = app.createSubtask({
+      name: "Active child",
+      taskId: task.id,
+    });
+    const report = app.reportSubtaskStatus({
+      evidence: "Keep this history.",
+      reason: "Check the released output.",
+      reporter: "codex",
+      reportedState: "complete",
+      subtaskId: activeChild.id,
+    });
+    app.archiveSubtask(releasedChild.id, "released");
+    app.archiveSubtask(wontDoChild.id, "wont_do");
+
+    app.archiveTask(task.id, "released");
+    expect(
+      app.getTaskStatus(task.id).subtasks.map((child) => child.archiveState),
+    ).toEqual(["released", "released", "released"]);
+    expect(app.getSubtaskReportHistory(activeChild.id)).toEqual([report]);
+
+    app.restoreTask(task.id);
+    expect(app.getTaskStatus(task.id)).not.toHaveProperty("archiveState");
+    expect(
+      app
+        .getTaskStatus(task.id)
+        .subtasks.every((child) => child.archiveState === "released"),
+    ).toBe(true);
+  });
+
+  test("archiving a task as wont_do preserves each child's separate disposition", () => {
+    const app = createInMemoryApplication();
+    const project = app.createProject({ name: "Factory V1" });
+    const task = app.createTask({
+      name: "Drop the task",
+      projectId: project.id,
+    });
+    const releasedChild = app.createSubtask({
+      name: "Released child",
+      taskId: task.id,
+    });
+    const activeChild = app.createSubtask({
+      name: "Active child",
+      taskId: task.id,
+    });
+    app.archiveSubtask(releasedChild.id, "released");
+
+    app.archiveTask(task.id, "wont_do");
+
+    expect(
+      Object.fromEntries(
+        app
+          .getTaskStatus(task.id)
+          .subtasks.map((child) => [child.subtaskId, child.archiveState]),
+      ),
+    ).toEqual({ [releasedChild.id]: "released", [activeChild.id]: undefined });
+    expect(app.getTaskStatus(task.id).archiveState).toBe("wont_do");
+  });
+
   test("persists archived task and subtask states across application instances", () => {
     const temporaryDirectory = mkdtempSync(
       join(tmpdir(), "software-factory-archive-state-"),

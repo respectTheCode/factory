@@ -1614,6 +1614,45 @@ function createRouter(
             dashboardAfterPublish(application, projectUpdates, task.projectId),
           );
         }),
+      accept: humanProcedure(
+        humanSessionConfigured
+          ? "A human session is required to accept a Task and its Subtasks."
+          : "Human session not configured; task acceptance is unavailable.",
+      )
+        .input(
+          z.object({
+            expectedTaskRevision: z.number().int().min(1),
+            reason: z
+              .string()
+              .trim()
+              .min(1)
+              .default("Accepted with the Task by human review."),
+            reviewedSubtasks: z
+              .array(
+                z.object({
+                  currentReportId: z.string().min(1).nullable(),
+                  currentVerificationId: z.string().min(1).nullable(),
+                  revision: z.number().int().min(1),
+                  subtaskId: z.string().min(1),
+                }),
+              )
+              .min(1),
+            taskId: z.string().min(1),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForTask(input.taskId);
+          application.acceptTask({
+            ...input,
+            verifier: ctx.human!.name,
+          });
+          return withContextDashboard(
+            ctx,
+            { taskId: input.taskId, accepted: true },
+            dashboardAfterPublish(application, projectUpdates, projectId),
+          );
+        }),
       archive: scopedProcedure((input) => {
         const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
         return typeof taskId === "string"
