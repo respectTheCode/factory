@@ -176,10 +176,10 @@ export type T3ActivityReaderOptions = {
 export const DEFAULT_T3_BASE_URL = "http://127.0.0.1:3773";
 export const DEFAULT_T3_TIMEOUT_MS = 6_000;
 export const DEFAULT_T3_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
-// T3 uses the 0.0 minor line for breaking adapter changes, so keep this exact
-// version pin and advance it only after the current descriptor and payload
-// shapes have been exercised against the new server.
+// Keep the exact server-version fallback for older T3 servers that do not
+// advertise an orchestration protocol version.
 export const DEFAULT_T3_SERVER_VERSION = "0.0.42";
+export const SUPPORTED_T3_ORCHESTRATION_PROTOCOL_VERSION = 1;
 export const MAX_T3_THREAD_TURN_LIMIT = 10;
 
 const DESCRIPTOR_PATH = "/.well-known/t3/environment";
@@ -191,6 +191,7 @@ const ISO_DATE_PATTERN =
 
 type ParsedDescriptor = {
   serverVersion: string;
+  orchestrationProtocolVersion?: number;
 };
 
 type T3ErrorResponse = {
@@ -902,7 +903,7 @@ function requestWithTimeout(
 
 export function createT3ActivityReader({
   baseUrl,
-  expectedServerVersion = DEFAULT_T3_SERVER_VERSION,
+  expectedServerVersion,
   fetcher = fetch,
   maxResponseBytes = DEFAULT_T3_MAX_RESPONSE_BYTES,
   now = () => new Date(),
@@ -996,13 +997,44 @@ export function createT3ActivityReader({
           time,
           "T3 Code returned an invalid environment descriptor.",
         );
-      if (payload.serverVersion !== expectedServerVersion)
+
+      const hasProtocolVersion = Object.hasOwn(
+        payload,
+        "orchestrationProtocolVersion",
+      );
+      const orchestrationProtocolVersion = hasProtocolVersion
+        ? payload.orchestrationProtocolVersion
+        : undefined;
+      if (
+        hasProtocolVersion &&
+        (!Number.isSafeInteger(orchestrationProtocolVersion) ||
+          (orchestrationProtocolVersion as number) < 1)
+      )
+        return failure(
+          "invalid_response",
+          time,
+          "T3 Code returned an invalid environment descriptor.",
+        );
+
+      const versionPin = expectedServerVersion ?? DEFAULT_T3_SERVER_VERSION;
+      const incompatible = hasProtocolVersion
+        ? orchestrationProtocolVersion !==
+            SUPPORTED_T3_ORCHESTRATION_PROTOCOL_VERSION ||
+          (expectedServerVersion !== undefined &&
+            payload.serverVersion !== expectedServerVersion)
+        : payload.serverVersion !== versionPin;
+      if (incompatible)
         return failure(
           "incompatible",
           time,
           "T3 Code server version is incompatible with this Factory adapter.",
         );
-      return { serverVersion: payload.serverVersion };
+      return {
+        serverVersion: payload.serverVersion,
+        ...(typeof orchestrationProtocolVersion === "number"
+          ? { orchestrationProtocolVersion }
+          : {}),
+      };
     })();
     const result = await descriptorPromise;
     if ("ok" in result && result.ok === false) descriptorPromise = undefined;

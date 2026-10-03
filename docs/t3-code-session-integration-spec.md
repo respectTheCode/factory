@@ -68,12 +68,17 @@ Reports, and Verification.
 
 ## T3 transport
 
-Factory uses only these T3 0.0.42 reads:
+Factory uses only these read-only orchestration protocol v1 endpoints:
 
 - `GET /.well-known/t3/environment` for compatibility and capability discovery.
 - `GET /api/orchestration/shell` for project and thread shells.
 - `GET /api/orchestration/threads/:threadId?turnLimit=N` for bounded detail after an explicit
   request.
+
+Compatibility follows the advertised orchestration protocol version, while every
+response still passes strict schema validation. Legacy descriptors without a
+protocol version use the known supported server-version fallback. An explicit
+server-version override remains an exact pin.
 
 The adapter must not expose a generic request method. Its interface is:
 

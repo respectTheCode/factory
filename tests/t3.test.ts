@@ -11,11 +11,17 @@ const BASE_URL = "http://127.0.0.1:3773";
 const FIXTURE_TOKEN = "fixture-t3-access-token";
 const NOW = () => new Date("2026-09-02T18:00:00.000Z");
 
-function descriptorResponse(version = DEFAULT_T3_SERVER_VERSION): Response {
+function descriptorResponse(
+  version = DEFAULT_T3_SERVER_VERSION,
+  orchestrationProtocolVersion?: unknown,
+): Response {
   return Response.json({
     capabilities: {},
     environmentId: "environment-1",
     label: "T3 fixture",
+    ...(orchestrationProtocolVersion === undefined
+      ? {}
+      : { orchestrationProtocolVersion }),
     platform: { arch: "arm64", os: "darwin" },
     serverVersion: version,
   });
@@ -172,12 +178,12 @@ function shellResponse(): Response {
 }
 
 describe("T3 read-only activity transport", () => {
-  test("accepts the current supported T3 0.0.42 descriptor", async () => {
+  test("accepts a future server version that advertises protocol 1", async () => {
     const reader = createT3ActivityReader({
       baseUrl: BASE_URL,
       fetcher: async (input) =>
         String(input).includes("/.well-known")
-          ? descriptorResponse("0.0.42")
+          ? descriptorResponse("0.0.46", 1)
           : shellResponse(),
       token: FIXTURE_TOKEN,
     });
@@ -185,6 +191,81 @@ describe("T3 read-only activity transport", () => {
     await expect(reader.readShell()).resolves.toMatchObject({
       ok: true,
       status: "ok",
+    });
+  });
+
+  test("retains the exact version fallback for legacy descriptors", async () => {
+    const compatible = createT3ActivityReader({
+      baseUrl: BASE_URL,
+      fetcher: async (input) =>
+        String(input).includes("/.well-known")
+          ? descriptorResponse("0.0.42")
+          : shellResponse(),
+      token: FIXTURE_TOKEN,
+    });
+    await expect(compatible.readShell()).resolves.toMatchObject({
+      ok: true,
+      status: "ok",
+    });
+
+    const incompatible = createT3ActivityReader({
+      baseUrl: BASE_URL,
+      fetcher: async (input) =>
+        String(input).includes("/.well-known")
+          ? descriptorResponse("0.0.43")
+          : shellResponse(),
+      token: FIXTURE_TOKEN,
+    });
+    await expect(incompatible.readShell()).resolves.toMatchObject({
+      ok: false,
+      status: "incompatible",
+    });
+  });
+
+  test("rejects unsupported and malformed orchestration protocol versions", async () => {
+    const unsupported = createT3ActivityReader({
+      baseUrl: BASE_URL,
+      fetcher: async (input) =>
+        String(input).includes("/.well-known")
+          ? descriptorResponse("0.0.46", 2)
+          : shellResponse(),
+      token: FIXTURE_TOKEN,
+    });
+    await expect(unsupported.readShell()).resolves.toMatchObject({
+      ok: false,
+      status: "incompatible",
+    });
+
+    for (const malformedVersion of [null, "1", 0, 1.5]) {
+      const malformed = createT3ActivityReader({
+        baseUrl: BASE_URL,
+        fetcher: async (input) =>
+          String(input).includes("/.well-known")
+            ? descriptorResponse("0.0.46", malformedVersion)
+            : shellResponse(),
+        token: FIXTURE_TOKEN,
+      });
+      await expect(malformed.readShell()).resolves.toMatchObject({
+        ok: false,
+        status: "invalid_response",
+      });
+    }
+  });
+
+  test("preserves an explicit exact server version pin on protocol descriptors", async () => {
+    const reader = createT3ActivityReader({
+      baseUrl: BASE_URL,
+      expectedServerVersion: "0.0.42",
+      fetcher: async (input) =>
+        String(input).includes("/.well-known")
+          ? descriptorResponse("0.0.46", 1)
+          : shellResponse(),
+      token: FIXTURE_TOKEN,
+    });
+
+    await expect(reader.readShell()).resolves.toMatchObject({
+      ok: false,
+      status: "incompatible",
     });
   });
 
@@ -201,7 +282,7 @@ describe("T3 read-only activity transport", () => {
           url,
         });
         if (url.endsWith("/.well-known/t3/environment"))
-          return descriptorResponse();
+          return descriptorResponse("0.0.45", 1);
         if (url.endsWith("/api/orchestration/shell")) return shellResponse();
         if (url.endsWith("/api/orchestration/threads/thread-1?turnLimit=1")) {
           return detailResponse();
