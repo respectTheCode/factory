@@ -205,14 +205,14 @@ Agents may directly move Tasks between `backlog`, `planned`, `active`,
 `awaiting_verification`, and `blocked` with `task state`, and may
 reorder Tasks or Subtasks within one state. Moving into `blocked` or
 `awaiting_verification` requires `--reason`; direct state changes never rewrite
-Subtasks. Completed is set by human verification in the Factory dashboard and
-cannot be assigned by an agent through this CLI. State changes are durable and
+Subtasks. Completed is set by acceptance from Kevin, an explicitly assigned reviewer, or
+server-verified PR merge reconciliation. Coding credentials cannot directly assign completed. State changes are durable and
 remain `schemaVersion: 1` in CLI output.
 
 Agents may report `backlog`, `not_started`, `in_progress`, `blocked`, or `complete`.
 Reports are append-only. Reports for `blocked` and `complete` require `--reason`
 describing the blocker or the verification check. A complete report remains
-`awaiting_verification` until a human accepts it in the Factory dashboard. The
-noninteractive CLI intentionally refuses verification so an agent cannot
-self-approve its work; rejected or deferred verification reasons remain a
-human-only PWA concern.
+`awaiting_verification` until an authorized review decision accepts it. The coding CLI
+intentionally refuses verification so an implementation agent cannot approve its own work.
+Reviewer credentials use separate review commands for explicitly assigned work; see
+[reviewer acceptance](reviewer-acceptance.md).

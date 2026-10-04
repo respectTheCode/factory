@@ -145,6 +145,28 @@ export type FactoryRemoteClient = {
   ) => Promise<Task>;
   getTaskDetail: (taskId: string) => Promise<TaskDetail>;
   getTaskStatus: (taskId: string) => Promise<TaskStatus>;
+  reviewSubtask: (input: {
+    decision: "accepted" | "rejected" | "deferred";
+    expectedRevision: number;
+    reason?: string;
+    reportId: string;
+    reportText: string;
+    screenshotIds?: string[];
+  }) => Promise<unknown>;
+  reviewTask: (input: {
+    decision: "accepted" | "rejected" | "deferred";
+    expectedTaskRevision: number;
+    reason?: string;
+    reportText: string;
+    reviewedSubtasks: Array<{
+      currentReportId: string | null;
+      currentVerificationId: string | null;
+      revision: number;
+      subtaskId: string;
+    }>;
+    screenshotIds?: string[];
+    taskId: string;
+  }) => Promise<unknown>;
   setTaskWorkState: (
     input: {
       reason?: string;
@@ -425,6 +447,9 @@ export function createRemoteFactoryClient(
       invoke(() => client.tasks.detail.query({ taskId })),
     getTaskStatus: (taskId) =>
       invoke(() => client.tasks.status.query({ taskId })),
+    reviewSubtask: (input) =>
+      invoke(() => client.subtasks.review.mutate(input)),
+    reviewTask: (input) => invoke(() => client.tasks.review.mutate(input)),
     setTaskWorkState: (input) =>
       invokeMutation(
         async () =>
@@ -684,6 +709,7 @@ function normalizeRemoteError(error: unknown, url: string): Error {
       return new Error("Factory credential rejected (revoked or wrong token).");
     }
     if (code === "FORBIDDEN") return new Error(error.message);
+    if (code === "CONFLICT") return new Error(error.message);
     const response = error.meta?.response as Response | undefined;
     if (response && !response.ok) {
       return errorForHttpStatus(response.status, url);

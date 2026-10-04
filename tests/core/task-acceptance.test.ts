@@ -282,6 +282,264 @@ describe("human task-wide acceptance", () => {
     });
   });
 
+  test("reviewers cannot verify a Subtask while its parent Task is archived", () => {
+    const app = createInMemoryApplication();
+    const project = app.createProject({ name: "Factory" });
+    const task = app.createTask({
+      name: "Archived task",
+      projectId: project.id,
+    });
+    const child = app.createSubtask({ name: "Current work", taskId: task.id });
+    const report = app.reportSubtaskStatus({
+      reason: "Check the current build.",
+      reporter: "codex",
+      reportedState: "complete",
+      subtaskId: child.id,
+    });
+    app.assignReviewer({
+      assignedBy: "kevin",
+      reviewer: {
+        id: "bitsy-credential",
+        machineId: "bitsy-reviewer",
+        reviewerName: "Bitsy",
+      },
+      targetId: child.id,
+      targetType: "subtask",
+    });
+    app.archiveTask(task.id, "wont_do");
+
+    expect(() =>
+      app.verifyStatusReport({
+        decision: "accepted",
+        expectedRevision: app.getTaskStatus(task.id).subtasks[0]!.revision,
+        reportId: report.id,
+        reportText: "Checked the current build.",
+        reviewerCredentialId: "bitsy-credential",
+        source: "reviewer",
+        verifier: "Bitsy",
+      }),
+    ).toThrow("Subtasks under archived Tasks cannot be reviewed");
+    expect(app.getSubtaskVerificationHistory(child.id)).toEqual([]);
+  });
+
+  test("reviewer Task rejection supersedes accepted current decisions and records findings", () => {
+    const app = createInMemoryApplication();
+    const project = app.createProject({ name: "Factory" });
+    const task = app.createTask({ name: "Review task", projectId: project.id });
+    const child = app.createSubtask({ name: "Release check", taskId: task.id });
+    const report = app.reportSubtaskStatus({
+      reason: "Check the release.",
+      reporter: "codex",
+      reportedState: "complete",
+      subtaskId: child.id,
+    });
+    app.assignReviewer({
+      assignedBy: "kevin",
+      reviewer: {
+        id: "bitsy-credential",
+        machineId: "bitsy-reviewer",
+        reviewerName: "Bitsy",
+      },
+      targetId: task.id,
+      targetType: "task",
+    });
+    const reviewerInput = {
+      decision: "accepted" as const,
+      reportText: "Verified the release checks.",
+      reviewerCredentialId: "bitsy-credential",
+      source: "reviewer" as const,
+      taskId: task.id,
+      verifier: "Bitsy",
+    };
+    app.acceptTask({
+      ...reviewedSnapshot(app, task.id),
+      ...reviewerInput,
+      reason: "Verified the release checks.",
+    });
+    app.acceptTask({
+      ...reviewedSnapshot(app, task.id),
+      ...reviewerInput,
+      decision: "rejected",
+      reason: "The smoke test is missing.",
+      reportText: "The smoke test is missing from the evidence.",
+    });
+
+    expect(app.getSubtaskVerificationHistory(child.id)).toMatchObject([
+      { decision: "accepted", source: "reviewer" },
+      {
+        decision: "rejected",
+        source: "reviewer",
+        reason: "The smoke test is missing.",
+        reportText: "The smoke test is missing from the evidence.",
+      },
+    ]);
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      taskVerification: {
+        decision: "rejected",
+        reportText: "The smoke test is missing from the evidence.",
+      },
+      subtasks: [
+        {
+          reportId: report.id,
+          verificationState: "rejected",
+        },
+      ],
+    });
+  });
+
+  test("reviewer Task decisions require at least one active child", () => {
+    const app = createInMemoryApplication();
+    const project = app.createProject({ name: "Factory" });
+    const task = app.createTask({
+      name: "No active work",
+      projectId: project.id,
+    });
+    const child = app.createSubtask({
+      name: "Archived child",
+      taskId: task.id,
+    });
+    app.reportSubtaskStatus({
+      reason: "Check the child.",
+      reporter: "codex",
+      reportedState: "complete",
+      subtaskId: child.id,
+    });
+    app.archiveSubtask(child.id, "wont_do");
+    app.assignReviewer({
+      assignedBy: "kevin",
+      reviewer: {
+        id: "bitsy-credential",
+        machineId: "bitsy-reviewer",
+        reviewerName: "Bitsy",
+      },
+      targetId: task.id,
+      targetType: "task",
+    });
+
+    expect(() =>
+      app.acceptTask({
+        ...reviewedSnapshot(app, task.id),
+        decision: "accepted",
+        reason: "Review the Task.",
+        reportText: "Reviewed the Task.",
+        reviewerCredentialId: "bitsy-credential",
+        source: "reviewer",
+        taskId: task.id,
+        verifier: "Bitsy",
+      }),
+    ).toThrow("Reviewer Task decisions require at least one active Subtask");
+    expect(app.getSubtaskVerificationHistory(child.id)).toEqual([]);
+  });
+
+  test("reviewer Task acceptance rejects a same-state report created after the pinned snapshot", () => {
+    const app = createInMemoryApplication();
+    const project = app.createProject({ name: "Factory" });
+    const task = app.createTask({
+      name: "Pinned review",
+      projectId: project.id,
+    });
+    const child = app.createSubtask({
+      name: "Current report",
+      taskId: task.id,
+    });
+    app.reportSubtaskStatus({
+      reason: "Check the current build.",
+      reporter: "codex",
+      reportedState: "complete",
+      subtaskId: child.id,
+    });
+    const snapshot = reviewedSnapshot(app, task.id);
+    app.assignReviewer({
+      assignedBy: "kevin",
+      reviewer: {
+        id: "bitsy-credential",
+        machineId: "bitsy-reviewer",
+        reviewerName: "Bitsy",
+      },
+      targetId: task.id,
+      targetType: "task",
+    });
+    const revisionBeforeNewReport = app.getTaskStatus(task.id).subtasks[0]!
+      .revision;
+    app.reportSubtaskStatus({
+      reason: "Check the current build.",
+      reporter: "claude",
+      reportedState: "complete",
+      subtaskId: child.id,
+    });
+    expect(app.getTaskStatus(task.id).subtasks[0]!.revision).toBe(
+      revisionBeforeNewReport,
+    );
+
+    expect(() =>
+      app.acceptTask({
+        ...snapshot,
+        decision: "accepted",
+        reason: "Review the pinned report.",
+        reportText: "Reviewed the pinned report.",
+        reviewerCredentialId: "bitsy-credential",
+        source: "reviewer",
+        taskId: task.id,
+        verifier: "Bitsy",
+      }),
+    ).toThrow("changed its current report or verification after review");
+    expect(app.getSubtaskVerificationHistory(child.id)).toEqual([]);
+  });
+
+  test("a same-state verification invalidates an older direct reviewer revision", () => {
+    const app = createInMemoryApplication();
+    const project = app.createProject({ name: "Factory" });
+    const task = app.createTask({
+      name: "Review version",
+      projectId: project.id,
+    });
+    const child = app.createSubtask({
+      name: "Complete report",
+      taskId: task.id,
+    });
+    const report = app.reportSubtaskStatus({
+      reason: "Check the release.",
+      reporter: "codex",
+      reportedState: "complete",
+      subtaskId: child.id,
+    });
+    app.assignReviewer({
+      assignedBy: "kevin",
+      reviewer: {
+        id: "bitsy-credential",
+        machineId: "bitsy-reviewer",
+        reviewerName: "Bitsy",
+      },
+      targetId: child.id,
+      targetType: "subtask",
+    });
+    const reviewedRevision = app.getTaskStatus(task.id).subtasks[0]!.revision;
+    app.verifyStatusReport({
+      decision: "deferred",
+      reason: "The video needs another check.",
+      reportId: report.id,
+      verifier: "kevin",
+    });
+
+    expect(app.getTaskStatus(task.id).subtasks[0]!.revision).toBeGreaterThan(
+      reviewedRevision,
+    );
+    expect(() =>
+      app.verifyStatusReport({
+        decision: "accepted",
+        expectedRevision: reviewedRevision,
+        reportId: report.id,
+        reportText: "The earlier review snapshot is still current.",
+        reviewerCredentialId: "bitsy-credential",
+        source: "reviewer",
+        verifier: "Bitsy",
+      }),
+    ).toThrow("current revision");
+    expect(app.getSubtaskVerificationHistory(child.id)).toMatchObject([
+      { decision: "deferred", verifier: "kevin" },
+    ]);
+  });
+
   test("persists task-wide acceptance across application instances", () => {
     const databasePath = `/tmp/factory-task-acceptance-${crypto.randomUUID()}.sqlite`;
     const app = createFactoryApplication({ databasePath });

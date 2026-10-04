@@ -63,10 +63,26 @@ describe("Factory online backup snapshots", () => {
         reportedState: "complete",
         subtaskId: subtask.id,
       });
+      const assignment = application.assignReviewer({
+        assignedBy: "kevin",
+        reviewer: {
+          id: "snapshot-reviewer-credential",
+          machineId: "snapshot-reviewer",
+          reviewerName: "Bitsy",
+        },
+        targetId: subtask.id,
+        targetType: "subtask",
+      });
+      if (!assignment) throw new Error("Reviewer assignment was not stored.");
       application.verifyStatusReport({
         decision: "accepted",
+        expectedRevision: application.getTaskStatus(task.id).subtasks[0]!
+          .revision,
         reportId: report.id,
-        verifier: "kevin",
+        reportText: "Checked the complete report and screenshot evidence.",
+        reviewerCredentialId: assignment.reviewerCredentialId,
+        source: "reviewer",
+        verifier: "Bitsy",
       });
       const verification = application.getSubtaskVerificationHistory(
         subtask.id,
@@ -127,6 +143,12 @@ describe("Factory online backup snapshots", () => {
         ids: [screenshot.id],
       });
       expect(
+        backup.manifest.state.collections.reviewerAssignments,
+      ).toMatchObject({
+        count: 1,
+        ids: [assignment.id],
+      });
+      expect(
         backup.manifest.protectedTables.factory_machine_credentials,
       ).toMatchObject({ count: 1, present: true });
       expect(backup.manifest.protectedTables.factory_sessions).toMatchObject({
@@ -152,7 +174,22 @@ describe("Factory online backup snapshots", () => {
         ]);
         expect(
           restored.getSubtaskVerificationHistory(subtask.id),
-        ).toMatchObject([{ id: verification.id, decision: "accepted" }]);
+        ).toMatchObject([
+          {
+            id: verification.id,
+            decision: "accepted",
+            source: "reviewer",
+            verifier: "Bitsy",
+            reportText: "Checked the complete report and screenshot evidence.",
+          },
+        ]);
+        expect(
+          restored.getReviewerAssignment("subtask", subtask.id),
+        ).toMatchObject({
+          id: assignment.id,
+          reviewerCredentialId: "snapshot-reviewer-credential",
+          reviewerName: "Bitsy",
+        });
         expect(restored.getScreenshotEvidence(screenshot.id).dataBase64).toBe(
           PNG,
         );

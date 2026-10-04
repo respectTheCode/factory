@@ -165,7 +165,43 @@ export type Verification = {
   decision: VerificationDecision;
   verifier: string;
   reason?: string;
+  /** Attribution is optional so schema-v1 history remains readable. */
+  source?: "human" | "reviewer" | "pr_merge";
+  reportText?: string;
+  screenshotIds?: string[];
+  pullRequestUrl?: string;
+  mergeSha?: string;
+  mergedAt?: Date;
+  taskReviewId?: string;
   createdAt: Date;
+};
+
+export type ReviewerAssignmentTarget = "task" | "subtask";
+
+export type ReviewerAssignment = {
+  id: string;
+  targetType: ReviewerAssignmentTarget;
+  targetId: string;
+  reviewerCredentialId: string;
+  reviewerName: string;
+  machineId: string;
+  assignedBy: string;
+  assignedAt: Date;
+  revokedAt?: Date;
+  revokedBy?: string;
+};
+
+export type PullRequestMergeEvidence = {
+  pullRequestUrl: string;
+  mergeSha: string;
+  mergedAt: Date;
+};
+
+export type PullRequestReconciliationResult = {
+  reconciled: boolean;
+  reason: string;
+  mergeSha?: string;
+  mergedAt?: Date;
 };
 
 export type RunState =
@@ -312,6 +348,7 @@ export type TaskStatus = {
   taskState: ProjectWorkState;
   stateReason?: string;
   archiveState?: ArchiveState;
+  taskVerification?: TaskStatusVerification;
   subtasks: Array<{
     reportedState?: ReportedState;
     effectiveState: WorkState;
@@ -332,7 +369,16 @@ export type TaskStatus = {
     evidence?: string;
     reporter?: string;
     archiveState?: ArchiveState;
+    verification?: TaskStatusVerification;
   }>;
+};
+
+export type TaskStatusVerification = Omit<
+  Verification,
+  "createdAt" | "mergedAt"
+> & {
+  createdAt: Date | string;
+  mergedAt?: Date | string;
 };
 
 export type TrackerLink = {
@@ -358,6 +404,7 @@ export type FactoryState = {
   subtasks: PersistedSubtask[];
   statusReports: StatusReport[];
   verifications: Verification[];
+  reviewerAssignments?: ReviewerAssignment[];
   trackerLinks?: TrackerLink[];
   // Evidence bytes stay in the existing SQLite JSON snapshot for bounded,
   // portable backups. The 5 MiB per-image limit keeps this simple store from
@@ -554,6 +601,7 @@ function normalizeSimpleIdState(state: FactoryState): HydratedFactoryState {
     ...state,
     tasks,
     subtasks,
+    reviewerAssignments: state.reviewerAssignments ?? [],
     simpleIdCounters: {
       nextSubtask: Math.max(
         state.simpleIdCounters?.nextSubtask ?? 1,
@@ -658,6 +706,15 @@ function normalizePullRequestUrl(
   if (value === undefined) return undefined;
   if (!value?.trim()) return null;
   return parseGitHubPullRequestUrl(value).url;
+}
+
+function githubRepositoryKey(value: string | undefined): string | undefined {
+  const identity = normalizeRepositoryIdentity(value);
+  if (!identity) return undefined;
+  const match =
+    /^(?:www\.)?github\.com\/([^/]+)\/([^/]+)(?:\/pull\/\d+)?$/i.exec(identity);
+  if (!match?.[1] || !match[2]) return undefined;
+  return `${match[1].toLowerCase()}/${match[2].replace(/\.git$/i, "").toLowerCase()}`;
 }
 
 function compareWorkStates(left: WorkState, right: WorkState): number {
@@ -808,6 +865,7 @@ export class FactoryApplication {
   private readonly subtasks: Subtask[];
   private readonly statusReports: StatusReport[];
   private readonly verifications: Verification[];
+  private readonly reviewerAssignments: ReviewerAssignment[];
   private readonly trackerLinks: TrackerLink[];
   private readonly screenshotEvidence: ScreenshotEvidence[];
   private readonly runs: Run[];
@@ -841,6 +899,7 @@ export class FactoryApplication {
     this.subtasks = normalizedState?.subtasks ?? [];
     this.statusReports = normalizedState?.statusReports ?? [];
     this.verifications = normalizedState?.verifications ?? [];
+    this.reviewerAssignments = normalizedState?.reviewerAssignments ?? [];
     this.trackerLinks = normalizedState?.trackerLinks ?? [];
     this.screenshotEvidence = normalizedState?.screenshotEvidence ?? [];
     const executionState = normalizeExecutionState(normalizedState);
@@ -1012,6 +1071,14 @@ export class FactoryApplication {
       reportIds.has(verification.reportId),
     );
     removeMatching(
+      this.reviewerAssignments,
+      (assignment) =>
+        (assignment.targetType === "task" &&
+          taskIds.has(assignment.targetId)) ||
+        (assignment.targetType === "subtask" &&
+          subtaskIds.has(assignment.targetId)),
+    );
+    removeMatching(
       this.trackerLinks,
       (link) =>
         link.projectId === projectId ||
@@ -1069,6 +1136,14 @@ export class FactoryApplication {
     removeMatching(this.verifications, (verification) =>
       reportIds.has(verification.reportId),
     );
+    removeMatching(
+      this.reviewerAssignments,
+      (assignment) =>
+        (assignment.targetType === "task" &&
+          assignment.targetId === resolvedTaskId) ||
+        (assignment.targetType === "subtask" &&
+          subtaskIds.has(assignment.targetId)),
+    );
     removeMatching(this.trackerLinks, (link) => link.taskId === resolvedTaskId);
     removeMatching(
       this.codeSessionAssociations,
@@ -1121,6 +1196,12 @@ export class FactoryApplication {
     removeMatching(this.statusReports, (report) => reportIds.has(report.id));
     removeMatching(this.verifications, (verification) =>
       reportIds.has(verification.reportId),
+    );
+    removeMatching(
+      this.reviewerAssignments,
+      (assignment) =>
+        assignment.targetType === "subtask" &&
+        assignment.targetId === resolvedSubtaskId,
     );
     removeMatching(
       this.codeSessionAssociations,
@@ -1479,19 +1560,29 @@ export class FactoryApplication {
 
   acceptTask({
     expectedTaskRevision,
+    decision = "accepted",
     reason,
+    reportText,
     reviewedSubtasks,
+    screenshotIds = [],
+    source = "human",
+    reviewerCredentialId,
     taskId,
     verifier,
   }: {
     expectedTaskRevision: number;
+    decision?: VerificationDecision;
     reason: string;
+    reportText?: string;
     reviewedSubtasks: Array<{
       currentReportId: string | null;
       currentVerificationId: string | null;
       revision: number;
       subtaskId: string;
     }>;
+    screenshotIds?: string[];
+    source?: "human" | "reviewer";
+    reviewerCredentialId?: string;
     taskId: string;
     verifier: string;
   }): void {
@@ -1522,6 +1613,9 @@ export class FactoryApplication {
         "Task acceptance must include every current Subtask exactly once.",
       );
     }
+    const activeSubtasks = subtasks.filter(
+      (subtask) => subtask.archiveState === undefined,
+    );
 
     const reviewedById = new Map(
       reviewedSubtasks.map((reviewed) => [reviewed.subtaskId, reviewed]),
@@ -1560,18 +1654,78 @@ export class FactoryApplication {
       reason,
       "Task acceptance requires a reason.",
     );
+    const normalizedReportText = reportText?.trim() || normalizedReason;
     const verifierName = verifier.trim();
     if (!verifierName) throw new Error("A human verifier is required.");
+    if (source === "human" && decision !== "accepted") {
+      throw new Error(
+        "Human Task acceptance only supports the accepted decision.",
+      );
+    }
+    if (source === "reviewer") {
+      if (!normalizedReportText) {
+        throw new Error("Reviewer task acceptance requires report text.");
+      }
+      if (
+        !reviewerCredentialId ||
+        !this.isReviewerAssignedToTargetFromCurrentState(
+          "task",
+          task.id,
+          reviewerCredentialId,
+        )
+      ) {
+        throw new Error("This reviewer is not assigned to the Task.");
+      }
+      if (task.archiveState !== undefined) {
+        throw new Error("Archived Tasks cannot be reviewed.");
+      }
+      if (activeSubtasks.length === 0) {
+        throw new Error(
+          "Reviewer Task decisions require at least one active Subtask.",
+        );
+      }
+      for (const subtask of subtasks) {
+        if (subtask.archiveState !== undefined) continue;
+        const report = this.getCurrentStatusReport(subtask.id);
+        if (
+          !report ||
+          (decision === "accepted" && report.reportedState !== "complete")
+        ) {
+          throw new Error(
+            decision === "accepted"
+              ? `Reviewer task acceptance requires a current complete report for Subtask ${subtask.id}.`
+              : `Reviewer task decisions require a current report for Subtask ${subtask.id}.`,
+          );
+        }
+        if (
+          !this.isReviewerAssignedToTargetFromCurrentState(
+            "subtask",
+            subtask.id,
+            reviewerCredentialId,
+          )
+        ) {
+          throw new Error(
+            `This reviewer is not assigned to Subtask ${subtask.id}.`,
+          );
+        }
+      }
+      this.validateScreenshotIds(screenshotIds, { taskId: task.id });
+    }
     const previousTaskFingerprint = recordRevisionFingerprint(task);
     let acceptanceChanged = false;
+    const taskReviewId = this.idGenerator();
 
     for (const subtask of subtasks) {
+      if (source === "reviewer" && subtask.archiveState !== undefined) continue;
       const previousSubtaskFingerprint = recordRevisionFingerprint(subtask);
       const previousState = this.getSubtaskEffectiveWorkState(subtask);
       let report = this.getCurrentStatusReport(subtask.id);
       let subtaskAcceptanceChanged = false;
 
-      if (!report || report.reportedState !== "complete") {
+      if (
+        (!report || report.reportedState !== "complete") &&
+        source === "human"
+      ) {
         const evidence =
           subtask.evidence === undefined
             ? report?.evidence
@@ -1590,24 +1744,50 @@ export class FactoryApplication {
         subtaskAcceptanceChanged = true;
       }
 
+      if (
+        !report ||
+        (decision === "accepted" && report.reportedState !== "complete")
+      ) {
+        throw new Error(
+          decision === "accepted"
+            ? `Task acceptance requires a current complete report for Subtask ${subtask.id}.`
+            : `Task decisions require a current report for Subtask ${subtask.id}.`,
+        );
+      }
+
       const currentVerification = this.getCurrentVerification(report.id);
-      if (currentVerification?.decision !== "accepted") {
+      if (
+        source === "reviewer" ||
+        currentVerification?.decision !== "accepted"
+      ) {
         this.verifications.push({
           id: this.idGenerator(),
           reportId: report.id,
-          decision: "accepted",
+          decision,
           verifier: verifierName,
           reason: normalizedReason,
+          source,
+          reportText: normalizedReportText,
+          ...(screenshotIds.length > 0
+            ? { screenshotIds: [...screenshotIds] }
+            : {}),
+          taskReviewId,
           createdAt: this.clock(),
         });
         subtaskAcceptanceChanged = true;
       }
 
-      if (subtask.archiveState !== undefined) {
+      if (source === "human" && subtask.archiveState !== undefined) {
         subtaskAcceptanceChanged = true;
       }
-      delete subtask.archiveState;
+      if (source === "human") delete subtask.archiveState;
       this.moveSubtaskToStateIfChanged(subtask, previousState);
+      if (source === "reviewer" && decision !== "accepted") {
+        this.promoteParentTask(subtask.taskId, {
+          nextState: this.getSubtaskEffectiveWorkState(subtask),
+          previousState,
+        });
+      }
       acceptanceChanged ||= subtaskAcceptanceChanged;
       bumpRevisionIfChanged(
         subtask,
@@ -1622,8 +1802,8 @@ export class FactoryApplication {
       task.workStateSource !== "rollup" ||
       task.workState !== "completed" ||
       task.stateReason !== undefined;
-    delete task.archiveState;
-    this.setTaskRollupState(task, "completed");
+    if (source === "human") delete task.archiveState;
+    if (decision === "accepted") this.setTaskRollupState(task, "completed");
     bumpRevisionIfChanged(task, previousTaskFingerprint, taskAcceptanceChanged);
     this.save();
   }
@@ -1758,12 +1938,22 @@ export class FactoryApplication {
   verifyStatusReport({
     decision,
     reason,
+    reportText,
     reportId,
+    screenshotIds = [],
+    expectedRevision,
+    reviewerCredentialId,
+    source = "human",
     verifier,
   }: {
     decision: VerificationDecision;
     reason?: string;
+    reportText?: string;
     reportId: string;
+    screenshotIds?: string[];
+    expectedRevision?: number;
+    reviewerCredentialId?: string;
+    source?: "human" | "reviewer";
     verifier: string;
   }): void {
     this.refreshFromPersistence();
@@ -1783,15 +1973,65 @@ export class FactoryApplication {
     const task = this.tasks.find(
       (candidate) => candidate.id === subtask.taskId,
     );
+    if (source === "reviewer") {
+      if (!task || task.archiveState !== undefined) {
+        throw new Error("Subtasks under archived Tasks cannot be reviewed.");
+      }
+      const revision = normalizeRevision(subtask.revision);
+      if (expectedRevision === undefined) {
+        throw new Error(
+          "Reviewer decisions require the reviewed Subtask revision.",
+        );
+      }
+      if (revision !== expectedRevision) {
+        throw new FactoryConflictError(
+          "Subtask",
+          subtask.id,
+          revision,
+          expectedRevision,
+        );
+      }
+      if (this.getCurrentStatusReport(subtask.id)?.id !== report.id) {
+        throw new Error(
+          "Reviewer decisions require the current Status Report.",
+        );
+      }
+      if (decision === "accepted" && report.reportedState !== "complete") {
+        throw new Error(
+          "Reviewer decisions require a current complete Status Report.",
+        );
+      }
+      if (
+        !reviewerCredentialId ||
+        !this.isReviewerAssignedToTargetFromCurrentState(
+          "subtask",
+          subtask.id,
+          reviewerCredentialId,
+        )
+      ) {
+        throw new Error("This reviewer is not assigned to the Subtask.");
+      }
+      if (subtask.archiveState !== undefined) {
+        throw new Error("Archived Subtasks cannot be reviewed.");
+      }
+      const normalizedReportText = reportText?.trim();
+      if (!normalizedReportText) {
+        throw new Error(
+          "Reviewer decisions require report text describing what was tested.",
+        );
+      }
+      this.validateScreenshotIds(screenshotIds, { subtaskId: subtask.id });
+    }
     const previousSubtaskFingerprint = recordRevisionFingerprint(subtask);
     const previousTaskFingerprint = task
       ? recordRevisionFingerprint(task)
       : undefined;
     const previousState = this.getSubtaskEffectiveWorkState(subtask);
+    const normalizedReportText = reportText?.trim() || undefined;
     const normalizedReason =
       decision === "rejected" || decision === "deferred"
         ? requireReason(
-            reason,
+            reason ?? normalizedReportText,
             `Verification decisions of ${decision} require a reason.`,
           )
         : reason?.trim() || undefined;
@@ -1802,20 +2042,269 @@ export class FactoryApplication {
       decision,
       verifier,
       ...(normalizedReason ? { reason: normalizedReason } : {}),
+      source,
+      ...(normalizedReportText || (source === "human" && normalizedReason)
+        ? { reportText: normalizedReportText ?? normalizedReason }
+        : {}),
+      ...(screenshotIds.length > 0
+        ? { screenshotIds: [...screenshotIds] }
+        : {}),
       createdAt: this.clock(),
     });
     const nextState = this.getSubtaskEffectiveWorkState(subtask);
     this.moveSubtaskToStateIfChanged(subtask, previousState);
     this.promoteParentTask(subtask.taskId, { nextState, previousState });
-    bumpRevisionIfChanged(
-      subtask,
-      previousSubtaskFingerprint,
-      nextState !== previousState,
-    );
+    // Verification history is part of a review snapshot even when the
+    // effective Work State stays the same (for example, deferred to rejected).
+    bumpRevisionIfChanged(subtask, previousSubtaskFingerprint, true);
     if (task && previousTaskFingerprint !== undefined) {
       bumpRevisionIfChanged(task, previousTaskFingerprint);
     }
     this.save();
+  }
+
+  reconcileMergedPullRequest({
+    evidence,
+    targetId,
+    targetType,
+  }: {
+    evidence: PullRequestMergeEvidence;
+    targetId: string;
+    targetType: ReviewerAssignmentTarget;
+  }): PullRequestReconciliationResult {
+    this.refreshFromPersistence();
+    const mergedAt = new Date(evidence.mergedAt);
+    const pullRequestUrl = normalizePullRequestUrl(evidence.pullRequestUrl);
+    if (
+      !pullRequestUrl ||
+      !evidence.mergeSha.trim() ||
+      !Number.isFinite(mergedAt.getTime())
+    ) {
+      return {
+        reconciled: false,
+        reason: "GitHub merge evidence is incomplete.",
+      };
+    }
+    const task =
+      targetType === "task"
+        ? this.requireTask(targetId)
+        : this.requireTask(this.requireSubtask(targetId).taskId);
+    const subtask =
+      targetType === "subtask" ? this.requireSubtask(targetId) : undefined;
+    const linkedPullRequestUrl = subtask
+      ? subtask.pullRequestUrl
+      : task.pullRequestUrl;
+    if (
+      !linkedPullRequestUrl ||
+      normalizePullRequestUrl(linkedPullRequestUrl) !== pullRequestUrl
+    ) {
+      return {
+        reconciled: false,
+        reason: "The merged PR is no longer linked to this target.",
+      };
+    }
+    if (
+      task.archiveState !== undefined ||
+      subtask?.archiveState !== undefined
+    ) {
+      return {
+        reconciled: false,
+        reason: "Archived work is not eligible for PR reconciliation.",
+      };
+    }
+    const project = this.projects.find(({ id }) => id === task.projectId);
+    const allowedRepositories = new Set(
+      [project?.gitOriginUrl, ...task.repositoryLinks]
+        .map(githubRepositoryKey)
+        .filter((key): key is string => key !== undefined),
+    );
+    const pullRequestRepository = githubRepositoryKey(pullRequestUrl);
+    if (
+      !pullRequestRepository ||
+      !allowedRepositories.has(pullRequestRepository)
+    ) {
+      return {
+        reconciled: false,
+        reason:
+          "The Project has no matching configured GitHub repository identity.",
+      };
+    }
+
+    if (subtask) {
+      const result = this.reconcileSubtaskFromMerge(
+        subtask,
+        evidence,
+        mergedAt,
+        pullRequestUrl,
+      );
+      return {
+        ...result,
+        ...(result.reconciled ? { mergeSha: evidence.mergeSha, mergedAt } : {}),
+      };
+    }
+
+    const activeSubtasks = this.subtasks
+      .filter(
+        (candidate) =>
+          candidate.taskId === task.id && candidate.archiveState === undefined,
+      )
+      .sort((left, right) => this.compareSubtasks(left, right));
+    if (activeSubtasks.length === 0) {
+      return {
+        reconciled: false,
+        reason: "The Task has no active Subtasks to accept.",
+      };
+    }
+    const reports = activeSubtasks.map((candidate) => ({
+      subtask: candidate,
+      report: this.getCurrentStatusReport(candidate.id),
+      verification: this.getCurrentStatusReport(candidate.id)
+        ? this.getCurrentVerification(
+            this.getCurrentStatusReport(candidate.id)!.id,
+          )
+        : undefined,
+    }));
+    const eligibleReports: typeof reports = [];
+    for (const { subtask: child, report, verification } of reports) {
+      if (!report || report.reportedState !== "complete") {
+        return {
+          reconciled: false,
+          reason: `Subtask ${child.id} has no current complete report.`,
+        };
+      }
+      if (verification?.decision === "accepted") continue;
+      if (verification) {
+        return {
+          reconciled: false,
+          reason: `Subtask ${child.id} already has a current ${verification.decision} verification.`,
+        };
+      }
+      if (
+        child.pullRequestUrl &&
+        normalizePullRequestUrl(child.pullRequestUrl) !== pullRequestUrl
+      ) {
+        return {
+          reconciled: false,
+          reason: `Subtask ${child.id} is linked to a different PR and cannot be accepted by this Task PR.`,
+        };
+      }
+      if (report.createdAt.getTime() > mergedAt.getTime()) {
+        return {
+          reconciled: false,
+          reason: `The merged PR predates the current report for Subtask ${child.id}.`,
+        };
+      }
+      eligibleReports.push({ subtask: child, report, verification });
+    }
+
+    if (eligibleReports.length === 0) {
+      return {
+        reconciled: false,
+        reason: "Every active Subtask is already accepted.",
+      };
+    }
+
+    const previousTaskFingerprint = recordRevisionFingerprint(task);
+    const taskReviewId = this.idGenerator();
+    for (const { subtask: child, report } of eligibleReports) {
+      if (!report) continue;
+      const previousSubtaskFingerprint = recordRevisionFingerprint(child);
+      const previousState = this.getSubtaskEffectiveWorkState(child);
+      this.verifications.push(
+        this.createPullRequestMergeVerification(
+          report.id,
+          evidence,
+          pullRequestUrl,
+          taskReviewId,
+        ),
+      );
+      this.moveSubtaskToStateIfChanged(child, previousState);
+      bumpRevisionIfChanged(child, previousSubtaskFingerprint, true);
+    }
+    this.setTaskRollupState(task, "completed");
+    bumpRevisionIfChanged(task, previousTaskFingerprint, true);
+    this.save();
+    return {
+      reconciled: true,
+      reason:
+        "The linked merged PR accepted every active Subtask with a current complete report.",
+      mergeSha: evidence.mergeSha,
+      mergedAt,
+    };
+  }
+
+  private reconcileSubtaskFromMerge(
+    subtask: Subtask,
+    evidence: PullRequestMergeEvidence,
+    mergedAt: Date,
+    pullRequestUrl: string,
+  ): PullRequestReconciliationResult {
+    const report = this.getCurrentStatusReport(subtask.id);
+    if (!report || report.reportedState !== "complete") {
+      return {
+        reconciled: false,
+        reason: "The Subtask has no current complete report.",
+      };
+    }
+    if (report.createdAt.getTime() > mergedAt.getTime()) {
+      return {
+        reconciled: false,
+        reason: "The merged PR predates the current report.",
+      };
+    }
+    const currentVerification = this.getCurrentVerification(report.id);
+    if (currentVerification) {
+      return {
+        reconciled: false,
+        reason: `The current report already has a ${currentVerification.decision} verification.`,
+      };
+    }
+    const task = this.requireTask(subtask.taskId);
+    const previousSubtaskFingerprint = recordRevisionFingerprint(subtask);
+    const previousTaskFingerprint = recordRevisionFingerprint(task);
+    const previousState = this.getSubtaskEffectiveWorkState(subtask);
+    this.verifications.push(
+      this.createPullRequestMergeVerification(
+        report.id,
+        evidence,
+        pullRequestUrl,
+      ),
+    );
+    this.moveSubtaskToStateIfChanged(subtask, previousState);
+    this.promoteParentTask(subtask.taskId, {
+      nextState: this.getSubtaskEffectiveWorkState(subtask),
+      previousState,
+    });
+    bumpRevisionIfChanged(subtask, previousSubtaskFingerprint, true);
+    bumpRevisionIfChanged(task, previousTaskFingerprint);
+    this.save();
+    return {
+      reconciled: true,
+      reason:
+        "The linked merged PR accepted the current complete Subtask report.",
+    };
+  }
+
+  private createPullRequestMergeVerification(
+    reportId: string,
+    evidence: PullRequestMergeEvidence,
+    pullRequestUrl: string,
+    taskReviewId?: string,
+  ): Verification {
+    return {
+      id: this.idGenerator(),
+      reportId,
+      decision: "accepted",
+      verifier: "PR Merge",
+      source: "pr_merge",
+      reason: `Linked PR merged at ${evidence.mergedAt.toISOString()}.`,
+      reportText: `GitHub confirms ${pullRequestUrl} merged at ${evidence.mergedAt.toISOString()}.`,
+      pullRequestUrl,
+      mergeSha: evidence.mergeSha,
+      mergedAt: new Date(evidence.mergedAt),
+      ...(taskReviewId ? { taskReviewId } : {}),
+      createdAt: this.clock(),
+    };
   }
 
   getTaskStatus(taskId: string): TaskStatus {
@@ -1878,10 +2367,34 @@ export class FactoryApplication {
           ...(currentEvidence ? { evidence: currentEvidence } : {}),
           ...(reason ? { reason } : {}),
           reporter: report.reporter,
+          ...(verification ? { verification } : {}),
           verificationState:
             verification?.decision ?? ("awaiting_verification" as const),
         };
       });
+
+    const activeTaskSubtasks = this.subtasks.filter(
+      (subtask) =>
+        subtask.taskId === task.id && subtask.archiveState === undefined,
+    );
+    const taskReviewVerifications = activeTaskSubtasks.map((subtask) => {
+      const report = this.getCurrentStatusReport(subtask.id);
+      return report ? this.getCurrentVerification(report.id) : undefined;
+    });
+    const firstTaskReview = taskReviewVerifications[0];
+    const taskReviewId = firstTaskReview?.taskReviewId;
+    const taskReviewDecision = firstTaskReview?.decision;
+    const taskVerification =
+      taskReviewId &&
+      taskReviewDecision &&
+      taskReviewVerifications.length > 0 &&
+      taskReviewVerifications.every(
+        (verification) =>
+          verification?.taskReviewId === taskReviewId &&
+          verification.decision === taskReviewDecision,
+      )
+        ? taskReviewVerifications[0]
+        : undefined;
 
     const activeSubtasks = subtasks.filter(
       (subtask) => subtask.archiveState === undefined,
@@ -1913,6 +2426,7 @@ export class FactoryApplication {
       ...(task.archiveState ? { archiveState: task.archiveState } : {}),
       taskState,
       ...(stateReason ? { stateReason } : {}),
+      ...(taskVerification ? { taskVerification } : {}),
       subtasks,
     };
   }
@@ -2078,6 +2592,156 @@ export class FactoryApplication {
     return this.verifications.filter((verification) =>
       reportIds.has(verification.reportId),
     );
+  }
+
+  assignReviewer({
+    assignedBy,
+    reviewer,
+    targetId,
+    targetType,
+  }: {
+    assignedBy: string;
+    reviewer: { id: string; machineId: string; reviewerName: string } | null;
+    targetId: string;
+    targetType: ReviewerAssignmentTarget;
+  }): ReviewerAssignment | null {
+    this.refreshFromPersistence();
+    if (targetType === "task") this.requireTask(targetId);
+    else this.requireSubtask(targetId);
+    const active = this.findActiveReviewerAssignment(targetType, targetId);
+    if (reviewer && active?.reviewerCredentialId === reviewer.id) {
+      return active;
+    }
+    if (active) {
+      active.revokedAt = this.clock();
+      active.revokedBy = assignedBy;
+    }
+    if (!reviewer) {
+      this.save();
+      return null;
+    }
+    const assignment: ReviewerAssignment = {
+      id: this.idGenerator(),
+      targetType,
+      targetId,
+      reviewerCredentialId: reviewer.id,
+      reviewerName: reviewer.reviewerName,
+      machineId: reviewer.machineId,
+      assignedBy,
+      assignedAt: this.clock(),
+    };
+    this.reviewerAssignments.push(assignment);
+    this.save();
+    return assignment;
+  }
+
+  getReviewerAssignment(
+    targetType: ReviewerAssignmentTarget,
+    targetId: string,
+  ): ReviewerAssignment | null {
+    this.refreshFromPersistence();
+    if (targetType === "task") this.requireTask(targetId);
+    else this.requireSubtask(targetId);
+    return this.findActiveReviewerAssignment(targetType, targetId) ?? null;
+  }
+
+  isReviewerAssignedToTarget(
+    targetType: ReviewerAssignmentTarget,
+    targetId: string,
+    reviewerCredentialId: string,
+  ): boolean {
+    this.refreshFromPersistence();
+    return this.isReviewerAssignedToTargetFromCurrentState(
+      targetType,
+      targetId,
+      reviewerCredentialId,
+    );
+  }
+
+  private isReviewerAssignedToTargetFromCurrentState(
+    targetType: ReviewerAssignmentTarget,
+    targetId: string,
+    reviewerCredentialId: string,
+  ): boolean {
+    if (targetType === "task") {
+      return (
+        this.findActiveReviewerAssignment("task", targetId)
+          ?.reviewerCredentialId === reviewerCredentialId
+      );
+    }
+    const subtask = this.requireSubtask(targetId);
+    const direct = this.findActiveReviewerAssignment("subtask", subtask.id);
+    if (direct) return direct.reviewerCredentialId === reviewerCredentialId;
+    return (
+      this.findActiveReviewerAssignment("task", subtask.taskId)
+        ?.reviewerCredentialId === reviewerCredentialId
+    );
+  }
+
+  private findActiveReviewerAssignment(
+    targetType: ReviewerAssignmentTarget,
+    targetId: string,
+  ): ReviewerAssignment | undefined {
+    return this.reviewerAssignments.findLast(
+      (assignment) =>
+        assignment.targetType === targetType &&
+        assignment.targetId === targetId &&
+        assignment.revokedAt === undefined,
+    );
+  }
+
+  private validateScreenshotIds(
+    screenshotIds: string[],
+    target: { taskId: string } | { subtaskId: string },
+  ): void {
+    if (new Set(screenshotIds).size !== screenshotIds.length) {
+      throw new Error("Screenshot IDs must be unique.");
+    }
+    for (const screenshotId of screenshotIds) {
+      const evidence = this.screenshotEvidence.find(
+        (candidate) => candidate.id === screenshotId,
+      );
+      if (!evidence) {
+        throw new Error(`Screenshot evidence ${screenshotId} does not exist.`);
+      }
+      if ("taskId" in target) {
+        const task = this.requireTask(target.taskId);
+        let evidenceTaskId = evidence.taskId;
+        if (evidence.subtaskId !== undefined) {
+          const evidenceSubtask = this.requireSubtask(evidence.subtaskId);
+          if (
+            evidenceTaskId !== undefined &&
+            evidenceTaskId !== evidenceSubtask.taskId
+          ) {
+            evidenceTaskId = undefined;
+          } else {
+            evidenceTaskId = evidenceSubtask.taskId;
+          }
+        }
+        if (
+          evidenceTaskId !== task.id ||
+          evidence.projectId !== task.projectId
+        ) {
+          throw new Error(
+            `Screenshot ${screenshotId} is outside the reviewed Task.`,
+          );
+        }
+      } else {
+        const subtask = this.requireSubtask(target.subtaskId);
+        const task = this.requireTask(subtask.taskId);
+        const isSameProject = evidence.projectId === task.projectId;
+        const isTaskEvidence =
+          evidence.taskId === task.id && evidence.subtaskId === undefined;
+        const isSubtaskEvidence =
+          evidence.subtaskId === subtask.id &&
+          (evidence.taskId === undefined || evidence.taskId === task.id);
+        if (!isSameProject || (!isTaskEvidence && !isSubtaskEvidence)) {
+          throw new Error(
+            `Screenshot ${screenshotId} is outside the reviewed Subtask scope.`,
+          );
+        }
+      }
+    }
   }
 
   getProjectHierarchy(projectId: string): ProjectHierarchy {
@@ -4099,6 +4763,11 @@ export class FactoryApplication {
       this.verifications.length,
       ...normalizedState.verifications,
     );
+    this.reviewerAssignments.splice(
+      0,
+      this.reviewerAssignments.length,
+      ...(normalizedState.reviewerAssignments ?? []),
+    );
     this.trackerLinks.splice(
       0,
       this.trackerLinks.length,
@@ -4151,6 +4820,7 @@ export class FactoryApplication {
       subtasks: this.subtasks,
       tasks: this.tasks,
       verifications: this.verifications,
+      reviewerAssignments: this.reviewerAssignments,
       trackerLinks: this.trackerLinks,
       screenshotEvidence: this.screenshotEvidence,
       runs: this.runs,
@@ -4437,6 +5107,7 @@ function assertFactoryStateSnapshot(
 
   for (const field of [
     "trackerLinks",
+    "reviewerAssignments",
     "screenshotEvidence",
     "runs",
     "codeSessions",
@@ -4508,6 +5179,49 @@ function assertFactoryStateSnapshot(
     ]);
     requireString("verification.verifier", verification.verifier);
     requireDate("verification.createdAt", verification.createdAt);
+    if (verification.source !== undefined) {
+      requireOneOf("verification.source", verification.source, [
+        "human",
+        "reviewer",
+        "pr_merge",
+      ]);
+    }
+    if (verification.reportText !== undefined)
+      requireString("verification.reportText", verification.reportText);
+    if (verification.screenshotIds !== undefined)
+      requireStringArray(
+        "verification.screenshotIds",
+        verification.screenshotIds,
+      );
+    if (verification.pullRequestUrl !== undefined)
+      requireString("verification.pullRequestUrl", verification.pullRequestUrl);
+    if (verification.mergeSha !== undefined)
+      requireString("verification.mergeSha", verification.mergeSha);
+    if (verification.mergedAt !== undefined)
+      requireDate("verification.mergedAt", verification.mergedAt);
+    if (verification.taskReviewId !== undefined)
+      requireString("verification.taskReviewId", verification.taskReviewId);
+  }
+  for (const item of (record.reviewerAssignments ?? []) as unknown[]) {
+    const assignment = requireRecord("reviewerAssignments", item);
+    requireString("reviewerAssignment.id", assignment.id);
+    requireOneOf("reviewerAssignment.targetType", assignment.targetType, [
+      "task",
+      "subtask",
+    ]);
+    requireString("reviewerAssignment.targetId", assignment.targetId);
+    requireString(
+      "reviewerAssignment.reviewerCredentialId",
+      assignment.reviewerCredentialId,
+    );
+    requireString("reviewerAssignment.reviewerName", assignment.reviewerName);
+    requireString("reviewerAssignment.machineId", assignment.machineId);
+    requireString("reviewerAssignment.assignedBy", assignment.assignedBy);
+    requireDate("reviewerAssignment.assignedAt", assignment.assignedAt);
+    if (assignment.revokedAt !== undefined)
+      requireDate("reviewerAssignment.revokedAt", assignment.revokedAt);
+    if (assignment.revokedBy !== undefined)
+      requireString("reviewerAssignment.revokedBy", assignment.revokedBy);
   }
   const screenshotEvidence = (record.screenshotEvidence ?? []) as unknown[];
   for (const item of screenshotEvidence) {
@@ -4552,8 +5266,20 @@ function hydrateState(state: FactoryState): FactoryState {
     })),
     verifications: state.verifications.map((verification) => ({
       ...verification,
+      ...(verification.mergedAt
+        ? { mergedAt: new Date(verification.mergedAt) }
+        : {}),
       createdAt: new Date(verification.createdAt),
     })),
+    reviewerAssignments: (state.reviewerAssignments ?? []).map(
+      (assignment) => ({
+        ...assignment,
+        assignedAt: new Date(assignment.assignedAt),
+        ...(assignment.revokedAt
+          ? { revokedAt: new Date(assignment.revokedAt) }
+          : {}),
+      }),
+    ),
     trackerLinks: state.trackerLinks ?? [],
     screenshotEvidence: (state.screenshotEvidence ?? []).map((evidence) =>
       normalizeScreenshotEvidence({
