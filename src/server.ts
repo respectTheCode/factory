@@ -16,6 +16,8 @@ import {
   type DashboardSnapshot,
   type PortfolioStatus,
   type ProjectHierarchy,
+  type PullRequestMergeEvidence,
+  type ReviewerAssignmentTarget,
 } from "./application";
 import {
   createBackupRestoreCoordinator,
@@ -99,6 +101,7 @@ export type FactoryContext = {
 };
 
 const trpc = initTRPC.context<FactoryContext>().create();
+const PR_MERGE_RECONCILIATION_MAX_URLS_PER_PASS = 8;
 
 const workStateSchema = z.enum([
   "backlog",
@@ -236,6 +239,13 @@ type ProjectIdResolver = (
   ctx?: FactoryContext,
 ) => string | undefined;
 
+function machineCanAccessProject(
+  machine: MachineCredentialIdentity,
+  projectId: string,
+): boolean {
+  return machine.allProjects || machine.projectIds.includes(projectId);
+}
+
 const unauthenticatedMessage = "Authentication is required.";
 
 function humanProcedure(message = unauthenticatedMessage) {
@@ -259,7 +269,7 @@ function scopedProcedure(resolveProjectId?: ProjectIdResolver) {
       // This middleware runs before .input(), so the parsed input is not yet
       // available; resolve the Project from the raw input instead.
       const projectId = resolveProjectId(await getRawInput(), ctx);
-      if (!projectId || !ctx.machine.projectIds.includes(projectId)) {
+      if (!projectId || !machineCanAccessProject(ctx.machine, projectId)) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: projectId
@@ -393,6 +403,7 @@ function scopeDashboardSnapshot(
   machine: MachineCredentialIdentity | null,
 ): DashboardSnapshot {
   if (!machine) return dashboard;
+  if (machine.allProjects) return dashboard;
   const projectIds = new Set(machine.projectIds);
   const projectDetail =
     dashboard.projectDetail && projectIds.has(dashboard.projectDetail.id)
@@ -434,6 +445,7 @@ function withContextDashboardItems<T>(
 
 function createRouter(
   application: ReturnType<typeof createFactoryApplication>,
+  machineCredentials: ReturnType<typeof createMachineCredentialStore>,
   githubStatusReader: GitHubStatusReader,
   t3Coordinator: ReturnType<typeof createT3Coordinator>,
   humanSessionConfigured: boolean,
@@ -455,6 +467,7 @@ function createRouter(
     requestedSourceId: string | undefined,
     options: { requireMachineSource?: boolean } = {},
   ): string | undefined => {
+    if (ctx.machine?.role === "reviewer") return requestedSourceId;
     const t3Sources = t3ConnectionStore.getSources();
     const sourceById = new Map(
       t3Sources.map((source) => [source.sourceId, source]),
@@ -531,31 +544,98 @@ function createRouter(
       "Provide exactly one Task or Subtask ID.",
     );
 
-  const serializedMutation = trpc.middleware(async ({ next }) => {
-    try {
-      return await mutationMutex.run(async () => {
-        const result = await next();
-        if (!result.ok && result.error.cause instanceof FactoryConflictError) {
-          return {
-            ...result,
-            error: new TRPCError({
-              code: "CONFLICT",
-              message: result.error.cause.message,
-            }),
-          };
-        }
-        return result;
-      });
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message === "Factory server is in maintenance mode."
-      ) {
-        throw new TRPCError({ code: "CONFLICT", message: error.message });
+  const createSerializedMutation = (allowReviewer = false) =>
+    trpc.middleware(async ({ ctx, next }) => {
+      if (ctx.machine?.role === "reviewer" && !allowReviewer) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "Reviewer credentials cannot change Factory work or planning data.",
+        });
       }
-      throw error;
+      try {
+        return await mutationMutex.run(async () => {
+          const result = await next();
+          if (
+            !result.ok &&
+            result.error.cause instanceof FactoryConflictError
+          ) {
+            return {
+              ...result,
+              error: new TRPCError({
+                code: "CONFLICT",
+                message: result.error.cause.message,
+              }),
+            };
+          }
+          return result;
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "Factory server is in maintenance mode."
+        ) {
+          throw new TRPCError({ code: "CONFLICT", message: error.message });
+        }
+        throw error;
+      }
+    });
+  const serializedMutation = createSerializedMutation();
+  const serializedReviewerMutation = createSerializedMutation(true);
+  const reviewerProcedure = (resolveProjectId?: ProjectIdResolver) =>
+    scopedProcedure(resolveProjectId).use(({ ctx, next }) => {
+      if (!ctx.machine || ctx.machine.role !== "reviewer") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "A reviewer credential is required.",
+        });
+      }
+      return next();
+    });
+  const activeReviewer = (ctx: FactoryContext): MachineCredentialIdentity => {
+    if (!ctx.machine || ctx.machine.role !== "reviewer") {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "A reviewer credential is required.",
+      });
     }
-  });
+    const current = machineCredentials.getActiveById(ctx.machine.id);
+    if (!current || current.role !== "reviewer" || !current.reviewerName) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: "The reviewer credential has been revoked or rotated.",
+      });
+    }
+    return current;
+  };
+  const resolveReviewerCredential = (
+    reviewerCredentialId: string | null,
+    projectId?: string,
+  ) => {
+    if (reviewerCredentialId === null) return null;
+    const credential = machineCredentials.getActiveById(reviewerCredentialId);
+    if (
+      !credential ||
+      credential.role !== "reviewer" ||
+      !credential.reviewerName
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "The selected credential is not an active reviewer.",
+      });
+    }
+    if (projectId && !machineCanAccessProject(credential, projectId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "The reviewer credential is not scoped to this Project.",
+      });
+    }
+    return {
+      id: credential.id,
+      machineId: credential.machineId,
+      reviewerName: credential.reviewerName,
+    };
+  };
   const idempotentMutation = trpc.middleware(async ({ ctx, input, next }) => {
     const requestKey = (input as { requestKey?: unknown } | null | undefined)
       ?.requestKey;
@@ -630,17 +710,111 @@ function createRouter(
     }
   };
 
+  const readMergedPullRequestEvidence = async (
+    pullRequestUrl: string | undefined,
+  ): Promise<PullRequestMergeEvidence | undefined> => {
+    if (!pullRequestUrl) return undefined;
+    const reference = parseGitHubPullRequestUrl(pullRequestUrl);
+    let mergeEvidence: { mergeSha?: string; mergedAt?: string } | undefined;
+    if (githubStatusReader.readMergeEvidence) {
+      mergeEvidence = await githubStatusReader.readMergeEvidence(reference);
+    } else {
+      const snapshot = await githubStatusReader.read(reference);
+      const pullRequest =
+        snapshot.status === "ok" ? snapshot.pullRequest : undefined;
+      if (pullRequest?.state === "closed") {
+        mergeEvidence = {
+          mergeSha: pullRequest.mergeSha,
+          mergedAt: pullRequest.mergedAt,
+        };
+      }
+    }
+    if (!mergeEvidence?.mergeSha || !mergeEvidence.mergedAt) return undefined;
+    const mergedAt = new Date(mergeEvidence.mergedAt);
+    if (!Number.isFinite(mergedAt.getTime())) return undefined;
+    return {
+      pullRequestUrl: reference.url,
+      mergeSha: mergeEvidence.mergeSha,
+      mergedAt,
+    };
+  };
+
+  const reconcileTargetFromGitHub = async (
+    targetType: ReviewerAssignmentTarget,
+    targetId: string,
+  ) => {
+    const pullRequestUrl =
+      targetType === "task"
+        ? application.getTaskDetail(targetId).pullRequestUrl
+        : application.getSubtaskDetail(targetId).pullRequestUrl;
+    if (!pullRequestUrl) {
+      return {
+        reconciled: false,
+        reason: "No pull request is linked to this target.",
+      };
+    }
+    let evidence: PullRequestMergeEvidence | undefined;
+    try {
+      evidence = await readMergedPullRequestEvidence(pullRequestUrl);
+    } catch {
+      evidence = undefined;
+    }
+    if (!evidence) {
+      return {
+        reconciled: false,
+        reason:
+          "GitHub did not confirm a closed merged PR with a merge commit SHA.",
+      };
+    }
+    const result = application.reconcileMergedPullRequest({
+      evidence,
+      targetId,
+      targetType,
+    });
+    if (result.reconciled) {
+      const projectId =
+        targetType === "task"
+          ? application.getProjectIdForTask(targetId)
+          : application.getProjectIdForSubtask(targetId);
+      projectUpdates.publish(projectId);
+    }
+    return result;
+  };
+
   return trpc.router({
     session: trpc.router({
       whoami: scopedProcedure().query(({ ctx }) => ({
         human: ctx.human ? { name: ctx.human.name } : null,
         machine: ctx.machine
           ? {
+              allProjects: ctx.machine.allProjects,
               machineId: ctx.machine.machineId,
               projectIds: ctx.machine.projectIds,
+              role: ctx.machine.role,
+              ...(ctx.machine.reviewerName
+                ? { reviewerName: ctx.machine.reviewerName }
+                : {}),
             }
           : null,
       })),
+    }),
+    reviewers: trpc.router({
+      list: humanProcedure().query(() =>
+        machineCredentials
+          .list()
+          .filter(
+            (credential) =>
+              credential.role === "reviewer" && credential.revokedAt === null,
+          )
+          .map((credential) => ({
+            id: credential.id,
+            reviewerName: credential.reviewerName!,
+            machineId: credential.machineId,
+            allProjects: credential.allProjects,
+            projectIds: credential.projectIds,
+            createdAt: credential.createdAt,
+          })),
+      ),
     }),
     backups: trpc.router({
       status: humanProcedure().query(() => backupRestore.status()),
@@ -719,11 +893,34 @@ function createRouter(
               "Provide exactly one Task or Subtask ID.",
             ),
         )
-        .use(serializedMutation)
+        .use(serializedReviewerMutation)
         .use(idempotentMutation)
         .mutation(({ ctx, input }) => {
           const uploader = ctx.machine?.machineId ?? ctx.human?.name;
           if (!uploader) throw new TRPCError({ code: "UNAUTHORIZED" });
+          if (ctx.machine?.role === "reviewer") {
+            const reviewer = activeReviewer(ctx);
+            const assigned = input.taskId
+              ? application.isReviewerAssignedToTarget(
+                  "task",
+                  input.taskId,
+                  reviewer.id,
+                )
+              : input.subtaskId
+                ? application.isReviewerAssignedToTarget(
+                    "subtask",
+                    input.subtaskId,
+                    reviewer.id,
+                  )
+                : false;
+            if (!assigned) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message:
+                  "Reviewer screenshot upload requires an assignment to this target.",
+              });
+            }
+          }
           const { requestKey: _requestKey, ...evidenceInput } = input;
           let evidence;
           try {
@@ -835,7 +1032,9 @@ function createRouter(
       list: scopedProcedure().query(({ ctx }) => {
         const projects = application.listProjects();
         return ctx.machine
-          ? projects.filter(({ id }) => ctx.machine!.projectIds.includes(id))
+          ? projects.filter(({ id }) =>
+              machineCanAccessProject(ctx.machine!, id),
+            )
           : projects;
       }),
       floor: scopedProcedure()
@@ -850,7 +1049,10 @@ function createRouter(
             requireMachineSource: true,
           });
           return loadFloorSnapshot({
-            projectIds: ctx.machine?.projectIds,
+            projectIds:
+              ctx.machine?.allProjects === true
+                ? undefined
+                : ctx.machine?.projectIds,
             sourceId,
             timezone: input.timezone,
           });
@@ -869,14 +1071,16 @@ function createRouter(
         const attention = application.getAttentionProjection();
         return ctx.machine
           ? attention.filter(({ projectId }) =>
-              ctx.machine!.projectIds.includes(projectId),
+              machineCanAccessProject(ctx.machine!, projectId),
             )
           : attention;
       }),
       portfolio: scopedProcedure().query(({ ctx }) => {
         const portfolio = application.getPortfolioStatus();
         return ctx.machine
-          ? scopePortfolioStatus(portfolio, new Set(ctx.machine.projectIds))
+          ? ctx.machine.allProjects
+            ? portfolio
+            : scopePortfolioStatus(portfolio, new Set(ctx.machine.projectIds))
           : portfolio;
       }),
       snapshot: scopedProcedure(fieldProjectId("projectId"))
@@ -1444,6 +1648,42 @@ function createRouter(
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
+      reviewerAssignment: scopedProcedure((input) => {
+        const subtaskId = (input as { subtaskId?: unknown } | undefined)
+          ?.subtaskId;
+        return typeof subtaskId === "string"
+          ? application.getProjectIdForSubtask(subtaskId)
+          : undefined;
+      })
+        .input(z.object({ subtaskId: z.string().min(1) }))
+        .query(({ input }) =>
+          application.getReviewerAssignment("subtask", input.subtaskId),
+        ),
+      assignReviewer: humanProcedure()
+        .input(
+          z.object({
+            reviewerCredentialId: z.string().min(1).nullable(),
+            subtaskId: z.string().min(1),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForSubtask(input.subtaskId);
+          const assignment = application.assignReviewer({
+            assignedBy: ctx.human!.name,
+            reviewer: resolveReviewerCredential(
+              input.reviewerCredentialId,
+              projectId,
+            ),
+            targetId: input.subtaskId,
+            targetType: "subtask",
+          });
+          return withContextDashboard(
+            ctx,
+            { assignment },
+            dashboardAfterPublish(application, projectUpdates, projectId),
+          );
+        }),
       verify: humanProcedure(
         humanSessionConfigured
           ? "A human session is required to verify status reports."
@@ -1464,6 +1704,41 @@ function createRouter(
           application.verifyStatusReport({
             ...input,
             verifier: ctx.human!.name,
+          });
+          return withContextDashboard(
+            ctx,
+            { ok: true },
+            dashboardAfterPublish(application, projectUpdates, projectId),
+          );
+        }),
+      review: reviewerProcedure((input) => {
+        const reportId = (input as { reportId?: unknown } | undefined)
+          ?.reportId;
+        return typeof reportId === "string"
+          ? application.getStatusReportProjectId(reportId)
+          : undefined;
+      })
+        .input(
+          z.object({
+            decision: z.enum(["accepted", "rejected", "deferred"]),
+            expectedRevision: z.number().int().min(1),
+            reason: z.string().trim().min(1).optional(),
+            reportId: z.string().min(1),
+            reportText: z.string().trim().min(1),
+            screenshotIds: z.array(z.string().min(1)).default([]),
+          }),
+        )
+        .use(serializedReviewerMutation)
+        .mutation(({ ctx, input }) => {
+          const reviewer = activeReviewer(ctx);
+          const projectId = application.getStatusReportProjectId(
+            input.reportId,
+          );
+          application.verifyStatusReport({
+            ...input,
+            reviewerCredentialId: reviewer.id,
+            source: "reviewer",
+            verifier: reviewer.reviewerName!,
           });
           return withContextDashboard(
             ctx,
@@ -1515,6 +1790,21 @@ function createRouter(
             application.getSubtaskDetail(input.subtaskId).pullRequestUrl,
           ),
         ),
+      reconcileMergedPullRequest: humanProcedure()
+        .input(z.object({ subtaskId: z.string().min(1) }))
+        .use(serializedMutation)
+        .mutation(async ({ ctx, input }) => {
+          const projectId = application.getProjectIdForSubtask(input.subtaskId);
+          const result = await reconcileTargetFromGitHub(
+            "subtask",
+            input.subtaskId,
+          );
+          return withContextDashboard(
+            ctx,
+            result,
+            application.getDashboardSnapshot(projectId),
+          );
+        }),
     }),
     tasks: trpc.router({
       create: scopedProcedure(fieldProjectId("projectId"))
@@ -1576,6 +1866,41 @@ function createRouter(
       })
         .input(z.object({ taskId: z.string().min(1) }))
         .query(({ input }) => application.getTaskDetail(input.taskId)),
+      reviewerAssignment: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
+        .input(z.object({ taskId: z.string().min(1) }))
+        .query(({ input }) =>
+          application.getReviewerAssignment("task", input.taskId),
+        ),
+      assignReviewer: humanProcedure()
+        .input(
+          z.object({
+            reviewerCredentialId: z.string().min(1).nullable(),
+            taskId: z.string().min(1),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForTask(input.taskId);
+          const assignment = application.assignReviewer({
+            assignedBy: ctx.human!.name,
+            reviewer: resolveReviewerCredential(
+              input.reviewerCredentialId,
+              projectId,
+            ),
+            targetId: input.taskId,
+            targetType: "task",
+          });
+          return withContextDashboard(
+            ctx,
+            { assignment },
+            dashboardAfterPublish(application, projectUpdates, projectId),
+          );
+        }),
       githubStatus: scopedProcedure((input) => {
         const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
         return typeof taskId === "string"
@@ -1586,6 +1911,18 @@ function createRouter(
         .query(({ input }) =>
           githubStatus(application.getTaskDetail(input.taskId).pullRequestUrl),
         ),
+      reconcileMergedPullRequest: humanProcedure()
+        .input(z.object({ taskId: z.string().min(1) }))
+        .use(serializedMutation)
+        .mutation(async ({ ctx, input }) => {
+          const projectId = application.getProjectIdForTask(input.taskId);
+          const result = await reconcileTargetFromGitHub("task", input.taskId);
+          return withContextDashboard(
+            ctx,
+            result,
+            application.getDashboardSnapshot(projectId),
+          );
+        }),
       update: scopedProcedure((input) => {
         const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
         return typeof taskId === "string"
@@ -1650,6 +1987,49 @@ function createRouter(
           return withContextDashboard(
             ctx,
             { taskId: input.taskId, accepted: true },
+            dashboardAfterPublish(application, projectUpdates, projectId),
+          );
+        }),
+      review: reviewerProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
+        .input(
+          z.object({
+            decision: z.enum(["accepted", "rejected", "deferred"]),
+            expectedTaskRevision: z.number().int().min(1),
+            reason: z.string().trim().min(1).optional(),
+            reportText: z.string().trim().min(1),
+            reviewedSubtasks: z
+              .array(
+                z.object({
+                  currentReportId: z.string().min(1).nullable(),
+                  currentVerificationId: z.string().min(1).nullable(),
+                  revision: z.number().int().min(1),
+                  subtaskId: z.string().min(1),
+                }),
+              )
+              .min(1),
+            screenshotIds: z.array(z.string().min(1)).default([]),
+            taskId: z.string().min(1),
+          }),
+        )
+        .use(serializedReviewerMutation)
+        .mutation(({ ctx, input }) => {
+          const reviewer = activeReviewer(ctx);
+          const projectId = application.getProjectIdForTask(input.taskId);
+          application.acceptTask({
+            ...input,
+            reason: input.reason ?? input.reportText,
+            reviewerCredentialId: reviewer.id,
+            source: "reviewer",
+            verifier: reviewer.reviewerName!,
+          });
+          return withContextDashboard(
+            ctx,
+            { taskId: input.taskId, reviewed: true, decision: input.decision },
             dashboardAfterPublish(application, projectUpdates, projectId),
           );
         }),
@@ -1970,6 +2350,7 @@ export function createFactoryServer({
   t3TimeoutMs: _t3TimeoutMs,
   t3ActivityReader,
   onRestorePrepared: configuredOnRestorePrepared,
+  pullRequestReconciliationIntervalMs = 5 * 60_000,
 }: {
   backupDirectory?: string;
   backupRequireNfs?: boolean;
@@ -1994,6 +2375,7 @@ export function createFactoryServer({
   t3TimeoutMs?: number;
   t3ActivityReader?: T3ActivityReader;
   onRestorePrepared?: (prepared: RestorePreparation) => void | Promise<void>;
+  pullRequestReconciliationIntervalMs?: number;
 }): FactoryServer {
   const factoryEnvironment = configuredFactoryEnvironment ?? "development";
   const requireExistingDatabase =
@@ -2104,9 +2486,12 @@ export function createFactoryServer({
     refresh: () => loadFloorSnapshot({}),
   });
   projectUpdates.onPublish(floorUpdates.invalidate);
+  const resolvedGitHubStatusReader =
+    githubStatusReader ?? createGitHubStatusReader({ token: githubToken });
   const router = createRouter(
     application,
-    githubStatusReader ?? createGitHubStatusReader({ token: githubToken }),
+    machineCredentials,
+    resolvedGitHubStatusReader,
     t3Coordinator,
     configuredOperator !== undefined,
     idempotencyStore,
@@ -2171,6 +2556,115 @@ export function createFactoryServer({
     wss: undefined as never,
   });
   const loginFailures = new Map<string, number[]>();
+  let mergeReconciliationInProgress = false;
+  let mergeReconciliationCursor = 0;
+  let mergeReconciliationTimer: ReturnType<typeof setInterval> | undefined;
+  const reconcileMergedPullRequests = async (): Promise<void> => {
+    if (
+      mergeReconciliationInProgress ||
+      shuttingDown ||
+      !resolvedGitHubStatusReader.readMergeEvidence
+    ) {
+      return;
+    }
+    mergeReconciliationInProgress = true;
+    try {
+      const targetsByUrl = new Map<
+        string,
+        Array<{
+          projectId: string;
+          targetId: string;
+          targetType: ReviewerAssignmentTarget;
+        }>
+      >();
+      for (const project of application.listProjects()) {
+        const hierarchy = application.getProjectHierarchy(project.id);
+        for (const task of hierarchy.tasks) {
+          if (task.archiveState !== undefined) continue;
+          if (task.pullRequestUrl) {
+            const targets = targetsByUrl.get(task.pullRequestUrl) ?? [];
+            targets.push({
+              projectId: project.id,
+              targetId: task.id,
+              targetType: "task",
+            });
+            targetsByUrl.set(task.pullRequestUrl, targets);
+          }
+          for (const subtask of task.subtasks) {
+            if (subtask.archiveState !== undefined || !subtask.pullRequestUrl)
+              continue;
+            const targets = targetsByUrl.get(subtask.pullRequestUrl) ?? [];
+            targets.push({
+              projectId: project.id,
+              targetId: subtask.id,
+              targetType: "subtask",
+            });
+            targetsByUrl.set(subtask.pullRequestUrl, targets);
+          }
+        }
+      }
+      const urls = [...targetsByUrl.keys()].sort();
+      if (urls.length === 0) return;
+      const start = mergeReconciliationCursor % urls.length;
+      const batch = Array.from(
+        {
+          length: Math.min(
+            PR_MERGE_RECONCILIATION_MAX_URLS_PER_PASS,
+            urls.length,
+          ),
+        },
+        (_, index) => urls[(start + index) % urls.length]!,
+      );
+      mergeReconciliationCursor = (start + batch.length) % urls.length;
+      for (const url of batch) {
+        if (shuttingDown) return;
+        let evidence: { mergeSha?: string; mergedAt?: string } | undefined;
+        try {
+          evidence = await resolvedGitHubStatusReader.readMergeEvidence(
+            parseGitHubPullRequestUrl(url),
+          );
+        } catch {
+          continue;
+        }
+        if (!evidence?.mergeSha || !evidence.mergedAt) continue;
+        const mergedAt = new Date(evidence.mergedAt);
+        if (!Number.isFinite(mergedAt.getTime())) continue;
+        for (const target of targetsByUrl.get(url) ?? []) {
+          try {
+            await mutationMutex.run(() => {
+              const result = application.reconcileMergedPullRequest({
+                evidence: {
+                  pullRequestUrl: parseGitHubPullRequestUrl(url).url,
+                  mergeSha: evidence!.mergeSha!,
+                  mergedAt,
+                },
+                targetId: target.targetId,
+                targetType: target.targetType,
+              });
+              if (result.reconciled) projectUpdates.publish(target.projectId);
+            });
+          } catch (error) {
+            if (!shuttingDown) {
+              console.error(
+                `Factory PR merge reconciliation failed for ${target.targetType} ${target.targetId}: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          }
+        }
+      }
+    } finally {
+      mergeReconciliationInProgress = false;
+    }
+  };
+  if (
+    resolvedGitHubStatusReader.readMergeEvidence &&
+    pullRequestReconciliationIntervalMs > 0
+  ) {
+    mergeReconciliationTimer = setInterval(
+      () => void reconcileMergedPullRequests(),
+      pullRequestReconciliationIntervalMs,
+    );
+  }
 
   if (!configuredOperator) {
     console.warn(
@@ -2376,6 +2870,10 @@ export function createFactoryServer({
   ): Promise<void> => {
     if (!stopPromise) {
       shuttingDown = true;
+      if (mergeReconciliationTimer !== undefined) {
+        clearInterval(mergeReconciliationTimer);
+        mergeReconciliationTimer = undefined;
+      }
       const timeoutMs = options.timeoutMs ?? shutdownTimeoutMs;
       stopPromise = (async () => {
         backupRestore.stop();

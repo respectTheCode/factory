@@ -68,8 +68,15 @@ import {
   type ObservedThreadDetail,
 } from "./observed-activity";
 import { summarizeT3Connections, t3ConnectionLabel } from "./t3-connection";
-import { ScreenshotProof } from "./screenshot-proof";
+import { ScreenshotProof, screenshotAnchorId } from "./screenshot-proof";
+import {
+  ReviewerControls,
+  TaskAcceptanceForm,
+  type ReviewerIdentity,
+  type VerificationSummary,
+} from "./reviewer-controls";
 import { ThreadDots } from "./thread-dots";
+import { verificationAttribution } from "./reviewer-presentation";
 import "./styles.css";
 
 type ProjectSummary = { id: string; name: string };
@@ -164,6 +171,7 @@ type TaskStatus = {
     | "wont_do";
   stateReason?: string;
   archiveState?: "released" | "wont_do";
+  taskVerification?: VerificationSummary;
   subtasks: Array<{
     reportedState?:
       | "backlog"
@@ -188,6 +196,7 @@ type TaskStatus = {
     reporter?: string;
     sortOrder?: number;
     archiveState?: "released" | "wont_do";
+    verification?: VerificationSummary;
   }>;
 };
 type TaskDetail = {
@@ -236,6 +245,11 @@ type SubtaskHistory = {
     reportId: string;
     decision: string;
     verifier: string;
+    source?: "human" | "reviewer" | "pr_merge";
+    reportText?: string;
+    screenshotIds?: string[];
+    mergeSha?: string;
+    mergedAt?: string | Date;
   }>;
 };
 
@@ -549,6 +563,13 @@ function Dashboard() {
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(
     null,
   );
+  const [reviewerIdentities, setReviewerIdentities] = useState<
+    ReviewerIdentity[] | null
+  >(null);
+  const [reviewersLoading, setReviewersLoading] = useState(false);
+  const [reviewersError, setReviewersError] = useState<string | null>(null);
+  const [reviewerAssignmentGeneration, setReviewerAssignmentGeneration] =
+    useState(0);
   const [taskDetails, setTaskDetails] = useState<Record<string, TaskDetail>>(
     {},
   );
@@ -915,6 +936,10 @@ function Dashboard() {
         setTaskStatuses({});
         setSubtaskHistories({});
         setGithubStatuses({});
+        setReviewerIdentities(null);
+        setReviewersLoading(false);
+        setReviewersError(null);
+        setReviewerAssignmentGeneration((current) => current + 1);
         setT3Activity(null);
         setFloorConnections(undefined);
         setT3Status(undefined);
@@ -954,6 +979,43 @@ function Dashboard() {
       void client.close();
     };
   }, [connection, human, sessionLoading, webSocketGeneration]);
+
+  useEffect(() => {
+    if (sessionLoading || !human) {
+      setReviewerIdentities(null);
+      setReviewersLoading(false);
+      setReviewersError(null);
+      return;
+    }
+    if (snapshot.state !== "connected") return;
+    const client = trpc.current;
+    if (!client) return;
+    let active = true;
+    setReviewersLoading(true);
+    setReviewersError(null);
+    void client.reviewers.list
+      .query()
+      .then((identities) => {
+        if (active && trpc.current === client) {
+          setReviewerIdentities(identities as ReviewerIdentity[]);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active || trpc.current !== client) return;
+        setReviewerIdentities(null);
+        setReviewersError(
+          error instanceof Error
+            ? error.message
+            : "Reviewer identities could not be loaded.",
+        );
+      })
+      .finally(() => {
+        if (active && trpc.current === client) setReviewersLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [human, sessionLoading, snapshot.state, webSocketGeneration]);
 
   useEffect(() => {
     if (
@@ -1061,6 +1123,7 @@ function Dashboard() {
           ]),
         ),
       );
+      setReviewerAssignmentGeneration((current) => current + 1);
       void refreshGitHubStatuses(detail);
     }
   };
@@ -1906,6 +1969,10 @@ function Dashboard() {
       clearFloorState();
       stopFloorSubscription();
       setHuman(null);
+      setReviewerIdentities(null);
+      setReviewersLoading(false);
+      setReviewersError(null);
+      setReviewerAssignmentGeneration((current) => current + 1);
       setWebSocketGeneration((current) => current + 1);
     } catch (error: unknown) {
       setSessionError(
@@ -2560,6 +2627,32 @@ function Dashboard() {
                               t3Activity,
                               task.id,
                             );
+                            const taskReviewScreenshotIds = new Set(
+                              status?.taskVerification?.screenshotIds ?? [],
+                            );
+                            const taskReviewScreenshots = [
+                              ...(taskDetail?.screenshots ?? []),
+                              ...task.subtasks
+                                .flatMap((subtask) => subtask.screenshots ?? [])
+                                .filter((screenshot) =>
+                                  taskReviewScreenshotIds.has(screenshot.id),
+                                ),
+                            ].filter(
+                              (screenshot, index, screenshots) =>
+                                screenshots.findIndex(
+                                  (candidate) => candidate.id === screenshot.id,
+                                ) === index,
+                            );
+                            const taskReviewScreenshotAnchors =
+                              Object.fromEntries(
+                                taskReviewScreenshots.map((screenshot) => [
+                                  screenshot.id,
+                                  screenshotAnchorId(
+                                    screenshot.id,
+                                    `task-${task.id}`,
+                                  ),
+                                ]),
+                              );
                             const subtaskGroups = groupSubtasksByStatus(
                               task.subtasks.map((subtask, index) => ({
                                 ...subtask,
@@ -2644,32 +2737,30 @@ function Dashboard() {
                                             task.subtasks.length === 0 ||
                                             !status
                                           }
-                                          onAcceptTask={() => {
-                                            if (!status) return;
-                                            void mutateAndRefresh(() =>
-                                              trpc.current!.tasks.accept.mutate(
-                                                {
-                                                  expectedTaskRevision:
-                                                    status.taskRevision,
-                                                  reviewedSubtasks:
-                                                    status.subtasks.map(
-                                                      (subtask) => ({
-                                                        currentReportId:
-                                                          subtask.reportId ??
-                                                          null,
-                                                        currentVerificationId:
-                                                          subtask.verificationId ??
-                                                          null,
-                                                        revision:
-                                                          subtask.revision,
-                                                        subtaskId:
-                                                          subtask.subtaskId,
-                                                      }),
-                                                    ),
-                                                  taskId: task.id,
+                                          onOpenAcceptance={() => {
+                                            setExpandedRows((current) => ({
+                                              ...current,
+                                              [taskRowKey]: true,
+                                            }));
+                                            window.requestAnimationFrame(() => {
+                                              window.requestAnimationFrame(
+                                                () => {
+                                                  const form =
+                                                    document.getElementById(
+                                                      `task-acceptance-${task.id}`,
+                                                    );
+                                                  form?.scrollIntoView({
+                                                    behavior: "smooth",
+                                                    block: "center",
+                                                  });
+                                                  form
+                                                    ?.querySelector<HTMLTextAreaElement>(
+                                                      "textarea",
+                                                    )
+                                                    ?.focus();
                                                 },
-                                              ),
-                                            );
+                                              );
+                                            });
                                           }}
                                           onResumeRollup={
                                             task.archiveState
@@ -3132,6 +3223,78 @@ function Dashboard() {
 
                                 {taskRowExpanded && (
                                   <>
+                                    <ReviewerControls
+                                      assignmentGeneration={
+                                        reviewerAssignmentGeneration
+                                      }
+                                      canManage={
+                                        snapshot.canMutate &&
+                                        snapshot.state === "connected"
+                                      }
+                                      client={trpc.current}
+                                      disabled={
+                                        busy || snapshot.state !== "connected"
+                                      }
+                                      kind="task"
+                                      onAssignmentChanged={() =>
+                                        setReviewerAssignmentGeneration(
+                                          (current) => current + 1,
+                                        )
+                                      }
+                                      onRefresh={() =>
+                                        refreshProject(projectDetail.id)
+                                      }
+                                      pullRequestUrl={
+                                        task.pullRequestUrl ??
+                                        taskDetail?.pullRequestUrl
+                                      }
+                                      reviewers={reviewerIdentities}
+                                      reviewersError={reviewersError}
+                                      reviewersLoading={reviewersLoading}
+                                      screenshotAnchorPrefix={`task-${task.id}`}
+                                      screenshots={taskReviewScreenshots}
+                                      targetId={task.id}
+                                      verification={status?.taskVerification}
+                                    />
+                                    <TaskAcceptanceForm
+                                      id={`task-acceptance-${task.id}`}
+                                      disabled={
+                                        !snapshot.canMutate ||
+                                        snapshot.state !== "connected" ||
+                                        busy ||
+                                        task.subtasks.length === 0 ||
+                                        !status
+                                      }
+                                      onAccept={(reason) => {
+                                        if (!status || !trpc.current) {
+                                          return Promise.reject(
+                                            new Error(
+                                              "Current task review data is unavailable.",
+                                            ),
+                                          );
+                                        }
+                                        return mutateAndRefresh(() =>
+                                          trpc.current!.tasks.accept.mutate({
+                                            ...(reason ? { reason } : {}),
+                                            expectedTaskRevision:
+                                              status.taskRevision,
+                                            reviewedSubtasks:
+                                              status.subtasks.map(
+                                                (subtask) => ({
+                                                  currentReportId:
+                                                    subtask.reportId ?? null,
+                                                  currentVerificationId:
+                                                    subtask.verificationId ??
+                                                    null,
+                                                  revision: subtask.revision,
+                                                  subtaskId: subtask.subtaskId,
+                                                }),
+                                              ),
+                                            taskId: task.id,
+                                          }),
+                                        );
+                                      }}
+                                    />
                                     {taskHistoryThreads.length > 0 && (
                                       <details className="task-details task-history">
                                         <summary>History</summary>
@@ -3143,7 +3306,8 @@ function Dashboard() {
                                         />
                                       </details>
                                     )}
-                                    {taskDetail && (
+                                    {(taskDetail ||
+                                      taskReviewScreenshots.length > 0) && (
                                       <ScreenshotProof
                                         busy={busy}
                                         canMutate={snapshot.canMutate}
@@ -3155,9 +3319,8 @@ function Dashboard() {
                                           )
                                         }
                                         ownerLabel={`Task ${task.simpleId}`}
-                                        screenshots={
-                                          taskDetail.screenshots ?? []
-                                        }
+                                        anchorPrefix={`task-${task.id}`}
+                                        screenshots={taskReviewScreenshots}
                                       />
                                     )}
                                     <div className="subtask-list">
@@ -3679,6 +3842,61 @@ function Dashboard() {
                                                       </button>
                                                     </div>
                                                     {subtaskRowExpanded && (
+                                                      <ReviewerControls
+                                                        assignmentGeneration={
+                                                          reviewerAssignmentGeneration
+                                                        }
+                                                        canManage={
+                                                          snapshot.canMutate &&
+                                                          snapshot.state ===
+                                                            "connected"
+                                                        }
+                                                        client={trpc.current}
+                                                        disabled={
+                                                          busy ||
+                                                          snapshot.state !==
+                                                            "connected"
+                                                        }
+                                                        kind="subtask"
+                                                        onAssignmentChanged={() =>
+                                                          setReviewerAssignmentGeneration(
+                                                            (current) =>
+                                                              current + 1,
+                                                          )
+                                                        }
+                                                        onRefresh={() =>
+                                                          refreshProject(
+                                                            projectDetail.id,
+                                                          )
+                                                        }
+                                                        parentTaskId={task.id}
+                                                        parentScreenshotAnchors={
+                                                          taskReviewScreenshotAnchors
+                                                        }
+                                                        pullRequestUrl={
+                                                          subtask.pullRequestUrl
+                                                        }
+                                                        reviewers={
+                                                          reviewerIdentities
+                                                        }
+                                                        reviewersError={
+                                                          reviewersError
+                                                        }
+                                                        reviewersLoading={
+                                                          reviewersLoading
+                                                        }
+                                                        screenshotAnchorPrefix={`subtask-${subtask.id}`}
+                                                        screenshots={
+                                                          subtask.screenshots ??
+                                                          []
+                                                        }
+                                                        targetId={subtask.id}
+                                                        verification={
+                                                          subtaskStatus?.verification
+                                                        }
+                                                      />
+                                                    )}
+                                                    {subtaskRowExpanded && (
                                                       <ScreenshotProof
                                                         busy={busy}
                                                         canMutate={
@@ -3695,6 +3913,7 @@ function Dashboard() {
                                                           )
                                                         }
                                                         ownerLabel={`Subtask ${subtask.simpleId}`}
+                                                        anchorPrefix={`subtask-${subtask.id}`}
                                                         screenshots={
                                                           subtask.screenshots ??
                                                           []
@@ -3737,13 +3956,12 @@ function Dashboard() {
                                                                 verification.id
                                                               }
                                                             >
-                                                              {
-                                                                verification.decision
-                                                              }{" "}
-                                                              by{" "}
-                                                              {
-                                                                verification.verifier
-                                                              }
+                                                              {verificationAttribution(
+                                                                verification,
+                                                              )}
+                                                              {verification.reportText
+                                                                ? ` · ${verification.reportText}`
+                                                                : ""}
                                                             </p>
                                                           ),
                                                         )}
@@ -4141,7 +4359,7 @@ function SubtaskActionIcon({ action }: { action: "edit" | "delete" }) {
 
 function TaskStatusMenu({
   acceptTaskDisabled,
-  onAcceptTask,
+  onOpenAcceptance,
   onDisposition,
   onResumeRollup,
   onState,
@@ -4149,7 +4367,7 @@ function TaskStatusMenu({
   taskName,
 }: {
   acceptTaskDisabled: boolean;
-  onAcceptTask: () => void;
+  onOpenAcceptance: () => void;
   onDisposition?: (state: "released" | "wont_do") => void;
   onResumeRollup?: () => void;
   onState: (state: TaskEditableWorkState, reason?: string) => void;
@@ -4201,14 +4419,14 @@ function TaskStatusMenu({
           className="status-option"
           disabled={acceptTaskDisabled}
           onClick={(event) => {
-            onAcceptTask();
             closeMenu(event);
+            onOpenAcceptance();
           }}
           role="option"
           title={
             acceptTaskDisabled
               ? "Add at least one Subtask and wait for the current review data before accepting."
-              : "Accept every Subtask and the Task together."
+              : "Open the review report before accepting every Subtask and the Task."
           }
           type="button"
         >

@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { normalizeWorkspaceRoot, sameWorkspaceRoot } from "./workspace";
 
 import {
@@ -96,6 +96,8 @@ type FactoryBackend = Pick<
   | "getScreenshotEvidence"
   | "listScreenshotEvidence"
   | "uploadScreenshotEvidence"
+  | "reviewSubtask"
+  | "reviewTask"
 >;
 
 type ParsedArgs = {
@@ -119,6 +121,7 @@ function parseArgs(args: string[]): ParsedArgs {
           flag === "confirm" ||
           flag === "json" ||
           flag === "overwrite" ||
+          flag === "all-projects" ||
           flag === "summary"
         ) {
           flags.set(flag, "true");
@@ -481,6 +484,133 @@ function historyTailFlag(flags: Map<string, string>): number | undefined {
     throw new Error("Use either --tail or --limit, not both.");
   }
   return value;
+}
+
+function verificationDecisionFlag(
+  flags: Map<string, string>,
+): VerificationDecision {
+  const decision = requiredFlag(flags, "decision");
+  if (
+    decision !== "accepted" &&
+    decision !== "rejected" &&
+    decision !== "deferred"
+  ) {
+    throw new Error("--decision must be accepted, rejected, or deferred.");
+  }
+  return decision;
+}
+
+function positiveRevisionFlag(
+  flags: Map<string, string>,
+  name: string,
+): number {
+  const value = requiredFlag(flags, name);
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`--${name} must be a positive integer.`);
+  }
+  const revision = Number(value);
+  if (!Number.isSafeInteger(revision) || revision < 1) {
+    throw new Error(`--${name} must be a positive integer.`);
+  }
+  return revision;
+}
+
+function reviewedTaskSnapshotFlag(value: string): {
+  expectedTaskRevision: number;
+  reviewedSubtasks: Array<{
+    currentReportId: string | null;
+    currentVerificationId: string | null;
+    revision: number;
+    subtaskId: string;
+  }>;
+} {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error("--reviewed-snapshot must not be empty.");
+  let contents: string;
+  if (trimmed.startsWith("@")) {
+    contents = readFileSync(trimmed.slice(1), "utf8");
+  } else if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    contents = trimmed;
+  } else if (existsSync(trimmed)) {
+    contents = readFileSync(trimmed, "utf8");
+  } else {
+    contents = trimmed;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(contents);
+  } catch (error) {
+    throw new Error(
+      `--reviewed-snapshot must be a JSON task status or a snapshot file: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("--reviewed-snapshot must contain a JSON object.");
+  }
+  const root = parsed as Record<string, unknown>;
+  const record =
+    root.status &&
+    typeof root.status === "object" &&
+    !Array.isArray(root.status)
+      ? (root.status as Record<string, unknown>)
+      : root;
+  if (record.truncated === true) {
+    throw new Error(
+      "--reviewed-snapshot is truncated; capture the complete Task status before reviewing.",
+    );
+  }
+  const expectedTaskRevision =
+    record.expectedTaskRevision ?? record.taskRevision;
+  const rawSubtasks = record.reviewedSubtasks ?? record.subtasks;
+  if (
+    typeof expectedTaskRevision !== "number" ||
+    !Number.isSafeInteger(expectedTaskRevision) ||
+    expectedTaskRevision < 1
+  ) {
+    throw new Error(
+      "--reviewed-snapshot must include a positive expectedTaskRevision or taskRevision.",
+    );
+  }
+  if (!Array.isArray(rawSubtasks) || rawSubtasks.length === 0) {
+    throw new Error(
+      "--reviewed-snapshot must include every reviewed Subtask exactly once.",
+    );
+  }
+  const reviewedSubtasks = rawSubtasks.map((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(`--reviewed-snapshot Subtask ${index + 1} is invalid.`);
+    }
+    const subtask = raw as Record<string, unknown>;
+    const currentReportId = subtask.currentReportId ?? subtask.reportId ?? null;
+    const currentVerificationId =
+      subtask.currentVerificationId ?? subtask.verificationId ?? null;
+    if (
+      typeof subtask.subtaskId !== "string" ||
+      !subtask.subtaskId.trim() ||
+      typeof subtask.revision !== "number" ||
+      !Number.isSafeInteger(subtask.revision) ||
+      subtask.revision < 1 ||
+      (currentReportId !== null && typeof currentReportId !== "string") ||
+      (currentVerificationId !== null &&
+        typeof currentVerificationId !== "string")
+    ) {
+      throw new Error(`--reviewed-snapshot Subtask ${index + 1} is invalid.`);
+    }
+    return {
+      currentReportId: currentReportId as string | null,
+      currentVerificationId: currentVerificationId as string | null,
+      revision: subtask.revision,
+      subtaskId: subtask.subtaskId,
+    };
+  });
+  if (
+    new Set(reviewedSubtasks.map(({ subtaskId }) => subtaskId)).size !==
+    reviewedSubtasks.length
+  ) {
+    throw new Error("--reviewed-snapshot must not repeat Subtask IDs.");
+  }
+  return { expectedTaskRevision, reviewedSubtasks };
 }
 
 function taskSummary(task: TaskDetail) {
@@ -927,6 +1057,16 @@ function createLocalBackend(application: FactoryApplication): FactoryBackend {
       application.getSubtaskVerificationHistory(subtaskId),
     getTaskDetail: async (taskId) => application.getTaskDetail(taskId),
     getTaskStatus: async (taskId) => application.getTaskStatus(taskId),
+    reviewSubtask: async () => {
+      throw new Error(
+        "Reviewer decisions require FACTORY_URL and an assigned reviewer credential.",
+      );
+    },
+    reviewTask: async () => {
+      throw new Error(
+        "Reviewer decisions require FACTORY_URL and an assigned reviewer credential.",
+      );
+    },
     listProjects: async () => application.listProjects(),
     removeProject: async (projectId) => application.removeProject(projectId),
     reorderSubtasks: async (input) => application.reorderSubtasks(input),
@@ -973,16 +1113,37 @@ async function main(args: string[]): Promise<void> {
     const store = createMachineCredentialStore({ databasePath });
     try {
       if (action === "create") {
+        const role = parsed.flags.get("role") ?? "coding";
+        const reviewerName = parsed.flags.get("reviewer-name")?.trim();
+        const allProjects = parsed.flags.has("all-projects");
         const projectIds = listFlag(parsed.flags, "project-ids");
-        if (projectIds.length === 0) {
+        if (role === "coding" && allProjects) {
+          throw new Error("Only reviewer credentials can use --all-projects.");
+        }
+        if (!allProjects && projectIds.length === 0) {
           throw new Error(
             "Missing required --project-ids; provide one or more IDs separated by |.",
           );
         }
+        if (role === "reviewer" && !reviewerName) {
+          throw new Error("Reviewer credentials require --reviewer-name.");
+        }
+        const machineId =
+          parsed.flags.get("machine-id")?.trim() ||
+          (role === "reviewer" && reviewerName
+            ? `${reviewerName
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, "-")
+                .replace(/^-+|-+$/g, "")}-reviewer`.slice(0, 63)
+            : "");
+        if (!machineId) throw new Error("Missing required --machine-id.");
         output({
           credential: store.create({
-            machineId: requiredFlag(parsed.flags, "machine-id"),
-            projectIds,
+            machineId,
+            projectIds: allProjects ? [] : projectIds,
+            role: role as "coding" | "reviewer",
+            ...(reviewerName ? { reviewerName } : {}),
+            allProjects,
           }),
         });
         return;
@@ -1663,6 +1824,25 @@ async function main(args: string[]): Promise<void> {
     return;
   }
 
+  if (resource === "task" && action === "review") {
+    const reviewed = reviewedTaskSnapshotFlag(
+      requiredFlag(parsed.flags, "reviewed-snapshot"),
+    );
+    const result = await application.reviewTask({
+      decision: verificationDecisionFlag(parsed.flags),
+      expectedTaskRevision: reviewed.expectedTaskRevision,
+      ...(parsed.flags.get("reason")?.trim()
+        ? { reason: parsed.flags.get("reason")!.trim() }
+        : {}),
+      reportText: requiredFlag(parsed.flags, "report-text"),
+      reviewedSubtasks: reviewed.reviewedSubtasks,
+      screenshotIds: listFlag(parsed.flags, "screenshot-ids"),
+      taskId: requiredFlag(parsed.flags, "task-id"),
+    });
+    output({ review: result });
+    return;
+  }
+
   if (resource === "task" && action === "resume-rollup") {
     const taskId = requiredFlag(parsed.flags, "task-id");
     await application.resumeTaskRollup(taskId);
@@ -2090,8 +2270,23 @@ async function main(args: string[]): Promise<void> {
     );
   }
 
+  if (resource === "subtask" && action === "review") {
+    const result = await application.reviewSubtask({
+      decision: verificationDecisionFlag(parsed.flags),
+      expectedRevision: positiveRevisionFlag(parsed.flags, "expected-revision"),
+      ...(parsed.flags.get("reason")?.trim()
+        ? { reason: parsed.flags.get("reason")!.trim() }
+        : {}),
+      reportId: requiredFlag(parsed.flags, "report-id"),
+      reportText: requiredFlag(parsed.flags, "report-text"),
+      screenshotIds: listFlag(parsed.flags, "screenshot-ids"),
+    });
+    output({ review: result });
+    return;
+  }
+
   throw new Error(
-    "Usage: doctor, credential create|list|revoke, database backup|check, project create|update|list|context|brief|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|state|resume-rollup|status|github-status|reorder|archive|restore|link, subtask create|update|report|reorder|status|github-status|archive|restore|history|verify, screenshot upload|list|get",
+    "Usage: doctor, credential create|list|revoke, database backup|check, project create|update|list|context|brief|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|review|state|resume-rollup|status|github-status|reorder|archive|restore|link, subtask create|update|report|review|reorder|status|github-status|archive|restore|history|verify, screenshot upload|list|get",
   );
 }
 

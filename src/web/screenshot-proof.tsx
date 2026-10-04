@@ -11,6 +11,7 @@ type ScreenshotProofProps = {
   canMutate: boolean;
   busy: boolean;
   ownerLabel: string;
+  anchorPrefix?: string;
   screenshots: ScreenshotEvidenceSummary[];
   onGet: (screenshotId: string) => Promise<ScreenshotEvidence>;
   onUpload: (input: {
@@ -66,6 +67,13 @@ function screenshotObjectUrl(evidence: ScreenshotEvidence): string {
   return URL.createObjectURL(new Blob([bytes], { type: evidence.contentType }));
 }
 
+export function screenshotAnchorId(
+  screenshotId: string,
+  anchorPrefix?: string,
+): string {
+  return `screenshot-${anchorPrefix ? `${anchorPrefix}-` : ""}${screenshotId}`;
+}
+
 export type ScreenshotUploadRequestState = {
   key: string;
   signature?: string;
@@ -92,6 +100,7 @@ export function ScreenshotProof({
   onGet,
   onUpload,
   ownerLabel,
+  anchorPrefix,
   screenshots,
 }: ScreenshotProofProps) {
   const [file, setFile] = useState<File | null>(null);
@@ -251,7 +260,11 @@ export function ScreenshotProof({
     const src = previewUrls[summary.id];
     const loadError = loadErrors[summary.id];
     return (
-      <article className="screenshot-proof-card" key={summary.id}>
+      <article
+        className="screenshot-proof-card"
+        id={screenshotAnchorId(summary.id, anchorPrefix)}
+        key={summary.id}
+      >
         {src ? (
           <a
             aria-label={`Open full-size screenshot: ${summary.caption}`}

@@ -360,9 +360,11 @@ describe("Factory machine credentials", () => {
       });
       expect(created.token).toMatch(/^fmc_[A-Za-z0-9_-]+$/);
       expect(store.authenticate(created.token)).toEqual({
+        allProjects: false,
         id: created.id,
         machineId: "mac-mini-1",
         projectIds: ["project-a", "project-b"],
+        role: "coding",
       });
       expect(store.authenticate("fmc_wrong")).toBeNull();
       expect(store.list()).toEqual([

@@ -1,6 +1,6 @@
 ---
 name: software-factory
-description: Resolve and report authorized work in Factory-tracked projects; keep human acceptance separate from agent evidence.
+description: Resolve and report authorized work in Factory-tracked projects; keep coding evidence separate from authorized acceptance.
 ---
 
 # Software Factory
@@ -53,8 +53,9 @@ database. Set `FACTORY_URL` (the service on the local network, for example
 command; passing both is an ambiguity error, and the CLI never falls back to a local database.
 Run `bun run src/cli.ts doctor --json` first: it reports the mode, API compatibility, and the
 machine identity with its Project scope, and exits non-zero when reporting cannot work. Reads
-and reports are limited to the credential's Projects; verification stays human-only in the
-dashboard. `subtask report` may add `--session-thread-id` with the current T3 thread so the
+and reports are limited to the coding credential's Projects; coding credentials cannot
+verify or accept work. Kevin may explicitly assign a separate reviewer such as Bitsy to
+review work across Projects. Reviewer access and acceptance are separate from coding access. `subtask report` may add `--session-thread-id` with the current T3 thread so the
 report carries its session reference. With multiple T3 sources, add `--session-source-id`
 when the source is known; the server validates it against the machine credential. Never print
 or paste the machine token.
@@ -71,7 +72,7 @@ bytes are required. Remote retries must reuse the same stable `--request-key` fo
 upload; a changed file or metadata uses a new key. The supported syntax and local/remote
 examples are in [references/cli-and-maintenance.md](references/cli-and-maintenance.md).
 
-Tasks and Subtasks accept `T-<number>` / `ST-<number>` as well as UUIDs. Prefer simple IDs in communication. Reports are append-only claims: `blocked` and `complete` require `--reason` naming the blocker or concrete human check. Only a human can accept the report and make the work completed.
+Tasks and Subtasks accept `T-<number>` / `ST-<number>` as well as UUIDs. Prefer simple IDs in communication. Reports are append-only claims: `blocked` and `complete` require `--reason` naming the blocker or concrete human check. A human, an explicitly assigned reviewer, or server-verified PR merge reconciliation can accept the report and make the work completed. Coding credentials cannot accept their own work.
 
 ## Agent operating loop
 
@@ -197,7 +198,7 @@ report.
 
 When work starts, submit `in_progress`. Submit `blocked` with the blocker in `--evidence`, or
 submit `complete` only when the evidence is ready for Kevin to review. Reports are observations,
-not approval; never attempt to verify from an agent process. After reporting, read the Task
+not approval; never attempt to verify from a coding-agent process. After reporting, read the Task
 status again and include the returned `report.id` in any handoff or summary.
 
 For an authorized Task with no Subtasks, use `task state --state active` at work start and
@@ -213,7 +214,7 @@ metadata-only correction, use `subtask update` rather than manufacturing a new p
 After child reports, inspect the parent. Automatic rollup uses all in-scope, non-archived
 Subtasks: any blocker makes it blocked; all complete reports awaiting acceptance or already
 accepted make it awaiting verification; partially delivered work remains active. Only current
-human-accepted complete reports can yield completed. Adding, removing, archiving, or restoring
+accepted complete reports can yield completed. Acceptance records whether Kevin, Bitsy, or PR Merge accepted the work. Adding, removing, archiving, or restoring
 scope recomputes automatic parents and their display order; manual holds remain deliberate.
 
 Avoid redundant `task state` writes: they create a manual hold. When an obsolete hold prevents
@@ -244,7 +245,7 @@ agents need their own supported client and installation; these local paths do no
 Tracker links can be attached through the CLI, PWA, or tRPC API. They remain references to the
 source item in Linear or Notion; Factory does not push updates to either system.
 Those source items own product requirements and decisions; Factory owns execution reports
-and human verification. Reconcile conflicting scope instead of treating one as an automatic override.
+and review decisions. Reconcile conflicting scope instead of treating one as an automatic override.
 
 The resolved context includes Project Tracker Links plus matching Task planning, Subtasks, and
 Task Tracker Links. Branch names are Factory context only; matching a Linear or Notion
@@ -254,3 +255,25 @@ Use `released` when the work shipped and `wont_do` when it is intentionally aban
 Archive States remain visible in the project and history, disappear from Attention, and can be
 restored without deleting Status Reports or Verifications. Archiving a Subtask does not archive
 its parent Task.
+
+## Delegated review and PR merge acceptance
+
+This operating loop is for coding agents. Keep using the coding credential and submit progress
+and completion reports; never borrow Bitsy's reviewer credential or Kevin's human session.
+Bitsy has a separate revocable reviewer identity, can read all Projects, and may review only
+work explicitly assigned by Kevin. Reviewer permissions do not grant planning, implementation,
+credential administration, or T3 messaging authority.
+
+A review records what was tested, its decision, and optional screenshot evidence. Factory shows
+`accepted by Bitsy`, `accepted by Kevin`, or `accepted by PR Merge`. Accepting a parent Task
+accepts its Subtasks together; Kevin need not approve each child separately. Hardware checks
+and judgment calls that the reviewer cannot resolve return to Kevin. Coding follow-up is not
+automatically dispatched by this initial reviewer workflow.
+
+Acceptance means the work has been reviewed and is ready for Kevin's PR review. Kevin still
+reviews every PR; acceptance does not authorize merging, releasing, or production deployment.
+The server can reconcile a linked PR's confirmed merge with eligible completion reports and
+record the PR and merge commit as evidence. Ordinary GitHub status reads remain read-only.
+An old merged PR cannot accept later work, and reconciliation does not replace an existing
+review decision or complete unfinished reports. See
+[reviewer acceptance](references/reviewer-acceptance.md) for the permission and review contracts.

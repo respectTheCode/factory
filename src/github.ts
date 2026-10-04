@@ -19,6 +19,7 @@ export type GitHubPullRequestStatus = {
   url: string;
   user?: string;
   mergedAt?: string;
+  mergeSha?: string;
 };
 
 export type GitHubWorkflowRunStatus = {
@@ -59,6 +60,9 @@ export type GitHubStatusReader = {
   read: (
     reference: GitHubPullRequestReference,
   ) => Promise<GitHubStatusSnapshot>;
+  readMergeEvidence?: (
+    reference: GitHubPullRequestReference,
+  ) => Promise<{ mergeSha?: string; mergedAt?: string } | undefined>;
 };
 
 type GitHubPullRequestPayload = {
@@ -68,6 +72,7 @@ type GitHubPullRequestPayload = {
   html_url?: unknown;
   mergeable?: unknown;
   mergeable_state?: unknown;
+  merge_commit_sha?: unknown;
   merged_at?: unknown;
   number?: unknown;
   state?: unknown;
@@ -180,6 +185,33 @@ export function createGitHubStatusReader({
   const configuredToken = token?.trim();
 
   return {
+    async readMergeEvidence(reference) {
+      if (!configuredToken) return undefined;
+      const headers = {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${configuredToken}`,
+        "X-GitHub-Api-Version": apiVersion,
+      };
+      const pullRequestPath = `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repo)}/pulls/${reference.number}`;
+      const response = await request(
+        `${baseUrl}${pullRequestPath}`,
+        headers,
+        fetcher,
+        timeoutMs,
+      );
+      if (!response.ok) return undefined;
+      let payload: GitHubPullRequestPayload;
+      try {
+        payload = (await response.json()) as GitHubPullRequestPayload;
+      } catch {
+        return undefined;
+      }
+      if (stringValue(payload.state) !== "closed") return undefined;
+      const mergedAt = stringValue(payload.merged_at);
+      const mergeSha = stringValue(payload.merge_commit_sha);
+      if (!mergedAt || !mergeSha) return undefined;
+      return { mergedAt, mergeSha };
+    },
     async read(reference) {
       const fetchedAt = now().toISOString();
       if (!configuredToken) {
@@ -484,6 +516,7 @@ function mapPullRequest(
       ? { mergeableState: stringValue(payload.mergeable_state) }
       : {}),
     mergedAt: stringValue(payload.merged_at),
+    mergeSha: stringValue(payload.merge_commit_sha),
     number,
     state,
     title,

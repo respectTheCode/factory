@@ -73,7 +73,9 @@ record. A Status Report does not replace Kevin's Verification.
   able to attach, replace, or clear that reference through the Factory CLI.
 - **FR-015** — The dashboard and CLI may read the linked private pull request and GitHub Actions
   runs for its exact head commit, including explicit `not configured`, `not found`, denied-access,
-  and unavailable states. GitHub reads must not write to GitHub or Factory Work State.
+  and unavailable states. GitHub status queries must not write to GitHub or Factory Work State.
+  Separate server reconciliation may record PR Merge acceptance from confirmed merge evidence
+  under the [reviewer acceptance](reviewer-acceptance.md) eligibility rules.
 - **FR-016** — GitHub credentials must remain server-side and outside the Factory SQLite state,
   CLI JSON, browser state, and logs. The first integration may use a server process environment
   token; the operator must explicitly provision that token for the trusted private deployment.
@@ -91,19 +93,20 @@ record. A Status Report does not replace Kevin's Verification.
   Factory Work State, Status Reports, Attention, and human Verification. They may identify stale
   or contradictory planning, but must never promote, complete, report, or verify work.
 
-### 3.3 Agent reports and human verification
+### 3.3 Agent reports and review decisions
 
 - **FR-020** — A Codex skill or hook must be able to submit a Subtask Status Report through the
   Factory CLI, including `subtaskId`, reported state, reporter, time, optional evidence, and an
   actionable reason when the reported state is `blocked`.
-- **FR-021** — Noninteractive CLI calls may create Status Reports but must not mark a Subtask or
-  Task verified or completed.
+- **FR-021** — Coding credentials may create Status Reports but must not verify or accept work.
+  Separate reviewer credentials may submit decisions only for explicitly assigned work.
 - **FR-022** — A human must be able to verify, reject, or defer a reported Subtask state from
   the mobile web interface or an interactive CLI command.
 - **FR-023** — Factory must retain Status Report history and Verification history. A newer
   report or verification must not erase the earlier observation.
-- **FR-024** — A Task can be marked completed only by human verification. An agent-reported
-  complete state places the relevant Subtask or Task in awaiting-verification, not completed.
+- **FR-024** — A Task becomes completed through acceptance by Kevin, an explicitly assigned
+  reviewer, or server-verified PR merge reconciliation. A coding-agent complete report places
+  the work in awaiting-verification, not completed.
 - **FR-025** — Blocked and awaiting-verification Tasks and Subtasks must expose an actionable
   reason: what unblocks the work or what the human needs to check. Entering either state without
   its required reason must be rejected.
@@ -112,6 +115,16 @@ record. A Status Report does not replace Kevin's Verification.
   blocked in either direction, including planned to active or active to planned. An explicit
   human Task state is not silently lowered by later Subtask reports. Completed remains governed
   only by the verification rule.
+
+- **FR-027** — A separately provisioned reviewer such as Bitsy can read all Projects and submit
+  review decisions only for work explicitly assigned by Kevin. Reviewer credentials cannot
+  administer Factory, edit planning or requirements, submit coding reports, or send T3 messages.
+- **FR-028** — Review history records the authenticated reviewer, what was tested, and optional
+  screenshot evidence. Whole-Task acceptance cascades to its Subtasks. Coding credentials
+  cannot accept work; Kevin continues to review every PR.
+- **FR-029** — Server reconciliation may accept eligible completion reports from an explicitly
+  linked, confirmed merged PR. It retains PR and merge evidence, is idempotent, preserves prior
+  decisions, and never accepts later reports using an earlier merge or restores archived work.
 
 #### V1 report and completion rules
 
@@ -127,10 +140,11 @@ record. A Status Report does not replace Kevin's Verification.
   current decision.
 - A Task is completed only when it has at least one Subtask and every Subtask's current report
   is `complete` with a latest Verification of `accepted`. A Task with no Subtasks remains
-  planned. Human acceptance attests that the Task's visible acceptance criteria are satisfied.
+  planned. Acceptance records who reviewed the work and what was tested; Kevin still reviews
+  every PR. See [reviewer acceptance](reviewer-acceptance.md).
 - A Task controlled by Subtask rollup considers all non-archived children: any blocked child
   makes it blocked; all awaiting-verification or accepted-complete children make it awaiting
-  verification; partial delivery remains active. All current reports must be human-accepted
+  verification; partial delivery remains active. All current reports must be accepted
   complete for automatic completion. With no remaining children it is planned.
 - A manual Task-state choice remains in force until a later higher Subtask transition or an
   explicit `task resume-rollup` action. Same-state reports and acceptance alone do not release
