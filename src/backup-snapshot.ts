@@ -27,6 +27,7 @@ const STATE_COLLECTIONS = [
   "subtasks",
   "statusReports",
   "verifications",
+  "reviewerAssignments",
   "trackerLinks",
   "screenshotEvidence",
   "runs",

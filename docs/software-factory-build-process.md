@@ -7,8 +7,8 @@
 
 This document defines how Factory v1 will be built without recreating Mission Control's
 unbounded scope. Every slice must deliver a small, observable behavior, preserve the
-distinction between agent reports and human verification, and remain usable from the web
-dashboard, CLI, and Codex skills.
+distinction between coding reports and authorized review decisions, and remain usable from
+the web dashboard, CLI, and Codex skills.
 
 ## 2. Working rules
 
@@ -32,10 +32,11 @@ dashboard, CLI, and Codex skills.
 - Releasing a Task also marks every child Subtask `released`, including children with an
   earlier disposition, while preserving their reports and verifications. Restoring the Task
   leaves each child released until that child is restored separately.
-- **Accept task and all subtasks** is a human-only action. It reuses each child's current
-  complete report, or appends a human-attributed completion report before accepting an
-  unfinished child. It clears Task and Subtask archive dispositions and the Task's manual
-  hold, then rolls the parent up to completed. Already accepted reports are not stamped again.
+- **Accept task and all subtasks** is available to Kevin and explicitly assigned reviewers.
+  Kevin's existing action reuses complete reports or appends a human-attributed completion
+  report for an unfinished child, clears archive dispositions and the manual hold, and rolls
+  the parent up to completed. Reviewers accept existing completion reports. Already accepted
+  reports are not stamped again. See [reviewer acceptance](reviewer-acceptance.md).
   The action checks the Task revision and every child's revision, current report, and current
   verification before changing anything. Empty Tasks and changed review snapshots are rejected.
 - The parent agent owns the working tree, test execution, UI checks, and commits. Bounded
@@ -83,8 +84,9 @@ go to stderr.
 - A Task or Subtask may be archived as `released` or `wont_do` from the dashboard, tRPC, or CLI.
   Archived Tasks leave Attention. Subtask scope changes recompute automatic parent state and
   destination ordering, without changing a manual hold or archiving the parent.
-- A human verification retains the original Status Report and is the only action that can make
-  the Task completed when its acceptance rule is satisfied.
+- An authorized review decision retains the original Status Report and can make the Task
+  completed when its acceptance rule is satisfied. Review attribution records Kevin, Bitsy,
+  or PR Merge; see [reviewer acceptance](reviewer-acceptance.md).
 - Rejected and deferred reports remain historical observations rather than being overwritten.
 - A Notion or Linear Tracker Link retains its system, stable ID, and URL without becoming
   Factory-owned status.
@@ -191,14 +193,16 @@ tests; business tests never inspect tables directly.
 Add CLI commands for the same core operations, with stable `--json` reads. Project commands
 include Git-origin context and Task creation accepts a branch name so coding agents can match a
 checkout to Factory work. A skill-shaped,
-noninteractive command may submit a Status Report but cannot verify or complete work. Document
+coding command may submit a Status Report but cannot verify or accept work. Separate
+reviewer credentials can submit decisions for explicitly assigned work. Document
 the initial skill command and hook payload after the CLI contract is stable. The current agent
 loop reads `project attention`, `task detail`, and `subtask history`, then uses `subtask report`
 for `in_progress`, `blocked`, or `complete`, supplying `--reason` for blocked and complete
 reports. After Project/Task context resolves uniquely, it uses `session auto-link` to associate the
 one current running T3 thread on the same branch; missing or multiple thread matches fail closed,
 and selecting a Subtask may add another association without replacing existing ones. `subtask
-verify` remains human-only. Tracker links
+verify` remains unavailable to coding credentials; assigned reviewer decisions use the
+separate review contract. Tracker links
 can be attached through the CLI without writing to Notion or Linear. `task archive` and
 `subtask archive` provide quick `released`/`wont_do` dispositions, with matching restore
 commands. Include a `schemaVersion` in machine JSON before skills depend on it.

@@ -6,6 +6,54 @@ import {
 } from "../src/github";
 
 describe("GitHub pull request status adapter", () => {
+  test("merge evidence requires a closed merged PR, merge timestamp, SHA, and credentials", async () => {
+    const reference = parseGitHubPullRequestUrl(
+      "https://github.com/acme/repo/pull/1",
+    );
+    const mergedPayload = {
+      merge_commit_sha: "0123456789abcdef0123456789abcdef01234567",
+      merged_at: "2026-10-04T10:00:00Z",
+      state: "closed",
+    };
+    const read = async (
+      status: number,
+      payload: Record<string, unknown>,
+      token = "server-token",
+    ) =>
+      createGitHubStatusReader({
+        fetcher: async () => new Response(JSON.stringify(payload), { status }),
+        token,
+      }).readMergeEvidence!(reference);
+
+    expect(await read(200, mergedPayload)).toEqual({
+      mergeSha: mergedPayload.merge_commit_sha,
+      mergedAt: mergedPayload.merged_at,
+    });
+    expect(
+      await read(200, {
+        ...mergedPayload,
+        merge_commit_sha: null,
+      }),
+    ).toBeUndefined();
+    expect(
+      await read(200, {
+        ...mergedPayload,
+        state: "open",
+      }),
+    ).toBeUndefined();
+    expect(await read(403, mergedPayload)).toBeUndefined();
+
+    let unauthenticatedCalls = 0;
+    const unconfigured = createGitHubStatusReader({
+      fetcher: async () => {
+        unauthenticatedCalls += 1;
+        return new Response(JSON.stringify(mergedPayload), { status: 200 });
+      },
+    });
+    expect(await unconfigured.readMergeEvidence!(reference)).toBeUndefined();
+    expect(unauthenticatedCalls).toBe(0);
+  });
+
   test("normalizes a pull request URL and reads Actions for the exact head SHA", async () => {
     const requests: Array<{ init?: RequestInit; url: string }> = [];
     const reader = createGitHubStatusReader({

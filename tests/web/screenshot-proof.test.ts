@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { screenshotUploadRequest } from "../../src/web/screenshot-proof";
+import {
+  screenshotAnchorId,
+  screenshotUploadRequest,
+} from "../../src/web/screenshot-proof";
 
 const mainSource = readFileSync(
   join(import.meta.dir, "../../src/web/main.tsx"),
@@ -51,6 +54,14 @@ describe("screenshot proof dashboard", () => {
     ).toEqual({
       key: "request-4",
     });
+  });
+
+  test("keeps task and subtask screenshot anchors unique for shared evidence", () => {
+    const taskAnchor = screenshotAnchorId("shot-1", "task-task-1");
+    const subtaskAnchor = screenshotAnchorId("shot-1", "subtask-subtask-1");
+    expect(taskAnchor).toBe("screenshot-task-task-1-shot-1");
+    expect(subtaskAnchor).toBe("screenshot-subtask-subtask-1-shot-1");
+    expect(taskAnchor).not.toBe(subtaskAnchor);
   });
 
   test("attaches proof to expanded Task and Subtask rows through scoped tRPC routes", () => {
