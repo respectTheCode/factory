@@ -24,6 +24,19 @@ and takes an authenticated NAS backup before requesting a changed release.
 Development and main-branch pushes do not directly deploy. The pilot poller is
 disabled during cutover and must not target the authoritative database.
 
+GitHub authentication uses a dedicated read-only host secret at
+`files/secrets/github-token` in the Dokploy Compose project. Provision the file before
+starting production, with ownership UID/GID 1000 and mode `0400` so the non-root Bun
+process can read it. `compose.production.yaml` mounts it read-only at
+`/run/secrets/factory_github` and sets `GITHUB_TOKEN_FILE` to that path. Keep token
+contents out of Compose environment values, source control, images, and logs.
+
+The former Mac launcher retrieves the existing dedicated credential from Keychain
+service `com.app-press.factory.github-token` under the agent account. Migration to
+Dokploy must explicitly transfer that credential; the container cannot read the Mac
+Keychain. Validate a linked Task's `github-status` through Factory after deployment,
+not only `/readyz`, before calling GitHub authentication restored.
+
 After any new production reports arrive, do not restart the stale Mac writer or
 restore its frozen snapshot as an automatic rollback. Preserve the new Dokploy
 state and reconcile newer work before a deliberate recovery. The Mac Factory

@@ -45,6 +45,7 @@ services:
       FACTORY_REQUIRE_EXISTING_DB: "true"
       FACTORY_OPERATOR_NAME: kevin
       FACTORY_OPERATOR_SECRET_FILE: /run/secrets/factory_operator
+      GITHUB_TOKEN_FILE: /run/secrets/factory_github
       FACTORY_ALLOWED_ORIGINS: ${FACTORY_ALLOWED_ORIGINS:-}
       FACTORY_T3_SOURCES_FILE: /run/factory-t3/sources.json
       FACTORY_BACKUP_DIR: ${FACTORY_BACKUP_DIR:-/backups/production}
@@ -53,6 +54,7 @@ services:
       - factory-data:/data
       - factory-backups:/backups
       - ../files/secrets/production-operator-secret:/run/secrets/factory_operator:ro
+      - ../files/secrets/github-token:/run/secrets/factory_github:ro
       - ../files/t3:/run/factory-t3:ro
     restart: unless-stopped
     stop_grace_period: 30s
