@@ -76,6 +76,7 @@ import {
   type VerificationSummary,
 } from "./reviewer-controls";
 import { ThreadDots } from "./thread-dots";
+import { TaskTracking, type TrackingReportInput } from "./task-tracking-panel";
 import { verificationAttribution } from "./reviewer-presentation";
 import "./styles.css";
 
@@ -197,6 +198,28 @@ type TaskStatus = {
     sortOrder?: number;
     archiveState?: "released" | "wont_do";
     verification?: VerificationSummary;
+    reportCreatedAt?: Date | string;
+    machineId?: string;
+    sessionRef?: {
+      provider: "t3";
+      sourceId?: string;
+      externalThreadId: string;
+    };
+    handoff?: {
+      nextOwner: string;
+      nextOwnerKind: "human" | "agent" | "unknown";
+      nextAction: string;
+      dependency?: string;
+      waitingOnSubtaskIds?: string[];
+    };
+    testedRevision?: string;
+    reportEvidence?: string;
+    artifacts?: Array<{
+      label: string;
+      url: string;
+      kind: "artifact" | "preview" | "test" | "review";
+      testedRevision?: string;
+    }>;
   }>;
 };
 type TaskDetail = {
@@ -422,6 +445,10 @@ function observedActivityView(
       },
       branch: thread.branch,
       changedFileCount: thread.changedFileCount,
+      agent: thread.agent,
+      codeSessionId: thread.codeSessionId,
+      runId: thread.runId,
+      sourceCurrent: thread.sourceCurrent,
       externalProjectId: thread.externalProjectId,
       hasPendingApprovals: thread.hasPendingApprovals,
       hasPendingUserInput: thread.hasPendingUserInput,
@@ -1466,13 +1493,14 @@ function Dashboard() {
     reason?: string,
   ) => {
     const client = trpc.current;
-    if (!client) return;
+    const reporter = human?.name.trim();
+    if (!client || !reporter) return;
     await mutateAndRefresh(() =>
       client.subtasks.report.mutate({
         ...(evidence ? { evidence } : {}),
         ...(reason ? { reason } : {}),
         reportedState,
-        reporter: reportedState === "complete" ? "codex" : "kevin",
+        reporter,
         subtaskId,
       }),
     );
@@ -3223,6 +3251,64 @@ function Dashboard() {
 
                                 {taskRowExpanded && (
                                   <>
+                                    <TaskTracking
+                                      activity={t3Activity}
+                                      canMutate={snapshot.canMutate}
+                                      connected={snapshot.state === "connected"}
+                                      busy={busy}
+                                      githubStatuses={githubStatuses}
+                                      operatorName={human?.name}
+                                      onRefreshPullRequests={() =>
+                                        refreshGitHubStatuses(projectDetail)
+                                      }
+                                      onReport={async (
+                                        input: TrackingReportInput,
+                                      ) => {
+                                        const client = trpc.current;
+                                        if (!client) {
+                                          throw new Error(
+                                            "Factory connection is unavailable.",
+                                          );
+                                        }
+                                        await mutateAndRefresh(() =>
+                                          client.subtasks.report.mutate(
+                                            input as Parameters<
+                                              typeof client.subtasks.report.mutate
+                                            >[0],
+                                          ),
+                                        );
+                                      }}
+                                      status={status}
+                                      task={{
+                                        ...task,
+                                        acceptanceCriteria:
+                                          taskDetail?.acceptanceCriteria ?? [],
+                                        screenshots: (
+                                          taskDetail?.screenshots ?? []
+                                        ).map((screenshot) => ({
+                                          id: screenshot.id,
+                                          caption: screenshot.caption,
+                                          testedRevision:
+                                            screenshot.testedRevision,
+                                          uploadedAt: screenshot.uploadedAt,
+                                        })),
+                                        subtasks: task.subtasks.map(
+                                          (subtask) => ({
+                                            ...subtask,
+                                            screenshots: (
+                                              subtask.screenshots ?? []
+                                            ).map((screenshot) => ({
+                                              id: screenshot.id,
+                                              subtaskId: screenshot.subtaskId,
+                                              caption: screenshot.caption,
+                                              testedRevision:
+                                                screenshot.testedRevision,
+                                              uploadedAt: screenshot.uploadedAt,
+                                            })),
+                                          }),
+                                        ),
+                                      }}
+                                    />
                                     <ReviewerControls
                                       assignmentGeneration={
                                         reviewerAssignmentGeneration

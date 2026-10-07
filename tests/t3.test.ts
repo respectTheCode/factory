@@ -227,7 +227,7 @@ describe("T3 read-only activity transport", () => {
       baseUrl: BASE_URL,
       fetcher: async (input) =>
         String(input).includes("/.well-known")
-          ? descriptorResponse("0.0.46", 2)
+          ? descriptorResponse("0.0.46", 3)
           : shellResponse(),
       token: FIXTURE_TOKEN,
     });

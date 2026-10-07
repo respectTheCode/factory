@@ -44,6 +44,11 @@ export type ObservedAssociation = {
 };
 
 export type ObservedThread = {
+  /** Explicit transport identity; provider is the T3 surface, not the coding model. */
+  agent?: string;
+  codeSessionId?: string;
+  runId?: string;
+  sourceCurrent?: boolean;
   association: ObservedAssociation;
   branch?: string;
   changedFileCount?: number;

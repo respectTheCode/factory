@@ -229,7 +229,10 @@ Do not temporarily reset a started Task to `planned` to bypass the acceptance-cr
 record a changed scope in the description and hand off any criteria change for human review.
 The final handoff names affected Task/Subtask IDs, new report IDs, remaining work, and any
 unresolved Factory or session association failure. A session ending alone is never evidence
-that its work completed.
+that its work completed. Optional structured handoffs name the next owner and action,
+with same-Task Subtask dependencies; revision and artifact fields preserve review
+provenance. See [CLI report fields](references/cli-and-maintenance.md). Factory
+records these claims without launching, scheduling, retrying, or messaging agents.
 
 ## Local installation
 

@@ -75,6 +75,30 @@ bun run src/cli.ts session unlink --thread-id THREAD_ID --association-id ASSOCIA
   --json --database "$FACTORY_DB"
 ```
 
+Reports optionally record structured handoff and revision evidence. Supply
+`--next-owner`, `--next-owner-kind` (`human`, `agent`, or `unknown`), and
+`--next-action` together. Add `--dependency` for context and pipe-separated
+`--waiting-on-subtask-ids` for other Subtasks of the same Task. These fields record
+who should act next; they never dispatch work or change the underlying blocker.
+`--tested-revision` accepts a 7–40 character hexadecimal revision, normalized to
+lowercase; use the full SHA to establish an exact PR-head match. `--artifacts-json`
+accepts up to 20 objects with `label`, an HTTP(S) `url` without credentials,
+`kind` (`artifact`, `preview`, `test`, or `review`), and optional `testedRevision`.
+Artifact and preview links are reported claims, not verified deployment status.
+
+```bash
+bun run src/cli.ts subtask report --subtask-id SUBTASK_ID --state complete \
+  --reporter "$FACTORY_REPORTER" --reason "Inspect the revision and preview before accepting" \
+  --evidence "Focused checks passed locally" --tested-revision FULL_COMMIT_SHA \
+  --next-owner Kevin --next-owner-kind human --next-action "Review the packet" \
+  --artifacts-json '[{"label":"Candidate preview","url":"https://preview.example.test","kind":"preview"}]' \
+  --json --database "$FACTORY_DB"
+```
+
+Use the configured remote environment and omit `--database` in remote mode. On a
+retry reuse the same `--request-key` for the identical report; a changed claim
+needs a new key. A completion claim remains awaiting authorized acceptance.
+
 Screenshot proof is scoped to one Task or Subtask. Uploads retain a caller-supplied
 `--request-key` in remote mode so a retry after an uncertain response is idempotent; reuse
 the same key for the same file and metadata, and choose a new key for a changed upload.
