@@ -28,6 +28,7 @@ import {
 } from "./backup-restore";
 import { createBackupService, type BackupService } from "./backup-service";
 import { FACTORY_API_VERSION } from "./api-version";
+import { reportTrackingSchema } from "./report-tracking";
 import {
   createGitHubStatusReader,
   parseGitHubPullRequestUrl,
@@ -1531,6 +1532,7 @@ function createRouter(
       })
         .input(
           z.object({
+            ...reportTrackingSchema.shape,
             evidence: z.string().optional(),
             reportedState: z.enum([
               "not_started",

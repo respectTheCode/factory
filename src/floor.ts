@@ -407,6 +407,99 @@ function sourceIsFresh(
   return activity.status === "ok" && connectionIsFresh(activity, sourceId, now);
 }
 
+function hasFreshRunningChildObservation(
+  activities: readonly FloorProjectActivity[],
+  projects: Map<string, Project>,
+  taskInputs: readonly FloorTaskInput[],
+  projectId: string,
+  taskId: string,
+  subtaskId: string,
+  now: Date,
+): boolean {
+  return activities.some(({ projectId: activityProjectId, activity }) => {
+    if (activityProjectId !== projectId) return false;
+    return activityThreads([activity]).some(
+      (thread) =>
+        sourceIsFresh(activity, thread.sourceId, now) &&
+        thread.association.state === "linked" &&
+        thread.sourceCurrent !== false &&
+        threadState(thread) === "working" &&
+        targetsForLinks(
+          projects,
+          taskInputs,
+          projectId,
+          thread.association.links,
+        ).some(
+          (target) =>
+            target.taskId === taskId && target.subtaskId === subtaskId,
+        ),
+    );
+  });
+}
+
+function hasFreshAgentHandoffChildren(
+  task: Task,
+  status: TaskStatus,
+  subtasks: readonly Subtask[],
+  projects: Map<string, Project>,
+  taskInputs: readonly FloorTaskInput[],
+  activities: readonly FloorProjectActivity[],
+  now: Date,
+): boolean {
+  if (task.workStateSource !== "rollup") return false;
+  const blockedSubtasks = status.subtasks.filter(
+    (subtask) =>
+      subtask.archiveState === undefined &&
+      subtask.subtaskId &&
+      subtask.effectiveState === "blocked",
+  );
+  if (blockedSubtasks.length === 0) return false;
+
+  const activeStatusIds = new Set(
+    status.subtasks
+      .filter(
+        (subtask) =>
+          subtask.archiveState === undefined &&
+          subtask.effectiveState === "active",
+      )
+      .map((subtask) => subtask.subtaskId),
+  );
+  const activeSubtaskIds = new Set(
+    subtasks
+      .filter(
+        (subtask) =>
+          subtask.taskId === task.id && subtask.archiveState === undefined,
+      )
+      .map((subtask) => subtask.id),
+  );
+
+  return blockedSubtasks.every((blockedSubtask) => {
+    const handoff = blockedSubtask.handoff;
+    const waitingOnSubtaskIds = handoff?.waitingOnSubtaskIds;
+    if (
+      handoff?.nextOwnerKind !== "agent" ||
+      !waitingOnSubtaskIds ||
+      waitingOnSubtaskIds.length === 0
+    ) {
+      return false;
+    }
+    return waitingOnSubtaskIds.every(
+      (subtaskId) =>
+        activeStatusIds.has(subtaskId) &&
+        activeSubtaskIds.has(subtaskId) &&
+        hasFreshRunningChildObservation(
+          activities,
+          projects,
+          taskInputs,
+          task.projectId,
+          task.id,
+          subtaskId,
+          now,
+        ),
+    );
+  });
+}
+
 function connectionIsFresh(
   activity: T3ObservedActivity,
   sourceId: string,
@@ -672,16 +765,28 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
           (left, right) =>
             timestamp(left.createdAt) - timestamp(right.createdAt),
         )[0];
-      queue.push({
-        action: "unblock",
-        id: `unblock:${task.id}`,
-        projectId: project.id,
-        projectName: project.name,
-        ...(status.stateReason ? { reason: status.stateReason } : {}),
-        summary: `Unblock ${task.name}`,
-        target: { kind: "work", target },
-        timestamp: iso(blockedReport?.createdAt ?? task.createdAt),
-      });
+      if (
+        !hasFreshAgentHandoffChildren(
+          task,
+          status,
+          subtasks,
+          projects,
+          activeTasks,
+          input.activities,
+          input.now,
+        )
+      ) {
+        queue.push({
+          action: "unblock",
+          id: `unblock:${task.id}`,
+          projectId: project.id,
+          projectName: project.name,
+          ...(status.stateReason ? { reason: status.stateReason } : {}),
+          summary: `Unblock ${task.name}`,
+          target: { kind: "work", target },
+          timestamp: iso(blockedReport?.createdAt ?? task.createdAt),
+        });
+      }
     }
   }
 

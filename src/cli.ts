@@ -48,6 +48,7 @@ import {
   type FactoryRemoteBriefData,
   type FactoryRemoteClient,
 } from "./remote-client";
+import { reportTrackingSchema } from "./report-tracking";
 import {
   CLI_READ_CAPS,
   decodeGithubStatusCursor,
@@ -205,6 +206,65 @@ function reportedStateFlag(flags: Map<string, string>): ReportedState {
     );
   }
   return value as ReportedState;
+}
+
+function reportTrackingFlags(flags: Map<string, string>) {
+  const handoffFlagNames = [
+    "next-owner",
+    "next-owner-kind",
+    "next-action",
+    "dependency",
+    "waiting-on-subtask-ids",
+  ];
+  const hasHandoffFlags = handoffFlagNames.some((name) => flags.has(name));
+  if (
+    hasHandoffFlags &&
+    ["next-owner", "next-owner-kind", "next-action"].some(
+      (name) => !flags.has(name),
+    )
+  ) {
+    throw new Error(
+      "Handoff flags require --next-owner, --next-owner-kind, and --next-action together.",
+    );
+  }
+
+  let artifacts: unknown;
+  if (flags.has("artifacts-json")) {
+    try {
+      artifacts = JSON.parse(flags.get("artifacts-json") ?? "");
+    } catch (error) {
+      throw new Error(
+        `--artifacts-json must contain a JSON array: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  return reportTrackingSchema.parse({
+    ...(hasHandoffFlags
+      ? {
+          handoff: {
+            nextOwner: flags.get("next-owner"),
+            nextOwnerKind: flags.get("next-owner-kind"),
+            nextAction: flags.get("next-action"),
+            ...(flags.has("dependency")
+              ? { dependency: flags.get("dependency") }
+              : {}),
+            ...(flags.has("waiting-on-subtask-ids")
+              ? {
+                  waitingOnSubtaskIds: listFlag(
+                    flags,
+                    "waiting-on-subtask-ids",
+                  ),
+                }
+              : {}),
+          },
+        }
+      : {}),
+    ...(flags.has("tested-revision")
+      ? { testedRevision: flags.get("tested-revision") }
+      : {}),
+    ...(flags.has("artifacts-json") ? { artifacts } : {}),
+  });
 }
 
 function workStateFlag(flags: Map<string, string>): WorkState {
@@ -2121,7 +2181,9 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "subtask" && action === "report") {
     const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
+    const tracking = reportTrackingFlags(parsed.flags);
     const report = await application.reportSubtaskStatus({
+      ...tracking,
       evidence: parsed.flags.get("evidence"),
       reportedState: reportedStateFlag(parsed.flags),
       reporter: requiredFlag(parsed.flags, "reporter"),

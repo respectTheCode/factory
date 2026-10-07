@@ -98,6 +98,9 @@ export type T3ObservedAssociation = {
 };
 
 export type T3ObservedThread = {
+  codeSessionId?: string;
+  runId?: string;
+  sourceCurrent?: boolean;
   sourceId: string;
   machineId: string;
   threadId: string;
@@ -639,6 +642,12 @@ function viewThread(
   const sourceId = observationSourceId(observation);
   const machineId = observationMachineId(observation);
   return {
+    ...(item.codeSession
+      ? { codeSessionId: item.codeSession.id, runId: item.codeSession.runId }
+      : {}),
+    ...(observation.sourceCurrent === undefined
+      ? {}
+      : { sourceCurrent: observation.sourceCurrent }),
     ...(observation.agent === undefined ? {} : { agent: observation.agent }),
     ...(observation.branch === undefined ? {} : { branch: observation.branch }),
     ...(evidence?.changedFileCount === undefined

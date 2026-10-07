@@ -52,8 +52,19 @@ export type GitHubStatusSnapshot = {
     | "unavailable";
   checkRuns: GitHubCheckRunStatus[];
   checkRunsStatus: "not_requested" | "ok" | "unavailable";
+  allCheckRuns?: GitHubCheckRunStatus[];
+  allCheckRunsStatus?: "not_requested" | "ok" | "unavailable";
   workflowRuns: GitHubWorkflowRunStatus[];
   workflowRunsStatus: "not_requested" | "ok" | "unavailable";
+  review?: {
+    status: "ok" | "unavailable";
+    headSha: string;
+    completed: boolean;
+    unresolvedThreads?: number;
+    decision: "approved" | "changes_requested" | "commented" | "pending";
+    reviewers: string[];
+    error?: string;
+  };
 };
 
 export type GitHubStatusReader = {
@@ -82,6 +93,7 @@ type GitHubPullRequestPayload = {
 };
 
 type GitHubWorkflowRunsPayload = {
+  total_count?: unknown;
   workflow_runs?: Array<{
     conclusion?: unknown;
     created_at?: unknown;
@@ -97,6 +109,7 @@ type GitHubWorkflowRunsPayload = {
 };
 
 type GitHubCheckRunsPayload = {
+  total_count?: unknown;
   check_runs?: Array<{
     app?: { slug?: unknown };
     completed_at?: unknown;
@@ -107,6 +120,30 @@ type GitHubCheckRunsPayload = {
     started_at?: unknown;
     status?: unknown;
   }>;
+};
+
+type GitHubReviewState =
+  | "APPROVED"
+  | "CHANGES_REQUESTED"
+  | "COMMENTED"
+  | "DISMISSED"
+  | "PENDING";
+
+type GitHubReviewThread = {
+  isOutdated: boolean;
+  isResolved: boolean;
+};
+
+type GitHubReview = {
+  author: string;
+  commitSha?: string;
+  state: GitHubReviewState;
+  submittedAt?: string;
+};
+
+type GitHubReviewPageInfo = {
+  endCursor: string | null;
+  hasNextPage: boolean;
 };
 
 type Fetcher = (
@@ -287,6 +324,18 @@ export function createGitHubStatusReader({
         );
       }
 
+      const review = await readGitHubReviewStatus({
+        apiBaseUrl: baseUrl,
+        expectedHeadSha: pullRequest.headSha,
+        fetcher,
+        headers: {
+          ...headers,
+          "Content-Type": "application/json",
+        },
+        reference,
+        timeoutMs,
+      });
+
       let workflowRunsResponse: Response;
       try {
         workflowRunsResponse = await request(
@@ -301,6 +350,7 @@ export function createGitHubStatusReader({
           checkRunsStatus: "not_requested",
           fetchedAt,
           pullRequest,
+          review,
           status: "ok",
           workflowRuns: [],
           workflowRunsStatus: "unavailable",
@@ -318,6 +368,7 @@ export function createGitHubStatusReader({
           checkRunsStatus: "not_requested",
           fetchedAt,
           pullRequest,
+          review,
           status: "ok",
           workflowRuns: [],
           workflowRunsStatus: "unavailable",
@@ -331,6 +382,7 @@ export function createGitHubStatusReader({
           checkRunsStatus: "not_requested",
           fetchedAt,
           pullRequest,
+          review,
           status: "ok",
           workflowRuns: [],
           workflowRunsStatus: "unavailable",
@@ -348,6 +400,7 @@ export function createGitHubStatusReader({
           checkRunsStatus: "not_requested",
           fetchedAt,
           pullRequest,
+          review,
           status: "ok",
           workflowRuns: [],
           workflowRunsStatus: "unavailable",
@@ -355,6 +408,19 @@ export function createGitHubStatusReader({
             "The pull request loaded, but GitHub returned an invalid Actions response.",
         };
       }
+      const workflowRuns = mapWorkflowRuns(runsPayload);
+      const workflowRunsStatus =
+        responseHasNextPage(workflowRunsResponse) ||
+        !Array.isArray(runsPayload.workflow_runs) ||
+        workflowRuns.length !== runsPayload.workflow_runs.length ||
+        invalidTotalCount(runsPayload.total_count, runsPayload.workflow_runs) ||
+        totalCountExceedsRows(
+          runsPayload.total_count,
+          runsPayload.workflow_runs,
+        )
+          ? "unavailable"
+          : "ok";
+
       let checkRunsResponse: Response;
       try {
         checkRunsResponse = await request(
@@ -367,13 +433,16 @@ export function createGitHubStatusReader({
         return {
           checkRuns: [],
           checkRunsStatus: "unavailable",
+          allCheckRuns: [],
+          allCheckRunsStatus: "unavailable",
           error:
             "The pull request loaded, but GitHub check runs could not be reached.",
           fetchedAt,
           pullRequest,
+          review,
           status: "ok",
-          workflowRuns: mapWorkflowRuns(runsPayload),
-          workflowRunsStatus: "ok",
+          workflowRuns,
+          workflowRunsStatus,
         };
       }
 
@@ -384,57 +453,485 @@ export function createGitHubStatusReader({
         return {
           checkRuns: [],
           checkRunsStatus: "unavailable",
+          allCheckRuns: [],
+          allCheckRunsStatus: "unavailable",
           error:
             "The pull request loaded, but GitHub check runs are not accessible.",
           fetchedAt,
           pullRequest,
+          review,
           status: "ok",
-          workflowRuns: mapWorkflowRuns(runsPayload),
-          workflowRunsStatus: "ok",
+          workflowRuns,
+          workflowRunsStatus,
         };
       }
       if (!checkRunsResponse.ok) {
         return {
           checkRuns: [],
           checkRunsStatus: "unavailable",
+          allCheckRuns: [],
+          allCheckRunsStatus: "unavailable",
           error: `The pull request loaded, but GitHub check runs returned HTTP ${checkRunsResponse.status}.`,
           fetchedAt,
           pullRequest,
+          review,
           status: "ok",
-          workflowRuns: mapWorkflowRuns(runsPayload),
-          workflowRunsStatus: "ok",
+          workflowRuns,
+          workflowRunsStatus,
         };
       }
 
       let checkRunsPayload: GitHubCheckRunsPayload;
       try {
-        checkRunsPayload =
-          (await checkRunsResponse.json()) as GitHubCheckRunsPayload;
+        const checkRunsJson: unknown = await checkRunsResponse.json();
+        if (!isRecord(checkRunsJson))
+          throw new Error("Invalid check-runs payload.");
+        checkRunsPayload = checkRunsJson as GitHubCheckRunsPayload;
       } catch {
         return {
           checkRuns: [],
           checkRunsStatus: "unavailable",
+          allCheckRuns: [],
+          allCheckRunsStatus: "unavailable",
           error:
             "The pull request loaded, but GitHub returned an invalid check-runs response.",
           fetchedAt,
           pullRequest,
+          review,
           status: "ok",
-          workflowRuns: mapWorkflowRuns(runsPayload),
-          workflowRunsStatus: "ok",
+          workflowRuns,
+          workflowRunsStatus,
         };
       }
 
+      const allCheckRunProjection = mapAllCheckRuns(checkRunsPayload);
+      const checkRunsIncomplete =
+        !Array.isArray(checkRunsPayload.check_runs) ||
+        responseHasNextPage(checkRunsResponse) ||
+        invalidTotalCount(
+          checkRunsPayload.total_count,
+          checkRunsPayload.check_runs,
+        ) ||
+        totalCountExceedsRows(
+          checkRunsPayload.total_count,
+          checkRunsPayload.check_runs,
+        );
+      const allCheckRunsStatus =
+        checkRunsIncomplete || !allCheckRunProjection.valid
+          ? "unavailable"
+          : "ok";
+
       return {
         checkRuns: mapCheckRuns(checkRunsPayload),
-        checkRunsStatus: "ok",
+        checkRunsStatus: checkRunsIncomplete ? "unavailable" : "ok",
+        allCheckRuns: allCheckRunProjection.runs,
+        allCheckRunsStatus,
         fetchedAt,
         pullRequest,
+        review,
         status: "ok",
-        workflowRuns: mapWorkflowRuns(runsPayload),
-        workflowRunsStatus: "ok",
+        workflowRuns,
+        workflowRunsStatus,
       };
     },
   };
+}
+
+const GITHUB_REVIEW_QUERY = `
+  query PullRequestReviewSnapshot(
+    $owner: String!
+    $repo: String!
+    $number: Int!
+    $includeThreads: Boolean!
+    $includeReviews: Boolean!
+    $threadCursor: String
+    $reviewCursor: String
+  ) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        headRefOid
+        reviewThreads(first: 100, after: $threadCursor) @include(if: $includeThreads) {
+          nodes { isResolved isOutdated }
+          pageInfo { hasNextPage endCursor }
+        }
+        reviews(first: 100, after: $reviewCursor) @include(if: $includeReviews) {
+          nodes {
+            author { login }
+            state
+            commit { oid }
+            submittedAt
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }
+`;
+
+const MAX_GITHUB_REVIEW_PAGES = 10;
+const CODERABBIT_LOGINS = new Set(["coderabbitai", "coderabbitai[bot]"]);
+
+type ReadGitHubReviewStatusOptions = {
+  apiBaseUrl: string;
+  expectedHeadSha: string;
+  fetcher: Fetcher;
+  headers: Record<string, string>;
+  reference: GitHubPullRequestReference;
+  timeoutMs: number;
+};
+
+async function readGitHubReviewStatus({
+  apiBaseUrl,
+  expectedHeadSha,
+  fetcher,
+  headers,
+  reference,
+  timeoutMs,
+}: ReadGitHubReviewStatusOptions): Promise<
+  NonNullable<GitHubStatusSnapshot["review"]>
+> {
+  const reviewHeaders = {
+    ...headers,
+    Accept: "application/vnd.github+json",
+  };
+  const url = githubGraphqlUrl(apiBaseUrl);
+  let threadCursor: string | null = null;
+  let reviewCursor: string | null = null;
+  let includeThreads = true;
+  let includeReviews = true;
+  const seenThreadCursors = new Set<string>();
+  const seenReviewCursors = new Set<string>();
+  const threads: GitHubReviewThread[] = [];
+  const reviews: GitHubReview[] = [];
+
+  for (let page = 0; page < MAX_GITHUB_REVIEW_PAGES; page += 1) {
+    let response: Response;
+    try {
+      response = await request(url, reviewHeaders, fetcher, timeoutMs, {
+        method: "POST",
+        body: JSON.stringify({
+          query: GITHUB_REVIEW_QUERY,
+          variables: {
+            owner: reference.owner,
+            repo: reference.repo,
+            number: reference.number,
+            includeThreads,
+            includeReviews,
+            threadCursor,
+            reviewCursor,
+          },
+        }),
+      });
+    } catch {
+      return unavailableReview(
+        expectedHeadSha,
+        "GitHub review data could not be reached.",
+      );
+    }
+
+    if (!response.ok) {
+      const message =
+        response.status === 401 || response.status === 403
+          ? "GitHub review data is not accessible."
+          : `GitHub review data returned HTTP ${response.status}.`;
+      return unavailableReview(expectedHeadSha, message);
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      return unavailableReview(
+        expectedHeadSha,
+        "GitHub returned an invalid review response.",
+      );
+    }
+    if (!isRecord(payload)) {
+      return unavailableReview(
+        expectedHeadSha,
+        "GitHub returned an invalid review response.",
+      );
+    }
+    if (
+      "errors" in payload &&
+      (!Array.isArray(payload.errors) || payload.errors.length > 0)
+    ) {
+      return unavailableReview(
+        expectedHeadSha,
+        "GitHub could not provide complete review data.",
+      );
+    }
+    const data = payload.data;
+    if (
+      !isRecord(data) ||
+      !isRecord(data.repository) ||
+      !isRecord(data.repository.pullRequest)
+    ) {
+      return unavailableReview(
+        expectedHeadSha,
+        "GitHub returned an invalid review response.",
+      );
+    }
+    const pullRequest = data.repository.pullRequest;
+    if (typeof pullRequest.headRefOid !== "string" || !pullRequest.headRefOid) {
+      return unavailableReview(
+        expectedHeadSha,
+        "GitHub returned an invalid review response.",
+      );
+    }
+    if (pullRequest.headRefOid !== expectedHeadSha) {
+      return unavailableReview(
+        expectedHeadSha,
+        "GitHub review data does not match the pull request head.",
+      );
+    }
+
+    let threadPage: GitHubReviewPageInfo | undefined;
+    if (includeThreads) {
+      const parsedThreads = parseReviewThreads(pullRequest.reviewThreads);
+      if (!parsedThreads) {
+        return unavailableReview(
+          expectedHeadSha,
+          "GitHub returned an invalid review-thread response.",
+        );
+      }
+      threads.push(...parsedThreads.nodes);
+      threadPage = parsedThreads.pageInfo;
+    }
+
+    let reviewsPage:
+      | { nodes: GitHubReview[]; pageInfo: GitHubReviewPageInfo }
+      | undefined;
+    if (includeReviews) {
+      reviewsPage = parseReviews(pullRequest.reviews);
+      if (!reviewsPage) {
+        return unavailableReview(
+          expectedHeadSha,
+          "GitHub returned an invalid review response.",
+        );
+      }
+      reviews.push(...reviewsPage.nodes);
+    }
+
+    if (threadPage?.hasNextPage) {
+      const cursor = threadPage.endCursor;
+      if (!cursor || seenThreadCursors.has(cursor)) {
+        return unavailableReview(
+          expectedHeadSha,
+          "GitHub review-thread pagination did not advance.",
+        );
+      }
+      seenThreadCursors.add(cursor);
+      threadCursor = cursor;
+    } else {
+      includeThreads = false;
+    }
+
+    if (reviewsPage?.pageInfo.hasNextPage) {
+      const cursor = reviewsPage.pageInfo.endCursor;
+      if (!cursor || seenReviewCursors.has(cursor)) {
+        return unavailableReview(
+          expectedHeadSha,
+          "GitHub review pagination did not advance.",
+        );
+      }
+      seenReviewCursors.add(cursor);
+      reviewCursor = cursor;
+    } else {
+      includeReviews = false;
+    }
+
+    if (!includeThreads && !includeReviews) {
+      return summarizeGitHubReview(expectedHeadSha, threads, reviews);
+    }
+  }
+
+  return unavailableReview(
+    expectedHeadSha,
+    "GitHub review data exceeded the pagination limit.",
+  );
+}
+
+function githubGraphqlUrl(apiBaseUrl: string): string {
+  if (apiBaseUrl.endsWith("/api/v3")) {
+    return apiBaseUrl.replace(/\/api\/v3$/, "/api/graphql");
+  }
+  return `${apiBaseUrl.replace(/\/$/, "")}/graphql`;
+}
+
+function parseReviewThreads(
+  value: unknown,
+): { nodes: GitHubReviewThread[]; pageInfo: GitHubReviewPageInfo } | undefined {
+  if (!isRecord(value) || !Array.isArray(value.nodes)) return undefined;
+  const nodes: GitHubReviewThread[] = [];
+  for (const node of value.nodes) {
+    if (
+      !isRecord(node) ||
+      typeof node.isResolved !== "boolean" ||
+      typeof node.isOutdated !== "boolean"
+    ) {
+      return undefined;
+    }
+    nodes.push({ isOutdated: node.isOutdated, isResolved: node.isResolved });
+  }
+  const pageInfo = parseReviewPageInfo(value.pageInfo);
+  if (!pageInfo) return undefined;
+  return { nodes, pageInfo };
+}
+
+function parseReviews(
+  value: unknown,
+): { nodes: GitHubReview[]; pageInfo: GitHubReviewPageInfo } | undefined {
+  if (!isRecord(value) || !Array.isArray(value.nodes)) return undefined;
+  const nodes: GitHubReview[] = [];
+  const allowedStates = new Set<GitHubReviewState>([
+    "APPROVED",
+    "CHANGES_REQUESTED",
+    "COMMENTED",
+    "DISMISSED",
+    "PENDING",
+  ]);
+  for (const node of value.nodes) {
+    if (!isRecord(node) || !isRecord(node.author)) return undefined;
+    const author = stringValue(node.author.login);
+    if (!author) return undefined;
+    if (
+      typeof node.state !== "string" ||
+      !allowedStates.has(node.state as GitHubReviewState)
+    ) {
+      return undefined;
+    }
+    const state = node.state as GitHubReviewState;
+    let commitSha: string | undefined;
+    if (node.commit !== null) {
+      if (!isRecord(node.commit)) return undefined;
+      commitSha = stringValue(node.commit.oid);
+      if (!commitSha) return undefined;
+    } else if (state !== "PENDING") {
+      return undefined;
+    }
+    let submittedAt: string | undefined;
+    if (node.submittedAt !== null) {
+      submittedAt = stringValue(node.submittedAt);
+      if (!submittedAt || !Number.isFinite(Date.parse(submittedAt)))
+        return undefined;
+    } else if (state !== "PENDING") {
+      return undefined;
+    }
+    nodes.push({ author, commitSha, state, submittedAt });
+  }
+  const pageInfo = parseReviewPageInfo(value.pageInfo);
+  if (!pageInfo) return undefined;
+  return { nodes, pageInfo };
+}
+
+function parseReviewPageInfo(value: unknown): GitHubReviewPageInfo | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.hasNextPage !== "boolean" ||
+    !(value.endCursor === null || typeof value.endCursor === "string")
+  ) {
+    return undefined;
+  }
+  return { endCursor: value.endCursor, hasNextPage: value.hasNextPage };
+}
+
+function summarizeGitHubReview(
+  headSha: string,
+  threads: GitHubReviewThread[],
+  reviews: GitHubReview[],
+): NonNullable<GitHubStatusSnapshot["review"]> {
+  // A comment-only review does not supersede an author's latest decisive
+  // approval or changes request. Keep CodeRabbit's comment completion signal
+  // separate so it remains visible without clearing those decisions.
+  const latestByAuthor = new Map<string, GitHubReview>();
+  const latestCodeRabbitCommentByAuthor = new Map<string, GitHubReview>();
+  for (const review of reviews) {
+    if (
+      review.commitSha !== headSha ||
+      !review.submittedAt ||
+      review.state === "PENDING"
+    ) {
+      continue;
+    }
+    const key = review.author.toLowerCase();
+    const target =
+      review.state === "COMMENTED"
+        ? CODERABBIT_LOGINS.has(key)
+          ? latestCodeRabbitCommentByAuthor
+          : undefined
+        : latestByAuthor;
+    if (!target) continue;
+
+    const previous = target.get(key);
+    if (
+      !previous ||
+      Date.parse(review.submittedAt) >= Date.parse(previous.submittedAt ?? "")
+    ) {
+      target.set(key, review);
+    }
+  }
+
+  const completedReviews = [...latestByAuthor.values()].filter(
+    (review) =>
+      review.state === "APPROVED" || review.state === "CHANGES_REQUESTED",
+  );
+  for (const comment of latestCodeRabbitCommentByAuthor.values()) {
+    const decisive = latestByAuthor.get(comment.author.toLowerCase());
+    if (
+      !decisive ||
+      Date.parse(comment.submittedAt ?? "") >
+        Date.parse(decisive.submittedAt ?? "")
+    ) {
+      completedReviews.push(comment);
+    }
+  }
+  const hasChangesRequested = completedReviews.some(
+    (review) => review.state === "CHANGES_REQUESTED",
+  );
+  const hasApproval = completedReviews.some(
+    (review) => review.state === "APPROVED",
+  );
+  const hasCodeRabbitComment = completedReviews.some(
+    (review) => review.state === "COMMENTED",
+  );
+  const decision = hasChangesRequested
+    ? "changes_requested"
+    : hasApproval
+      ? "approved"
+      : hasCodeRabbitComment
+        ? "commented"
+        : "pending";
+  const reviewers = [
+    ...new Set(completedReviews.map((review) => review.author)),
+  ].sort((left, right) => left.localeCompare(right));
+
+  return {
+    status: "ok",
+    headSha,
+    completed: completedReviews.length > 0,
+    unresolvedThreads: threads.filter((thread) => !thread.isResolved).length,
+    decision,
+    reviewers,
+  };
+}
+
+function unavailableReview(
+  headSha: string,
+  error: string,
+): NonNullable<GitHubStatusSnapshot["review"]> {
+  return {
+    status: "unavailable",
+    headSha,
+    completed: false,
+    decision: "pending",
+    reviewers: [],
+    error,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function request(
@@ -442,14 +939,45 @@ async function request(
   headers: Record<string, string>,
   fetcher: Fetcher,
   timeoutMs: number,
+  options: Pick<RequestInit, "body" | "method"> = {},
 ): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetcher(url, { headers, signal: controller.signal });
+    return await fetcher(url, {
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function responseHasNextPage(response: Response): boolean {
+  const link = response.headers.get("Link");
+  if (!link) return false;
+  return link
+    .split(",")
+    .some((part) => /(?:^|[;\s])rel="?next"?(?:[;\s]|$)/i.test(part));
+}
+
+function totalCountExceedsRows(totalCount: unknown, rows: unknown): boolean {
+  return (
+    typeof totalCount === "number" &&
+    Number.isSafeInteger(totalCount) &&
+    totalCount > (Array.isArray(rows) ? rows.length : 0)
+  );
+}
+
+function invalidTotalCount(totalCount: unknown, rows: unknown): boolean {
+  if (totalCount === undefined) return false;
+  return (
+    typeof totalCount !== "number" ||
+    !Number.isSafeInteger(totalCount) ||
+    totalCount < 0 ||
+    (Array.isArray(rows) && totalCount < rows.length)
+  );
 }
 
 function unavailableSnapshot(
@@ -529,7 +1057,10 @@ function mapPullRequest(
 function mapWorkflowRuns(
   payload: GitHubWorkflowRunsPayload,
 ): GitHubWorkflowRunStatus[] {
-  return (payload.workflow_runs ?? []).flatMap((run) => {
+  if (!Array.isArray(payload.workflow_runs)) return [];
+  return payload.workflow_runs.flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    const run = candidate;
     const id = numberValue(run.id);
     const name = stringValue(run.name);
     const status = stringValue(run.status);
@@ -560,9 +1091,97 @@ function mapWorkflowRuns(
   });
 }
 
+function mapAllCheckRuns(payload: GitHubCheckRunsPayload): {
+  runs: GitHubCheckRunStatus[];
+  valid: boolean;
+} {
+  if (!Array.isArray(payload.check_runs)) return { runs: [], valid: false };
+  const runs: GitHubCheckRunStatus[] = [];
+  let valid = true;
+  for (const candidate of payload.check_runs) {
+    const run = mapAllCheckRun(candidate);
+    if (!run) {
+      valid = false;
+      continue;
+    }
+    runs.push(run);
+  }
+  return { runs, valid };
+}
+
+function mapAllCheckRun(candidate: unknown): GitHubCheckRunStatus | undefined {
+  if (!isRecord(candidate)) return undefined;
+  const appValue = candidate.app;
+  let appSlug: string | undefined;
+  if (appValue !== undefined && appValue !== null) {
+    if (!isRecord(appValue)) return undefined;
+    if (appValue.slug !== undefined && appValue.slug !== null) {
+      appSlug = stringValue(appValue.slug);
+      if (!appSlug) return undefined;
+    }
+  }
+
+  const id = numberValue(candidate.id);
+  const name = stringValue(candidate.name);
+  const status = stringValue(candidate.status);
+  const createdAt = stringValue(candidate.started_at);
+  const url = stringValue(candidate.html_url);
+  const completedAt = optionalString(candidate.completed_at);
+  const conclusion = optionalString(candidate.conclusion);
+  if (
+    !id ||
+    !name ||
+    !status ||
+    !createdAt ||
+    !Number.isFinite(Date.parse(createdAt)) ||
+    !url ||
+    !isHttpUrl(url) ||
+    (completedAt !== null &&
+      completedAt !== undefined &&
+      !Number.isFinite(Date.parse(completedAt))) ||
+    (completedAt === undefined &&
+      candidate.completed_at !== undefined &&
+      candidate.completed_at !== null) ||
+    (conclusion === undefined &&
+      candidate.conclusion !== undefined &&
+      candidate.conclusion !== null)
+  ) {
+    return undefined;
+  }
+  return {
+    ...(appSlug ? { appSlug } : {}),
+    ...(conclusion ? { conclusion } : {}),
+    createdAt,
+    id,
+    name,
+    status,
+    updatedAt: completedAt ?? createdAt,
+    url,
+  };
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function optionalString(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  return typeof value === "string" && value ? value : undefined;
+}
+
 function mapCheckRuns(payload: GitHubCheckRunsPayload): GitHubCheckRunStatus[] {
-  return (payload.check_runs ?? []).flatMap((run) => {
-    const appSlug = stringValue(run.app?.slug);
+  if (!Array.isArray(payload.check_runs)) return [];
+  return payload.check_runs.flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    const run = candidate;
+    const app = isRecord(run.app) ? run.app : undefined;
+    const appSlug = stringValue(app?.slug);
     if (appSlug && appSlug !== "github-actions") return [];
 
     const id = numberValue(run.id);

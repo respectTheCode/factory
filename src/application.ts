@@ -43,6 +43,11 @@ import {
   type FloorProjectActivity,
   type FloorSnapshot,
 } from "./floor";
+import {
+  reportTrackingSchema,
+  type ReportArtifact,
+  type ReportHandoff,
+} from "./report-tracking";
 
 export type FactoryClock = () => Date;
 export type FactoryIdGenerator = () => string;
@@ -154,6 +159,9 @@ export type StatusReport = {
     sourceId?: string;
     externalThreadId: string;
   };
+  handoff?: ReportHandoff;
+  testedRevision?: string;
+  artifacts?: ReportArtifact[];
   createdAt: Date;
 };
 
@@ -367,7 +375,14 @@ export type TaskStatus = {
     reportId?: string;
     verificationId?: string;
     evidence?: string;
+    reportEvidence?: string;
     reporter?: string;
+    reportCreatedAt?: Date | string;
+    machineId?: string;
+    sessionRef?: StatusReport["sessionRef"];
+    handoff?: ReportHandoff;
+    testedRevision?: string;
+    artifacts?: ReportArtifact[];
     archiveState?: ArchiveState;
     verification?: TaskStatusVerification;
   }>;
@@ -1860,21 +1875,27 @@ export class FactoryApplication {
   }
 
   reportSubtaskStatus({
+    artifacts,
     evidence,
+    handoff,
     machineId,
     reason,
     reporter,
     reportedState,
     sessionRef,
     subtaskId,
+    testedRevision,
   }: {
+    artifacts?: ReportArtifact[];
     evidence?: string;
+    handoff?: ReportHandoff;
     machineId?: string;
     reason?: string;
     reporter: string;
     reportedState: ReportedState;
     sessionRef?: StatusReport["sessionRef"];
     subtaskId: string;
+    testedRevision?: string;
   }): StatusReport {
     this.refreshFromPersistence();
     const subtask = this.requireSubtask(subtaskId);
@@ -1893,13 +1914,41 @@ export class FactoryApplication {
             `Subtask reports for ${reportedState} require a reason.`,
           )
         : reason?.trim() || undefined;
+    const tracking = reportTrackingSchema.parse({
+      ...(handoff === undefined ? {} : { handoff }),
+      ...(testedRevision === undefined ? {} : { testedRevision }),
+      ...(artifacts === undefined ? {} : { artifacts }),
+    });
+    const normalizedHandoff = tracking.handoff
+      ? {
+          ...tracking.handoff,
+          ...(tracking.handoff.waitingOnSubtaskIds === undefined
+            ? {}
+            : {
+                waitingOnSubtaskIds: Array.from(
+                  new Set(
+                    tracking.handoff.waitingOnSubtaskIds.map((waitingId) => {
+                      const waitingSubtask = this.requireSubtask(waitingId);
+                      if (waitingSubtask.taskId !== subtask.taskId) {
+                        throw new Error(
+                          `Waiting-on Subtask ${waitingId} must belong to the same Task.`,
+                        );
+                      }
+                      if (waitingSubtask.id === subtask.id) {
+                        throw new Error(
+                          "A Subtask report cannot wait on itself.",
+                        );
+                      }
+                      return waitingSubtask.id;
+                    }),
+                  ),
+                ),
+              }),
+        }
+      : undefined;
     const previousState = this.getSubtaskEffectiveWorkState(subtask);
 
     const currentEvidence = evidence?.trim() || undefined;
-    // The report remains immutable history; the subtask stores the editable
-    // current evidence shown by the dashboard.
-    subtask.evidence = currentEvidence ?? "";
-
     const report = {
       id: this.idGenerator(),
       subtaskId: subtask.id,
@@ -1916,9 +1965,18 @@ export class FactoryApplication {
             },
           }
         : {}),
+      ...(normalizedHandoff ? { handoff: normalizedHandoff } : {}),
+      ...(tracking.testedRevision
+        ? { testedRevision: tracking.testedRevision }
+        : {}),
+      ...(tracking.artifacts ? { artifacts: tracking.artifacts } : {}),
       createdAt: this.clock(),
     };
 
+    // The report remains immutable history; the subtask stores the editable
+    // current evidence shown by the dashboard. All optional claim fields and
+    // dependency references are validated before this write.
+    subtask.evidence = currentEvidence ?? "";
     this.statusReports.push(report);
     const nextState = this.getSubtaskEffectiveWorkState(subtask);
     this.moveSubtaskToStateIfChanged(subtask, previousState);
@@ -2365,8 +2423,17 @@ export class FactoryApplication {
             ? { sortOrder: subtask.sortOrder }
             : {}),
           ...(currentEvidence ? { evidence: currentEvidence } : {}),
+          ...(report.evidence ? { reportEvidence: report.evidence } : {}),
           ...(reason ? { reason } : {}),
           reporter: report.reporter,
+          reportCreatedAt: report.createdAt,
+          ...(report.machineId ? { machineId: report.machineId } : {}),
+          ...(report.sessionRef ? { sessionRef: report.sessionRef } : {}),
+          ...(report.handoff ? { handoff: report.handoff } : {}),
+          ...(report.testedRevision
+            ? { testedRevision: report.testedRevision }
+            : {}),
+          ...(report.artifacts ? { artifacts: report.artifacts } : {}),
           ...(verification ? { verification } : {}),
           verificationState:
             verification?.decision ?? ("awaiting_verification" as const),
