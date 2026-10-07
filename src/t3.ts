@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { parseGitHubPullRequestUrl } from "./github";
+import { parseT3V2ShellPayload, parseT3V2ThreadPayload } from "./t3-v2";
 
 /**
  * The T3 transport deliberately exposes a narrow read seam.  Callers cannot
@@ -151,6 +152,7 @@ export type T3ThreadObservation =
       sourceSequence: number;
       sourceUpdatedAt: string;
       sourceDigest: string;
+      hasMoreHistory?: boolean;
       thread: T3ThreadShellObservation & {
         messages: T3MessageObservation[];
         activities: T3ActivityObservation[];
@@ -180,11 +182,13 @@ export const DEFAULT_T3_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 // advertise an orchestration protocol version.
 export const DEFAULT_T3_SERVER_VERSION = "0.0.42";
 export const SUPPORTED_T3_ORCHESTRATION_PROTOCOL_VERSION = 1;
+export const SUPPORTED_T3_ORCHESTRATION_PROTOCOL_VERSIONS = [1, 2] as const;
 export const MAX_T3_THREAD_TURN_LIMIT = 10;
 
 const DESCRIPTOR_PATH = "/.well-known/t3/environment";
 const SHELL_PATH = "/api/orchestration/shell";
 const THREAD_PATH = "/api/orchestration/threads/";
+const T3_V2_PROTOCOL_HEADER = "x-t3-orchestration-protocol";
 
 const ISO_DATE_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -1018,8 +1022,9 @@ export function createT3ActivityReader({
 
       const versionPin = expectedServerVersion ?? DEFAULT_T3_SERVER_VERSION;
       const incompatible = hasProtocolVersion
-        ? orchestrationProtocolVersion !==
-            SUPPORTED_T3_ORCHESTRATION_PROTOCOL_VERSION ||
+        ? !SUPPORTED_T3_ORCHESTRATION_PROTOCOL_VERSIONS.includes(
+            orchestrationProtocolVersion as 1 | 2,
+          ) ||
           (expectedServerVersion !== undefined &&
             payload.serverVersion !== expectedServerVersion)
         : payload.serverVersion !== versionPin;
@@ -1044,6 +1049,7 @@ export function createT3ActivityReader({
   const readProtectedJson = async (
     path: string,
     time: string,
+    protocolVersion?: number,
   ): Promise<{ payload: unknown } | T3ObservationFailure> => {
     if (configurationError)
       return failure("invalid_response", time, configurationError);
@@ -1061,6 +1067,7 @@ export function createT3ActivityReader({
         {
           Accept: "application/json",
           Authorization: `Bearer ${configuredToken}`,
+          ...(protocolVersion === 2 ? { [T3_V2_PROTOCOL_HEADER]: "2" } : {}),
         },
         timeoutMs,
         async (response) => {
@@ -1104,10 +1111,14 @@ export function createT3ActivityReader({
     async readShell() {
       const time = fetchedAt(now);
       const descriptor = await readDescriptor();
-      if ("ok" in descriptor && descriptor.ok === false) return descriptor;
-      const result = await readProtectedJson(SHELL_PATH, time);
+      if ("status" in descriptor) return descriptor;
+      const protocolVersion = descriptor.orchestrationProtocolVersion ?? 1;
+      const result = await readProtectedJson(SHELL_PATH, time, protocolVersion);
       if ("status" in result) return result;
-      const parsed = parseShellPayload(result.payload);
+      const parsed =
+        protocolVersion === 2
+          ? parseT3V2ShellPayload(result.payload)
+          : parseShellPayload(result.payload);
       if (!parsed)
         return failure(
           "invalid_response",
@@ -1137,13 +1148,18 @@ export function createT3ActivityReader({
         );
       }
       const descriptor = await readDescriptor();
-      if ("ok" in descriptor && descriptor.ok === false) return descriptor;
-      const result = await readProtectedJson(
-        `${THREAD_PATH}${encodeURIComponent(input.threadId)}?turnLimit=${input.turnLimit}`,
-        time,
-      );
+      if ("status" in descriptor) return descriptor;
+      const protocolVersion = descriptor.orchestrationProtocolVersion ?? 1;
+      const path =
+        protocolVersion === 2
+          ? `${THREAD_PATH}${encodeURIComponent(input.threadId)}/bounded`
+          : `${THREAD_PATH}${encodeURIComponent(input.threadId)}?turnLimit=${input.turnLimit}`;
+      const result = await readProtectedJson(path, time, protocolVersion);
       if ("status" in result) return result;
-      const parsed = parseThreadDetailPayload(result.payload);
+      const parsed =
+        protocolVersion === 2
+          ? parseT3V2ThreadPayload(result.payload, input)
+          : parseThreadDetailPayload(result.payload);
       if (!parsed)
         return failure(
           "invalid_response",
@@ -1154,12 +1170,21 @@ export function createT3ActivityReader({
         fetchedAt: time,
         ok: true as const,
         sourceDigest: digest(parsed),
-        sourceSequence: parsed.sourceThreadSequence ?? parsed.sourceSequence,
+        sourceSequence:
+          "sourceThreadSequence" in parsed &&
+          parsed.sourceThreadSequence !== undefined
+            ? parsed.sourceThreadSequence
+            : parsed.sourceSequence,
         sourceStream:
-          parsed.sourceThreadSequence === undefined
-            ? "shell"
-            : `thread:${input.threadId}`,
+          "sourceStream" in parsed
+            ? parsed.sourceStream
+            : parsed.sourceThreadSequence === undefined
+              ? "shell"
+              : `thread:${input.threadId}`,
         sourceUpdatedAt: parsed.sourceUpdatedAt,
+        ...("hasMoreHistory" in parsed
+          ? { hasMoreHistory: parsed.hasMoreHistory }
+          : {}),
         status: "ok" as const,
         thread: parsed.thread,
       };

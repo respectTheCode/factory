@@ -68,15 +68,22 @@ Reports, and Verification.
 
 ## T3 transport
 
-Factory uses only these read-only orchestration protocol v1 endpoints:
+Factory uses these allowlisted read-only orchestration endpoints:
 
 - `GET /.well-known/t3/environment` for compatibility and capability discovery.
 - `GET /api/orchestration/shell` for project and thread shells.
-- `GET /api/orchestration/threads/:threadId?turnLimit=N` for bounded detail after an explicit
-  request.
+- Protocol 1: `GET /api/orchestration/threads/:threadId?turnLimit=N` for bounded
+  detail after an explicit request.
+- Protocol 2: `GET /api/orchestration/threads/:threadId/bounded` for a server-bounded
+  projection, normalized to the requested recent-run limit. Protected protocol 2
+  reads include `x-t3-orchestration-protocol: 2`.
 
-Compatibility follows the advertised orchestration protocol version, while every
-response still passes strict schema validation. Legacy descriptors without a
+Compatibility accepts advertised orchestration protocol versions 1 and 2, while
+every response still passes strict schema validation. V2 durable runs, runtime
+requests, and scoped checkpoints are normalized into Factory's existing narrow
+observation types; this does not change Work State or human Verification.
+See [the v2 assessment](t3-orchestration-v2-assessment.md) for the inspected nightly
+contract, validation limits, and proposed follow-on improvements. Legacy descriptors without a
 protocol version use the known supported server-version fallback. An explicit
 server-version override remains an exact pin.
 
