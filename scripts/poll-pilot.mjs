@@ -21,10 +21,10 @@ const DEPLOY_PROFILES = Object.freeze({
   production: Object.freeze({
     environment: "production",
     githubRefUrl: new URL(
-      "https://api.github.com/repos/respectTheCode/factory/git/ref/heads/deploy%2Ffactory-production",
+      "https://api.github.com/repos/respectTheCode/factory/git/ref/heads/main",
     ),
     versionUrl: new URL("http://192.168.5.50:3101/version"),
-    branchRef: "refs/heads/deploy/factory-production",
+    branchRef: "refs/heads/main",
     stateFile: ".factory-production-last-request.json",
     webhookLabel: "production deployment webhook",
   }),

@@ -18,11 +18,11 @@ on the Mac. The transferred database must pass manifest verification before the
 production server starts. Client URL changes occur after readiness succeeds.
 Both onboarded machines use remote mode; the third machine remains deferred.
 
-A dedicated `deploy/factory-production` release branch controls future production
-promotions. The fixed production poller profile checks the production identity
-and takes an authenticated NAS backup before requesting a changed release.
-Development and main-branch pushes do not directly deploy. The pilot poller is
-disabled during cutover and must not target the authoritative database.
+Production now follows `main` automatically. Its enabled five-minute poller
+checks the production identity and takes an authenticated NAS backup before
+requesting a changed release through the private deployment webhook; no manual
+promotion to a release branch is required. The pilot poller is disabled during
+cutover and must not target the authoritative database.
 
 GitHub authentication uses a dedicated read-only host secret at
 `files/secrets/github-token` in the Dokploy Compose project. Provision the file before
@@ -98,10 +98,11 @@ Pre-deployment/manual safety copies follow the documented separate retention
 policy. The earlier ST-164 isolated restore rehearsal remains the restore proof;
 no restore over the authoritative production database was performed.
 
-The production poller returned a no-op for the deployed SHA in Dokploy's runtime.
-Its enabled five-minute schedule now explicitly selects the production profile.
-Only promotions to `deploy/factory-production` trigger deployment; pushes to
-`main` do not. The backup gate must pass before changed-release requests.
+At cutover, the production poller returned a no-op for the deployed SHA in
+Dokploy's runtime. Its enabled five-minute schedule selected the production
+profile and only promotions to `deploy/factory-production` triggered deployment;
+pushes to `main` did not. The backup gate had to pass before changed-release
+requests. The current `main`-tracking policy is described above.
 The image build passed 78 release tests; the production Compose/poller checks
 passed 12 tests and typecheck. The skill contract passed 4 tests.
 
