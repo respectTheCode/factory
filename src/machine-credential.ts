@@ -33,6 +33,17 @@ export type MachineCredentialStore = {
   }) => MachineCredentialIdentity & { token: string };
   authenticate: (token: string | undefined) => MachineCredentialIdentity | null;
   getActiveById: (credentialId: string) => MachineCredentialIdentity | null;
+  updateProjectAccess: (input: {
+    allProjects: boolean;
+    credentialId: string;
+    projectIds: string[];
+  }) => MachineCredentialIdentity;
+  rotate: (
+    credentialId: string,
+  ) => MachineCredentialIdentity & { token: string };
+  revokeById: (credentialId: string) => void;
+  // The machine-ID form is retained for the local CLI. Server-admin actions
+  // use revokeById so a stale machine ID cannot target a replacement record.
   revoke: (machineId: string) => void;
   list: () => MachineCredentialRecord[];
   close: () => void;
@@ -83,6 +94,9 @@ export function createMachineCredentialStore({
       if (role === "reviewer" && !normalizedReviewerName) {
         throw new Error("Reviewer credentials require a reviewer name.");
       }
+      if (role === "coding" && normalizedReviewerName) {
+        throw new Error("Only reviewer credentials can have a reviewer name.");
+      }
       if (allProjects && role !== "reviewer") {
         throw new Error("Only reviewer credentials can access all Projects.");
       }
@@ -99,32 +113,51 @@ export function createMachineCredentialStore({
       const token = `${MACHINE_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
       const id = randomUUID();
       const createdAt = clock().toISOString();
-      // Rotation: a revoked credential must not block re-issuing the same
-      // machine ID. Active credentials stay unique per machine.
-      database
-        .query(
-          `DELETE FROM factory_machine_credentials
-            WHERE machine_id = $machineId AND revoked_at IS NOT NULL`,
-        )
-        .run({ $machineId: machineId });
-      database
-        .query(
-          `INSERT INTO factory_machine_credentials
-            (id, machine_id, token_hash, project_ids, created_at, revoked_at, last_used_at,
-             role, reviewer_name, all_projects)
-           VALUES ($id, $machineId, $tokenHash, $projectIds, $createdAt, NULL, NULL,
-                   $role, $reviewerName, $allProjects)`,
-        )
-        .run({
-          $createdAt: createdAt,
-          $id: id,
-          $machineId: machineId,
-          $projectIds: JSON.stringify(normalizedProjectIds),
-          $tokenHash: hashToken(token),
-          $role: role,
-          $reviewerName: normalizedReviewerName ?? null,
-          $allProjects: allProjects ? 1 : 0,
-        });
+      // Keep active machine IDs unique while allowing a revoked ID to be
+      // re-issued. The transaction also prevents a failed duplicate create
+      // from deleting the old revoked record.
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const active = database
+          .query(
+            `SELECT id FROM factory_machine_credentials
+              WHERE machine_id = $machineId AND revoked_at IS NULL`,
+          )
+          .get({ $machineId: machineId }) as { id: string } | null;
+        if (active) {
+          throw new Error(
+            `An active machine credential already exists for ${machineId}.`,
+          );
+        }
+        database
+          .query(
+            `DELETE FROM factory_machine_credentials
+              WHERE machine_id = $machineId AND revoked_at IS NOT NULL`,
+          )
+          .run({ $machineId: machineId });
+        database
+          .query(
+            `INSERT INTO factory_machine_credentials
+              (id, machine_id, token_hash, project_ids, created_at, revoked_at, last_used_at,
+               role, reviewer_name, all_projects)
+             VALUES ($id, $machineId, $tokenHash, $projectIds, $createdAt, NULL, NULL,
+                     $role, $reviewerName, $allProjects)`,
+          )
+          .run({
+            $createdAt: createdAt,
+            $id: id,
+            $machineId: machineId,
+            $projectIds: JSON.stringify(normalizedProjectIds),
+            $tokenHash: hashToken(token),
+            $role: role,
+            $reviewerName: normalizedReviewerName ?? null,
+            $allProjects: allProjects ? 1 : 0,
+          });
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
 
       return {
         id,
@@ -212,6 +245,79 @@ export function createMachineCredentialStore({
       };
     },
 
+    updateProjectAccess({ credentialId, projectIds, allProjects }) {
+      const current = this.getActiveById(credentialId);
+      if (!current) {
+        throw new Error("The machine credential is not active.");
+      }
+      if (allProjects && current.role !== "reviewer") {
+        throw new Error("Only reviewer credentials can access all Projects.");
+      }
+      if (
+        !Array.isArray(projectIds) ||
+        projectIds.some(
+          (projectId) => typeof projectId !== "string" || !projectId.trim(),
+        )
+      ) {
+        throw new Error("Machine credentials require a Project ID array.");
+      }
+      const normalizedProjectIds = [...new Set(projectIds)];
+      const nextAllProjects = allProjects;
+      database
+        .query(
+          `UPDATE factory_machine_credentials
+              SET project_ids = $projectIds, all_projects = $allProjects
+            WHERE id = $id AND revoked_at IS NULL`,
+        )
+        .run({
+          $allProjects: nextAllProjects ? 1 : 0,
+          $id: credentialId,
+          $projectIds: JSON.stringify(normalizedProjectIds),
+        });
+      return {
+        ...current,
+        allProjects: nextAllProjects,
+        projectIds: normalizedProjectIds,
+      };
+    },
+
+    rotate(credentialId) {
+      const current = this.getActiveById(credentialId);
+      if (!current) {
+        throw new Error("The machine credential is not active.");
+      }
+      const token = `${MACHINE_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        database
+          .query(
+            `UPDATE factory_machine_credentials
+                SET token_hash = $tokenHash
+              WHERE id = $id AND revoked_at IS NULL`,
+          )
+          .run({ $id: credentialId, $tokenHash: hashToken(token) });
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+      return { ...current, token };
+    },
+
+    revokeById(credentialId) {
+      const current = this.getActiveById(credentialId);
+      if (!current) {
+        throw new Error("The machine credential is not active.");
+      }
+      database
+        .query(
+          `UPDATE factory_machine_credentials
+              SET revoked_at = $revokedAt
+            WHERE id = $id AND revoked_at IS NULL`,
+        )
+        .run({ $id: credentialId, $revokedAt: clock().toISOString() });
+    },
+
     revoke(machineId) {
       database
         .query(
@@ -219,7 +325,10 @@ export function createMachineCredentialStore({
               SET revoked_at = $revokedAt
             WHERE machine_id = $machineId AND revoked_at IS NULL`,
         )
-        .run({ $machineId: machineId, $revokedAt: clock().toISOString() });
+        .run({
+          $machineId: machineId,
+          $revokedAt: clock().toISOString(),
+        });
     },
 
     list() {

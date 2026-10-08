@@ -47,7 +47,7 @@ path is supplied.
 
 ## Manage connections in Factory
 
-Signed-in human operators can open **T3 connections** from the global navigation
+Signed-in human operators can open **Connections** from the global navigation
 or at `/connections`. The page lists each source and its latest tested state and
 successful fetch time. Use **Refresh status** to check saved sources, or test an
 edited draft before saving it. A new source needs a label, the Factory machine ID
@@ -76,6 +76,38 @@ the overlay directory backed up and protected separately: the existing
 database-only backup does not include managed T3 credentials. For a repository-
 local development database, the default `t3-connections/` directory is
 git-ignored.
+
+## Agent credentials and project access
+
+The `/connections` page also manages **Agent credentials** for clients that read
+Factory and report work. These Factory tokens are separate from the read-only T3
+tokens used by the connections above. Credential administration requires a
+signed-in human; coding and reviewer credentials cannot manage their own access.
+
+To let an existing agent see a new Project, edit its Project access, select the
+Project, and save. The existing token keeps working and subsequent requests use
+the updated scope, including requests on an already-open WebSocket. Clearing all
+Project selections disables Project access without deleting the credential.
+Coding credentials always use explicit Project selections; only reviewer
+credentials may access all Projects. Reviewer access does not authorize coding
+or planning changes.
+
+Creating a credential or rotating its token displays the new token once. Store it
+in the agent's configured `FACTORY_ACCESS_TOKEN_FILE` with owner-only permissions
+(`0600`) before dismissing it. Factory stores a hash and cannot show the saved
+token again. Rotation invalidates the previous token; revocation disables the
+credential. Ordinary Project access edits need neither rotation nor a client
+token-file update.
+
+The token notice stays available when navigating between Factory pages. Save the
+token and dismiss the notice before signing out. Keep the browser tab open while
+issuance is pending; closing or reloading the tab can interrupt the handoff.
+
+If an agent reports that a Project is missing, run `factory doctor --json` to
+check its machine identity and scope, then check that machine's Project access
+here. A Project's existence in the human dashboard does not automatically grant
+access to every agent. Keep the credential's machine ID aligned with its T3
+connection's machine ID for session association.
 
 ## Project and session identity
 

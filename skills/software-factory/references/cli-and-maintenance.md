@@ -210,8 +210,14 @@ missing token, denied private-repository access, or unavailable GitHub service i
 explicit status instead of being treated as passing.
 
 Remote mode uses `FACTORY_URL` and `FACTORY_ACCESS_TOKEN_FILE` and omits `--database`.
-Credential administration is local-only and runs on the service host with the service's
-database:
+Signed-in humans can manage agent credentials at `/connections`, including changing
+Project access without replacing the agent's token. Creation and rotation show the new
+token once; save it in the agent's owner-only token file before dismissing it. Revocation
+disables the credential. Coding and reviewer credentials cannot administer credentials.
+See [the Connections guide](../../../docs/t3-multiple-sources.md#agent-credentials-and-project-access).
+
+CLI credential administration remains local-only and runs on the service host with the
+service's database:
 
 ```bash
 bun run src/cli.ts doctor --json

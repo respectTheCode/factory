@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createTRPCProxyClient } from "@trpc/client";
 
 import type { FactoryRouter } from "../server";
+import { AgentCredentialsSection } from "./agent-credentials";
 import type {
   T3ConnectionStatus,
   T3ConnectionSummary,
@@ -284,9 +285,10 @@ export function ConnectionsPage({ client, canManage }: ConnectionsPageProps) {
       <div className="connections-heading">
         <div>
           <p className="eyebrow">Factory settings</p>
-          <h1 id="connections-title">T3 connections</h1>
+          <h1 id="connections-title">Connections</h1>
           <p className="connections-intro">
-            Manage the Macs that provide read-only T3 activity to Factory.
+            Manage the Macs that provide read-only T3 activity to Factory and
+            the agent credentials that access Factory.
           </p>
         </div>
         <div className="connections-heading-actions">
@@ -595,6 +597,8 @@ export function ConnectionsPage({ client, canManage }: ConnectionsPageProps) {
           </form>
         </section>
       )}
+
+      <AgentCredentialsSection canManage={canManage} client={client} />
     </section>
   );
 }
