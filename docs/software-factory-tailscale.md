@@ -120,8 +120,12 @@ Reads, reports and planning edits require either a signed-in human session or a 
 credential; unauthenticated callers are denied everything. Machine credentials are scoped to
 Projects and can never verify reports, create or delete Projects, or delete Tasks and Subtasks.
 
-Create a credential on the service host with the service's database. The token is printed once;
-store it on the agent machine in a `0600` file and never in the repository or a handoff:
+Signed-in humans can create credentials and change Project access on `/connections`.
+An access edit keeps the existing token; new and rotated tokens are shown once.
+See [agent credential management](t3-multiple-sources.md#agent-credentials-and-project-access).
+The local CLI remains available on the service host with the service's database.
+Store a new token on the agent machine in a `0600` file and never in the repository
+or a handoff:
 
 ```bash
 bun run src/cli.ts credential create --machine-id mac-studio --project-ids "PROJECT_ID" \

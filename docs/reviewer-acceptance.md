@@ -48,8 +48,9 @@ when its scope is eligible. Nothing in reconciliation writes to GitHub.
 
 ## Provisioning and assigning reviews
 
-An operator provisions the credential on the Factory service host, using its database. The
-command emits the token once; store it in Bitsy's own credential configuration rather than
+An operator can provision a reviewer credential from **Agent credentials** at
+`/connections`, or on the Factory service host using its database. Creation emits
+the token once; store it in Bitsy's own credential configuration rather than
 in Codex's access-token file. No service deployment automatically provisions a reviewer.
 
 ```sh
@@ -57,8 +58,10 @@ factory credential create --machine-id bitsy-reviewer --role reviewer \
   --reviewer-name Bitsy --all-projects --database "$FACTORY_DB" --json
 ```
 
-Existing credentials migrate to the coding role. Revoking and rotating Bitsy's credential
-requires new assignments for the new credential identity. Revoking a Task assignment removes
+Existing credentials migrate to the coding role. Rotating a token from Connections
+preserves the credential identity and its assignments while invalidating the old token.
+Revoking and re-creating Bitsy's credential through the CLI creates a new identity and
+requires new assignments. Revoking a Task assignment removes
 inherited authority over its children; a separately assigned child keeps its own assignment.
 
 The human dashboard uses these authenticated APIs:

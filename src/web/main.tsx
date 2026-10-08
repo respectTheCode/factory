@@ -15,6 +15,11 @@ import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
 import { BackupsPage } from "./backups";
 import { ConnectionsPage } from "./connections";
 import {
+  AgentTokenBanner,
+  AgentTokenProvider,
+  useAgentTokenHandoff,
+} from "./agent-token-handoff";
+import {
   Floor,
   floorPaperMatches,
   normalizeFloorSnapshot,
@@ -536,6 +541,7 @@ function unavailableObservedActivity(
 }
 
 function Dashboard() {
+  const agentTokenHandoff = useAgentTokenHandoff();
   const [connection] = useState(() => new ConnectionState());
   const [deploymentEnvironment, setDeploymentEnvironment] =
     useState<DeploymentEnvironment | null>(null);
@@ -1981,7 +1987,8 @@ function Dashboard() {
   };
 
   const signOut = async () => {
-    if (sessionBusy) return;
+    if (sessionBusy || agentTokenHandoff.pending || agentTokenHandoff.notice)
+      return;
     setSessionBusy(true);
     setSessionError(null);
     try {
@@ -2119,9 +2126,28 @@ function Dashboard() {
             ) : human ? (
               <div className="session-controls">
                 <span className="status-twin">Signed in as {human.name}</span>
+                {(agentTokenHandoff.pending || agentTokenHandoff.notice) && (
+                  <span
+                    className="session-handoff-hint"
+                    id="session-handoff-hint"
+                  >
+                    {agentTokenHandoff.notice
+                      ? "Save the one-time token, then choose “I’ve saved it” before signing out."
+                      : "Keep this tab open while the one-time token is being issued."}
+                  </span>
+                )}
                 <button
+                  aria-describedby={
+                    agentTokenHandoff.pending || agentTokenHandoff.notice
+                      ? "session-handoff-hint"
+                      : undefined
+                  }
                   className="secondary"
-                  disabled={sessionBusy}
+                  disabled={
+                    sessionBusy ||
+                    agentTokenHandoff.pending ||
+                    !!agentTokenHandoff.notice
+                  }
                   onClick={() => void signOut()}
                   type="button"
                 >
@@ -2146,6 +2172,7 @@ function Dashboard() {
       </div>
 
       <main className={view.screen === "home" ? "floor-main" : "app-main"}>
+        <AgentTokenBanner />
         {view.screen === "home" && (
           <Floor
             busy={busy}
@@ -4218,7 +4245,7 @@ function ConnectionIndicator({
           : t3Summary.connected === t3Summary.total
             ? "healthy"
             : "partial";
-  const connectionLabel = `T3 connections · ${t3Label} · WebSocket ${websocketState}${lastConnectedLabel ? ` · ${lastConnectedLabel}` : ""}`;
+  const connectionLabel = `Connections and agent access · ${t3Label} · WebSocket ${websocketState}${lastConnectedLabel ? ` · ${lastConnectedLabel}` : ""}`;
   return (
     <a
       aria-label={connectionLabel}
@@ -5073,7 +5100,11 @@ function formatWorkState(state: string): string {
     .replace(/(^| )\w/g, (character) => character.toUpperCase());
 }
 
-createRoot(document.getElementById("root")!).render(<Dashboard />);
+createRoot(document.getElementById("root")!).render(
+  <AgentTokenProvider>
+    <Dashboard />
+  </AgentTokenProvider>,
+);
 
 if ("serviceWorker" in navigator) {
   let refreshing = false;

@@ -197,6 +197,59 @@ async function currentTaskStatus(
 }
 
 describe("reviewer credential authorization", () => {
+  test("preserves reviewer assignments when the human rotates a token", async () => {
+    const fixture = createReviewerFixture();
+    try {
+      const cookie = await loginTestOperator(fixture.server);
+      const assigned = await apiRequest(
+        fixture.server,
+        "subtasks.assignReviewer",
+        {
+          cookie,
+          input: {
+            reviewerCredentialId: fixture.reviewer.id,
+            subtaskId: fixture.subtask.id,
+          },
+        },
+      );
+      expect(assigned.response.status).toBe(200);
+      const rotated = await apiRequest(
+        fixture.server,
+        "agentCredentials.rotate",
+        {
+          cookie,
+          input: { credentialId: fixture.reviewer.id },
+        },
+      );
+      expect(rotated.response.status).toBe(200);
+      const result = data<{ credential: { id: string }; token: string }>(
+        rotated.body,
+      );
+      expect(result.credential.id).toBe(fixture.reviewer.id);
+      expect(
+        fixture.credentials.authenticate(fixture.reviewer.token),
+      ).toBeNull();
+      const status = await currentTaskStatus(
+        fixture,
+        fixture.task.id,
+        result.token,
+      );
+      const reviewed = await apiRequest(fixture.server, "subtasks.review", {
+        input: {
+          decision: "accepted",
+          expectedRevision: status.subtasks[0]!.revision,
+          reportId: fixture.report.id,
+          reportText:
+            "Verified the assigned report with the replacement token.",
+        },
+        token: result.token,
+      });
+      expect(reviewed.response.status).toBe(200);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   test("separates coding, reviewer, human-admin, and T3 mutation capabilities", async () => {
     const fixture = createReviewerFixture();
     try {

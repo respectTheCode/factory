@@ -681,6 +681,55 @@ function createRouter(
     return next();
   });
 
+  const credentialProjects = () =>
+    application.listProjects().map(({ id, name }) => ({ id, name }));
+  const credentialProjectIds = (projectIds: string[]) => {
+    const normalizedProjectIds = [...new Set(projectIds)];
+    const knownProjectIds = new Set(
+      application.listProjects().map(({ id }) => id),
+    );
+    const unknownProjectIds = normalizedProjectIds.filter(
+      (projectId) => !knownProjectIds.has(projectId),
+    );
+    if (unknownProjectIds.length > 0) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `Unknown Project ID${unknownProjectIds.length === 1 ? "" : "s"}: ${unknownProjectIds.join(", ")}.`,
+      });
+    }
+    return normalizedProjectIds;
+  };
+  const credentialMetadata = (credentialId: string) => {
+    const credential = machineCredentials
+      .list()
+      .find(({ id }) => id === credentialId);
+    if (!credential) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "The machine credential does not exist.",
+      });
+    }
+    return credential;
+  };
+  const activeCredential = (credentialId: string) => {
+    if (!machineCredentials.getActiveById(credentialId)) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "The machine credential is not active.",
+      });
+    }
+  };
+  const credentialMutationError = (error: unknown): never => {
+    if (error instanceof TRPCError) throw error;
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        error instanceof Error
+          ? error.message
+          : "The machine credential could not be changed.",
+    });
+  };
+
   const githubStatus = async (
     pullRequestUrl: string | undefined,
   ): Promise<GitHubStatusSnapshot> => {
@@ -798,6 +847,112 @@ function createRouter(
             }
           : null,
       })),
+    }),
+    agentCredentials: trpc.router({
+      list: humanProcedure()
+        .input(z.object({}).optional())
+        .query(() => ({
+          credentials: machineCredentials.list(),
+          projects: credentialProjects(),
+        })),
+      create: humanProcedure()
+        .input(
+          z.object({
+            allProjects: z.boolean().optional().default(false),
+            machineId: z.string().trim().min(1).max(63),
+            projectIds: z.array(z.string().trim().min(1)).default([]),
+            reviewerName: z.string().trim().max(200).optional(),
+            role: z.enum(["coding", "reviewer"] as const).default("coding"),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ input }) => {
+          const projectIds = credentialProjectIds(input.projectIds);
+          if (input.role === "coding" && input.allProjects) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Only reviewer credentials can access all Projects.",
+            });
+          }
+          try {
+            const created = machineCredentials.create({
+              allProjects: input.allProjects,
+              machineId: input.machineId,
+              projectIds,
+              ...(input.reviewerName
+                ? { reviewerName: input.reviewerName }
+                : {}),
+              role: input.role,
+            });
+            return {
+              credential: credentialMetadata(created.id),
+              token: created.token,
+            };
+          } catch (error) {
+            return credentialMutationError(error);
+          }
+        }),
+      updateProjectAccess: humanProcedure()
+        .input(
+          z.object({
+            allProjects: z.boolean().optional().default(false),
+            credentialId: z.string().trim().min(1),
+            projectIds: z.array(z.string().trim().min(1)),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ input }) => {
+          activeCredential(input.credentialId);
+          const projectIds = credentialProjectIds(input.projectIds);
+          try {
+            machineCredentials.updateProjectAccess({
+              allProjects: input.allProjects,
+              credentialId: input.credentialId,
+              projectIds,
+            });
+            return { credential: credentialMetadata(input.credentialId) };
+          } catch (error) {
+            return credentialMutationError(error);
+          }
+        }),
+      rotate: humanProcedure()
+        .input(z.object({ credentialId: z.string().trim().min(1) }))
+        .use(serializedMutation)
+        .mutation(({ input }) => {
+          activeCredential(input.credentialId);
+          try {
+            const rotated = machineCredentials.rotate(input.credentialId);
+            return {
+              credential: credentialMetadata(rotated.id),
+              token: rotated.token,
+            };
+          } catch (error) {
+            return credentialMutationError(error);
+          }
+        }),
+      revoke: humanProcedure()
+        .input(z.object({ credentialId: z.string().trim().min(1) }))
+        .use(serializedMutation)
+        .mutation(({ input }) => {
+          const current = machineCredentials.getActiveById(input.credentialId);
+          if (!current) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "The machine credential is not active.",
+            });
+          }
+          try {
+            machineCredentials.revokeById(input.credentialId);
+            return {
+              revoked: {
+                credentialId: input.credentialId,
+                machineId: current.machineId,
+              },
+            };
+          } catch (error) {
+            return credentialMutationError(error);
+          }
+        }),
     }),
     reviewers: trpc.router({
       list: humanProcedure().query(() =>
@@ -1188,13 +1343,49 @@ function createRouter(
         }),
       updates: scopedProcedure(fieldProjectId("projectId"))
         .input(z.object({ projectId: z.string().min(1) }))
-        .subscription(({ ctx, input }) =>
-          observable<DashboardSnapshot>((emit) =>
-            projectUpdates.subscribe(input.projectId, (snapshot) =>
-              emit.next(scopeDashboardSnapshot(snapshot, ctx.machine)),
-            ),
-          ),
-        ),
+        .subscription(({ ctx, input }) => {
+          const initialMachine = ctx.human ? null : ctx.machine;
+          if (!ctx.human && !initialMachine) {
+            throw new TRPCError({
+              code: "UNAUTHORIZED",
+              message: "The machine credential has been revoked or rotated.",
+            });
+          }
+          const initialMachineId = initialMachine?.id;
+
+          return observable<DashboardSnapshot>((emit) => {
+            let terminated = false;
+            let unsubscribe: (() => void) | undefined;
+            const onSnapshot = (snapshot: DashboardSnapshot) => {
+              if (terminated) return;
+
+              const currentMachine = ctx.human ? null : ctx.machine;
+              if (
+                !ctx.human &&
+                (!currentMachine || currentMachine.id !== initialMachineId)
+              ) {
+                terminated = true;
+                unsubscribe?.();
+                emit.error(
+                  new TRPCError({
+                    code: "UNAUTHORIZED",
+                    message:
+                      "The machine credential has been revoked or rotated.",
+                  }),
+                );
+                return;
+              }
+
+              emit.next(scopeDashboardSnapshot(snapshot, currentMachine));
+            };
+
+            unsubscribe = projectUpdates.subscribe(input.projectId, onSnapshot);
+            return () => {
+              terminated = true;
+              unsubscribe?.();
+            };
+          });
+        }),
     }),
     t3: trpc.router({
       connections: trpc.router({
@@ -2543,13 +2734,17 @@ export function createFactoryServer({
     const human = configuredOperator
       ? humanSessions.get(getHumanSessionToken(getHeader(headers, "cookie")))
       : null;
+    const machineToken = resolveMachineToken(
+      getHeader(headers, "authorization"),
+    );
     return {
       human,
-      machine: human
-        ? null
-        : machineCredentials.authenticate(
-            resolveMachineToken(getHeader(headers, "authorization")),
-          ),
+      // tRPC's WebSocket adapter keeps its context for the lifetime of the
+      // socket. Resolve machine credentials lazily so every procedure sees
+      // the current record after a scope edit, rotation, or revocation.
+      get machine() {
+        return human ? null : machineCredentials.authenticate(machineToken);
+      },
     };
   };
   const onConnection = getWSConnectionHandler({

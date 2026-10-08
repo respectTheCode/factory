@@ -2315,6 +2315,13 @@ textarea:focus {
   color: var(--sig-ok);
 }
 
+.session-handoff-hint {
+  color: var(--sig-warn);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  max-width: 32ch;
+}
+
 .connections-empty-state {
   display: grid;
   gap: 8px;
@@ -2387,6 +2394,160 @@ textarea:focus {
 
 .connection-form-actions {
   justify-content: flex-end;
+}
+
+.agent-credentials {
+  border-top: 1px solid var(--rule);
+  display: grid;
+  gap: 16px;
+  margin-top: 12px;
+  padding-top: 24px;
+}
+
+.agent-credentials-list {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-credential-card {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-card);
+  box-shadow: var(--edge-machined);
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+}
+
+.agent-credential-reviewer,
+.agent-credentials-empty-projects {
+  color: var(--ink-dim);
+  line-height: 1.45;
+}
+
+.agent-token-notice,
+.agent-action-confirmation,
+.agent-access-editor {
+  background: var(--tint-info);
+  border: 1px solid rgba(74, 163, 224, 0.4);
+  border-radius: var(--r-card);
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.agent-token-notice-heading {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.agent-token-notice-heading h2 {
+  margin: 0;
+}
+
+.agent-token-notice p,
+.agent-action-confirmation strong,
+.agent-action-confirmation-message,
+.agent-access-editor p {
+  color: var(--ink-dim);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.agent-token-handoff-hint {
+  background: var(--tint-warn);
+  border: 1px solid rgba(240, 180, 41, 0.45);
+  border-radius: var(--r-field);
+  color: var(--sig-warn);
+  line-height: 1.45;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.agent-token-value {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-field);
+  display: block;
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+  padding: 10px;
+  user-select: all;
+}
+
+.agent-project-checkboxes {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+}
+
+.agent-project-checkboxes label,
+.agent-all-projects-toggle {
+  align-items: center;
+  color: var(--ink-dim);
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-project-checkboxes input,
+.agent-all-projects-toggle input {
+  accent-color: var(--sig-ok);
+  flex: 0 0 auto;
+  width: auto;
+}
+
+.agent-project-checkboxes span {
+  overflow-wrap: anywhere;
+}
+
+.agent-access-editor {
+  background: var(--raised);
+  border-color: var(--rule);
+}
+
+.agent-action-confirmation-danger {
+  background: var(--tint-down);
+  border-color: rgba(229, 72, 77, 0.45);
+}
+
+.agent-action-confirmation-danger strong {
+  color: var(--sig-down);
+}
+
+.agent-access-disabled {
+  font-size: 0.65rem;
+  padding: 5px 7px;
+  vertical-align: middle;
+}
+
+.agent-field-help {
+  color: var(--ink-faint);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.agent-access-editor > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.agent-project-fieldset {
+  border: 1px solid var(--rule);
+  border-radius: var(--r-field);
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  min-width: 0;
+  padding: 12px;
+}
+
+.agent-project-fieldset legend {
+  color: var(--ink-dim);
+  padding: 0 5px;
 }
 
 @media (max-width: 540px) {
