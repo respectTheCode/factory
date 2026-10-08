@@ -77,10 +77,13 @@ does not. Dokploy prefixes its custom command with `docker`:
 compose -p factory-pilot-st162-ewgahg -f compose.pilot.yaml up -d --build --remove-orphans
 ```
 
-Do not enable automatic deployment on the development or production branch.
-Production promotion requires ST-163 recovery evidence, ST-164 pilot evidence
-and the ST-165 handoff. This build gate is not a claim that GitHub required
-checks or branch protection are configured.
+Do not enable automatic deployment on the development branch. Production has a
+separate five-minute poller that follows `main` after a merge; its production
+identity check and authenticated backup gate must pass before the private
+webhook requests deployment, so no manual promotion branch is required.
+Production rollout still requires ST-163 recovery evidence, ST-164 pilot
+evidence and the ST-165 handoff. This build gate is not a claim that GitHub
+required checks or branch protection are configured.
 
 ## First pilot initialization
 
@@ -167,8 +170,11 @@ The schedule records the last requested commit in its own working directory.
 A failed build is not retried on every tick: inspect the Dokploy deployment
 error and publish a fixed release commit, or perform an explicit manual
 redeployment. An unavailable or unexpected pilot identity or a failed GitHub read stops
-the check without deploying. Only advance the release branch to reviewed
-commits; production is outside this schedule.
+the check without deploying. Only advance the pilot release branch to reviewed
+commits. Production is outside this pilot schedule and is handled by its separate
+five-minute `main`-tracking schedule; that schedule requires the production
+identity check and authenticated backup before requesting its private webhook,
+and it needs no manual promotion.
 
 Reference: [Dokploy auto-deploy](https://docs.dokploy.com/docs/core/auto-deploy).
 The polling adapter uses the Compose webhook contract verified in

@@ -30,18 +30,22 @@ function requestFixture(
     runningSha?: string;
     webhookStatus?: number;
     webhookBodies?: string[];
+    githubUrls?: string[];
   } = {},
 ) {
   const environment = options.environment ?? "pilot";
   const releaseSha = options.releaseSha ?? RELEASE_SHA;
   const runningSha = options.runningSha ?? RUNNING_SHA;
+  const githubRef =
+    environment === "production" ? "main" : `deploy%2Ffactory-${environment}`;
   return async (url: URL, requestOptions: Record<string, unknown> = {}) => {
     const serialized = url.toString();
     if (
       serialized ===
-      `https://api.github.com/repos/respectTheCode/factory/git/ref/heads/deploy%2Ffactory-${environment}`
+      `https://api.github.com/repos/respectTheCode/factory/git/ref/heads/${githubRef}`
     ) {
       events.push("github");
+      options.githubUrls?.push(serialized);
       return {
         status: 200,
         body: JSON.stringify({ object: { sha: releaseSha } }),
@@ -180,7 +184,7 @@ describe("pilot release poller backup gate", () => {
     }
   });
 
-  test("suppresses a duplicate requested release without taking another backup", async () => {
+  test("does not retry an already-requested release without taking another backup", async () => {
     const directory = fixtureDirectory();
     const webhookFile = join(directory, "pilot-webhook");
     writeFileSync(webhookFile, `${WEBHOOK_URL}\n`, { mode: 0o600 });
@@ -212,10 +216,11 @@ describe("pilot release poller backup gate", () => {
     }
   });
 
-  test("production mode uses its dedicated ref, identity, and state file", async () => {
+  test("production mode follows main while keeping identity and state guards", async () => {
     const directory = fixtureDirectory();
     const webhookFile = join(directory, "production-webhook");
     const webhookBodies: string[] = [];
+    const githubUrls: string[] = [];
     writeFileSync(webhookFile, `${WEBHOOK_URL}\n`, { mode: 0o600 });
     const events: string[] = [];
     try {
@@ -228,6 +233,7 @@ describe("pilot release poller backup gate", () => {
         request: requestFixture(events, {
           environment: "production",
           webhookBodies,
+          githubUrls,
         }),
         backup: async ({ environment }: { environment: NodeJS.ProcessEnv }) => {
           expect(environment.FACTORY_DEPLOY_ENVIRONMENT).toBe("production");
@@ -236,9 +242,12 @@ describe("pilot release poller backup gate", () => {
 
       expect(result).toEqual({ status: "requested", sha: RELEASE_SHA });
       expect(events).toEqual(["github", "pilot", "webhook"]);
+      expect(githubUrls).toEqual([
+        "https://api.github.com/repos/respectTheCode/factory/git/ref/heads/main",
+      ]);
       expect(webhookBodies).toHaveLength(1);
       expect(JSON.parse(webhookBodies[0]!)).toMatchObject({
-        ref: "refs/heads/deploy/factory-production",
+        ref: "refs/heads/main",
         after: RELEASE_SHA,
       });
       expect(
