@@ -140,7 +140,7 @@ describe("task tracking detail rendering", () => {
     expect(html).not.toContain("Waiting for approval</span>");
   });
 
-  test("keeps a complete report claim separate from pending Factory acceptance", () => {
+  test("shows direct Done Step reports and keeps evidence separate from finish rules", () => {
     const status: TrackingStatus = {
       taskState: "awaiting_verification",
       subtasks: [
@@ -160,9 +160,9 @@ describe("task tracking detail rendering", () => {
     };
     const html = render({ status });
     expect(html).toContain("Claim · complete");
-    expect(html).toContain("Acceptance · awaiting verification");
+    expect(html).toContain("Done · reported by Casey Operator");
     expect(html).toContain("complete · report claim");
-    expect(html).toContain("Factory acceptance");
+    expect(html).not.toContain("Factory acceptance");
     expect(html).toContain("Current report reason:");
     expect(html).toContain("Report report-render");
     expect(html).toContain("Test output attached.");

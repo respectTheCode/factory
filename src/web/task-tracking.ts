@@ -68,6 +68,7 @@ export type TrackingSubtaskStatus = {
     | "awaiting_verification"
     | "deferred"
     | "rejected"
+    | "not_required"
     | "unreported";
   reportId?: string;
   reportCreatedAt?: Date | string;
@@ -123,7 +124,7 @@ export type ReviewState =
 export type RevisionMatch = "matches" | "mismatch" | "unknown";
 
 export const SESSION_FRESHNESS_MS = 5 * 60 * 1000;
-export const EVIDENCE_FRESHNESS_MS = 5 * 60 * 1000;
+export const EVIDENCE_FRESHNESS_MS = 15 * 60 * 1000;
 export const FUTURE_TOLERANCE_MS = 30 * 1000;
 
 function epoch(value: Date | string | undefined): number | undefined {
@@ -138,6 +139,12 @@ export function compositeSessionId(
   threadId: string,
 ): string {
   return `${sourceId ?? "legacy"}:${threadId}`;
+}
+
+export function relativeAgeLabel(value: string): string {
+  if (value === "now" || value === "just now") return "just now";
+  if (/ago$|unknown|future/i.test(value)) return value;
+  return `${value} ago`;
 }
 
 export function elapsedLabel(

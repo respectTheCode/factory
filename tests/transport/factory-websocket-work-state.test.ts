@@ -102,8 +102,15 @@ test("resumes subtask tracking through the PWA transport without accepting repor
       }),
     );
     expect(status).toMatchObject({
-      taskState: "awaiting_verification",
+      taskState: "active",
       taskCompleted: false,
+      subtasks: [
+        {
+          effectiveState: "completed",
+          reportedState: "complete",
+          verificationState: "not_required",
+        },
+      ],
     });
     expect(app.getSubtaskReportHistory(child.id)).toEqual([report]);
   } finally {
@@ -231,7 +238,9 @@ describe("Factory work-state WebSocket transport", () => {
             },
           }),
         ),
-      ).toContain("reason");
+      ).toContain(
+        "A Task reaches In review through a Task-level finished report.",
+      );
 
       const blockedResponse = await sendRawTRPCRequest(socket, {
         id: 7,
@@ -430,7 +439,7 @@ describe("Factory work-state WebSocket transport", () => {
         ),
       ).toContain("reason");
       expect(
-        responseError(
+        responseData(
           await sendRawTRPCRequest(socket, {
             id: 46,
             method: "mutation",
@@ -444,7 +453,7 @@ describe("Factory work-state WebSocket transport", () => {
             },
           }),
         ),
-      ).toContain("reason");
+      ).toMatchObject({ reportedState: "complete" });
 
       const completeReport = responseData(
         await sendRawTRPCRequest(socket, {
@@ -507,9 +516,9 @@ describe("Factory work-state WebSocket transport", () => {
         ok: true,
         dashboard: {
           projectDetail: {
-            tasks: [expect.objectContaining({ workState: "blocked" })],
+            tasks: [expect.objectContaining({ workState: "planned" })],
           },
-          taskStatuses: [expect.objectContaining({ taskState: "blocked" })],
+          taskStatuses: [expect.objectContaining({ taskState: "planned" })],
         },
       });
 

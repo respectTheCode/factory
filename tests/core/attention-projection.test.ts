@@ -68,7 +68,7 @@ describe("attention projection", () => {
       priority: "urgent",
       reportedState: "blocked",
     });
-    const zetaAwaiting = addTask(app, zeta.id, {
+    const zetaStepComplete = addTask(app, zeta.id, {
       name: "Verify deployment",
       owner: "alex",
       priority: "high",
@@ -94,7 +94,7 @@ describe("attention projection", () => {
       taskId: zetaBacklog.id,
       workState: "backlog",
     });
-    const zetaCompleted = addTask(app, zeta.id, {
+    const zetaAcceptedStep = addTask(app, zeta.id, {
       name: "Archive deployment",
       owner: "kevin",
       priority: "urgent",
@@ -110,26 +110,6 @@ describe("attention projection", () => {
     const attention = app.getAttentionProjection();
 
     expect(attention).toEqual([
-      {
-        projectId: zeta.id,
-        projectName: "Zeta launch",
-        taskId: zetaBlocked.id,
-        taskSimpleId: zetaBlocked.simpleId!,
-        taskName: "Unblock deployment",
-        state: "blocked",
-        priority: "urgent",
-        owner: "kevin",
-      },
-      {
-        projectId: zeta.id,
-        projectName: "Zeta launch",
-        taskId: zetaAwaiting.id,
-        taskSimpleId: zetaAwaiting.simpleId!,
-        taskName: "Verify deployment",
-        state: "awaiting_verification",
-        priority: "high",
-        owner: "alex",
-      },
       {
         projectId: zeta.id,
         projectName: "Zeta launch",
@@ -153,12 +133,42 @@ describe("attention projection", () => {
       {
         projectId: zeta.id,
         projectName: "Zeta launch",
+        taskId: zetaAcceptedStep.id,
+        taskSimpleId: zetaAcceptedStep.simpleId!,
+        taskName: "Archive deployment",
+        state: "planned",
+        priority: "urgent",
+        owner: "kevin",
+      },
+      {
+        projectId: zeta.id,
+        projectName: "Zeta launch",
         taskId: zetaPlanned.id,
         taskSimpleId: zetaPlanned.simpleId!,
         taskName: "Plan deployment",
         state: "planned",
         priority: "medium",
         owner: "sam",
+      },
+      {
+        projectId: zeta.id,
+        projectName: "Zeta launch",
+        taskId: zetaBlocked.id,
+        taskSimpleId: zetaBlocked.simpleId!,
+        taskName: "Unblock deployment",
+        state: "planned",
+        priority: "urgent",
+        owner: "kevin",
+      },
+      {
+        projectId: zeta.id,
+        projectName: "Zeta launch",
+        taskId: zetaStepComplete.id,
+        taskSimpleId: zetaStepComplete.simpleId!,
+        taskName: "Verify deployment",
+        state: "planned",
+        priority: "high",
+        owner: "alex",
       },
       {
         projectId: zeta.id,
@@ -172,9 +182,10 @@ describe("attention projection", () => {
       },
     ]);
 
-    expect(attention).not.toContainEqual(
-      expect.objectContaining({ taskId: zetaCompleted.id }),
-    );
+    expect(app.getTaskStatus(zetaAcceptedStep.id)).toMatchObject({
+      taskCompleted: false,
+      taskState: "planned",
+    });
     expect(app.getAttentionProjection()).toEqual(attention);
   });
 });

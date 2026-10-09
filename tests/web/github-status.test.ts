@@ -20,7 +20,7 @@ describe("PWA GitHub status presentation", () => {
     expect(source).toContain("GitHubStatusBadge");
     expect(source).toContain("summarizeGitHubActions");
     expect(source).toContain("actionsSummary={taskActionsSummary}");
-    expect(source).toContain("subtaskActionsSummary");
+    expect(source).toContain("Workflow");
     expect(source).toContain("GitHubActionsSummaryBadge");
     expect(source).toContain('<span className="row-title">');
     expect(source).toContain('<span className="row-title-text">{name}</span>');
@@ -29,9 +29,8 @@ describe("PWA GitHub status presentation", () => {
     expect(stylesheet).toContain(".github-actions-passing");
     expect(stylesheet).toContain(".github-actions-failing");
     expect(stylesheet).toContain(".github-actions-skipped");
-    expect(source).toContain("Actions passing");
-    expect(source).toContain("Actions failing");
-    expect(source).toContain('github-status-${status?.status ?? "loading"}');
+    expect(source).toContain("requiredPullRequestSummary(");
+    expect(source).toContain("github-status-${view.tone}");
     expect(source).not.toContain(
       "tasks.setState.mutate({\n        taskId: task.id",
     );

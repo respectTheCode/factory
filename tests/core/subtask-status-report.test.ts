@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { FactoryApplication } from "../../src/application";
 
 describe("subtask status reporting", () => {
-  test("keeps an agent-complete subtask awaiting human verification", () => {
+  test("keeps a completed Step distinct from its active Task", () => {
     const app = new FactoryApplication({
       clock: () => new Date("2026-08-22T12:00:00.000Z"),
       idGenerator: (() => {
@@ -38,11 +38,13 @@ describe("subtask status reporting", () => {
           id: report.id,
           reportId: report.id,
           reportedState: "complete",
+          effectiveState: "completed",
           evidence: "bun test tests/core/project-task-hierarchy.test.ts",
-          verificationState: "awaiting_verification",
+          verificationState: "not_required",
         },
       ],
       taskCompleted: false,
+      taskState: "planned",
     });
   });
 });

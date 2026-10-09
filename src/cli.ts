@@ -80,8 +80,15 @@ type FactoryBackend = Pick<
   | "getSubtaskDetail"
   | "getSubtaskReportHistory"
   | "getSubtaskVerificationHistory"
+  | "getTaskActivityHistory"
   | "getTaskDetail"
   | "getTaskStatus"
+  | "reportTaskStatus"
+  | "updateTaskFinishRule"
+  | "checkTask"
+  | "reopenTask"
+  | "markTaskDone"
+  | "taskPullRequestStatuses"
   | "listProjects"
   | "removeProject"
   | "reorderSubtasks"
@@ -318,6 +325,58 @@ function expectedRevisionFlag(flags: Map<string, string>): number | undefined {
   const value = Number(configured);
   if (!/^\d+$/.test(configured) || !Number.isSafeInteger(value) || value < 1) {
     throw new Error("--expected-revision must be a positive integer.");
+  }
+  return value;
+}
+
+function expectedWorkflowEpochFlag(
+  flags: Map<string, string>,
+): number | undefined {
+  const configured = flags.get("expected-workflow-epoch");
+  if (configured === undefined) return undefined;
+  const value = Number(configured);
+  if (!/^\d+$/.test(configured) || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error("--expected-workflow-epoch must be a nonnegative integer.");
+  }
+  return value;
+}
+
+function actorFlag(flags: Map<string, string>): string | undefined {
+  const configured = flags.get("actor");
+  if (configured !== undefined && !configured.trim()) {
+    throw new Error("--actor must not be empty.");
+  }
+  return configured?.trim() || Bun.env.FACTORY_REPORTER?.trim() || undefined;
+}
+
+function optionalBooleanFlag(
+  flags: Map<string, string>,
+  name: string,
+): boolean | undefined {
+  const value = flags.get(name)?.trim().toLowerCase();
+  if (value === undefined) return undefined;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`--${name} must be true or false.`);
+}
+
+function taskReportedStateFlag(
+  flags: Map<string, string>,
+): "in_progress" | "finished" | "blocked" {
+  const value = requiredFlag(flags, "state");
+  if (value !== "in_progress" && value !== "finished" && value !== "blocked") {
+    throw new Error("--state must be in_progress, finished, or blocked.");
+  }
+  return value;
+}
+
+function taskWorkflowEpochFlag(flags: Map<string, string>): number {
+  const configured = requiredFlag(flags, "workflow-epoch");
+  const value = Number(configured);
+  if (!/^\d+$/.test(configured) || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(
+      "--workflow-epoch must be a nonnegative integer from task status.",
+    );
   }
   return value;
 }
@@ -841,7 +900,7 @@ async function makeBriefInput({
       briefData?.taskStatuses.find(
         (candidate) => candidate.taskId === selectedTask.id,
       ) ?? (await backend.getTaskStatus(selectedTask.id));
-    const subtasks: BriefSubtask[] = [];
+    const steps: BriefSubtask[] = [];
     for (const subtask of hierarchyTask.subtasks.filter(
       (candidate) => candidate.archiveState === undefined,
     )) {
@@ -852,7 +911,7 @@ async function makeBriefInput({
         briefData?.reports[subtask.id] ??
         (await backend.getSubtaskReportHistory(subtask.id));
       const latestReport = reports.at(-1);
-      subtasks.push({
+      steps.push({
         id: subtask.id,
         simpleId: subtask.simpleId,
         name: subtask.name,
@@ -860,12 +919,9 @@ async function makeBriefInput({
           ? {}
           : { description: subtask.description }),
         effectiveState: subtaskStatus?.effectiveState ?? "planned",
-        accepted:
-          subtaskStatus?.reportedState === "complete" &&
-          subtaskStatus.verificationState === "accepted",
-        awaitingVerification:
-          subtaskStatus?.effectiveState === "awaiting_verification" &&
-          subtaskStatus.verificationState !== "accepted",
+        ...(subtaskStatus?.reportedState === undefined
+          ? {}
+          : { reportedState: subtaskStatus.reportedState }),
         ...(latestReport
           ? {
               latestReport: {
@@ -877,8 +933,8 @@ async function makeBriefInput({
           : {}),
       });
     }
-    const reportSubtaskId = subtasks.find(
-      (subtask) => !subtask.accepted && !subtask.awaitingVerification,
+    const reportStepId = steps.find(
+      (step) => step.reportedState !== "complete",
     )?.simpleId;
 
     task = {
@@ -896,18 +952,32 @@ async function makeBriefInput({
         : { pullRequestUrl: selectedTask.pullRequestUrl }),
       acceptanceCriteria: selectedTask.acceptanceCriteria,
       dependencies: selectedTask.dependencies,
+      workflowEpoch: status.workflowEpoch,
+      finishRule: status.finishRule,
+      ...(status.humanCheckText === undefined
+        ? {}
+        : { humanCheckText: status.humanCheckText }),
+      ...(status.latestTaskReport
+        ? {
+            latestTaskReport: {
+              state: status.latestTaskReport.reportedState,
+              reporter: status.latestTaskReport.reporter,
+              createdAt: isoDate(status.latestTaskReport.createdAt),
+            },
+          }
+        : {}),
       workState: selectedTask.archiveState ?? status.taskState,
       ...(status.stateReason === undefined
         ? {}
         : { stateReason: status.stateReason }),
-      manualHold: selectedTask.workStateSource === "manual",
+      manualHold: status.manualHold,
       trackerLinks: selectedTask.trackerLinks.map((link) => ({
         stableId: link.stableId,
         system: link.system,
         url: link.url,
       })),
-      subtasks,
-      ...(reportSubtaskId ? { reportSubtaskId } : {}),
+      steps,
+      ...(reportStepId ? { reportStepId } : {}),
     };
   }
 
@@ -1117,6 +1187,44 @@ function createLocalBackend(application: FactoryApplication): FactoryBackend {
       application.getSubtaskVerificationHistory(subtaskId),
     getTaskDetail: async (taskId) => application.getTaskDetail(taskId),
     getTaskStatus: async (taskId) => application.getTaskStatus(taskId),
+    getTaskActivityHistory: async (input) => {
+      const page = paginateHistory(
+        application.getTaskActivityHistory(input.taskId),
+        {
+          cursor: input.cursor,
+          direction: input.direction ?? "forward",
+          limit: input.limit ?? CLI_READ_CAPS.history,
+          ...(input.since ? { since: input.since } : {}),
+          scope: `task-history:${input.taskId}`,
+        },
+      );
+      return {
+        events: page.items,
+        nextCursor: page.nextCursor,
+        totalCount: page.totalCount,
+        truncated: page.truncated,
+      };
+    },
+    reportTaskStatus: async (input) => application.reportTaskStatus(input),
+    updateTaskFinishRule: async (input) =>
+      application.updateTaskFinishRule(input),
+    checkTask: async (input) => application.checkTask(input),
+    reopenTask: async (input) => application.reopenTask(input),
+    markTaskDone: async (input) => application.markTaskDone(input),
+    taskPullRequestStatuses: async (taskId) => {
+      const status = application.getTaskStatus(taskId);
+      return status.requiredPullRequests.map((pullRequest) => ({
+        ...pullRequest,
+        githubStatus: {
+          checkRuns: [],
+          checkRunsStatus: "not_requested" as const,
+          fetchedAt: new Date().toISOString(),
+          status: "not_configured" as const,
+          workflowRuns: [],
+          workflowRunsStatus: "not_requested" as const,
+        },
+      }));
+    },
     reviewSubtask: async () => {
       throw new Error(
         "Reviewer decisions require FACTORY_URL and an assigned reviewer credential.",
@@ -1155,7 +1263,15 @@ function createLocalBackend(application: FactoryApplication): FactoryBackend {
 
 async function main(args: string[]): Promise<void> {
   const parsed = parseArgs(args);
-  const [resource, action] = parsed.command;
+  const [commandResource, action] = parsed.command;
+  const resource = commandResource === "step" ? "subtask" : commandResource;
+  if (
+    commandResource === "step" &&
+    parsed.flags.has("step-id") &&
+    !parsed.flags.has("subtask-id")
+  ) {
+    parsed.flags.set("subtask-id", parsed.flags.get("step-id")!);
+  }
   const factoryUrl = Bun.env.FACTORY_URL?.trim();
   const hasExplicitDatabase = parsed.flags.has("database");
   const localOnly =
@@ -1865,6 +1981,10 @@ async function main(args: string[]): Promise<void> {
       owner: parsed.flags.get("owner")?.trim() || undefined,
       pullRequestUrl:
         parsed.flags.get("pull-request-url") ?? parsed.flags.get("pr"),
+      pullRequestRequired: optionalBooleanFlag(
+        parsed.flags,
+        "pull-request-required",
+      ),
       priority: priorityFlag(parsed.flags),
       projectId: requiredFlag(parsed.flags, "project-id"),
       repositoryLinks: listFlag(parsed.flags, "repository-links"),
@@ -1881,6 +2001,178 @@ async function main(args: string[]): Promise<void> {
     output({
       task: parsed.flags.get("summary") === "true" ? taskSummary(task) : task,
     });
+    return;
+  }
+
+  if (resource === "task" && action === "report") {
+    const taskId = requiredFlag(parsed.flags, "task-id");
+    const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
+    const reportTracking = reportTrackingFlags(parsed.flags);
+    const summary =
+      parsed.flags.get("summary")?.trim() ||
+      parsed.flags.get("evidence")?.trim() ||
+      undefined;
+    const sessionThreadId = parsed.flags.get("session-thread-id");
+    const sessionSourceId = parsed.flags.get("session-source-id");
+    const sessionRef = sessionThreadId
+      ? {
+          externalThreadId: sessionThreadId.trim(),
+          provider: "t3" as const,
+          ...(sessionSourceId
+            ? {
+                sourceId: sourceIdFlag(
+                  new Map([["source-id", sessionSourceId]]),
+                ),
+              }
+            : {}),
+        }
+      : undefined;
+    if (sessionThreadId !== undefined && !sessionThreadId.trim()) {
+      throw new Error("--session-thread-id must not be empty.");
+    }
+    if (sessionSourceId !== undefined && !sessionThreadId) {
+      throw new Error("--session-source-id requires --session-thread-id.");
+    }
+    const report = await application.reportTaskStatus({
+      ...reportTracking,
+      ...(expectedRevisionFlag(parsed.flags) === undefined
+        ? {}
+        : { expectedRevision: expectedRevisionFlag(parsed.flags) }),
+      ...(parsed.flags.get("reason") === undefined
+        ? {}
+        : { reason: parsed.flags.get("reason") }),
+      ...(sessionRef ? { sessionRef } : {}),
+      ...(summary ? { summary } : {}),
+      reporter: requiredFlag(parsed.flags, "reporter"),
+      reportedState: taskReportedStateFlag(parsed.flags),
+      taskId,
+      workflowEpoch: taskWorkflowEpochFlag(parsed.flags),
+      ...(requestKey === undefined ? {} : { requestKey }),
+    });
+    output({ report });
+    return;
+  }
+
+  if (resource === "task" && action === "finish-rule") {
+    const kind = requiredFlag(parsed.flags, "kind");
+    if (kind !== "pr_merge" && kind !== "agent_report") {
+      throw new Error("--kind must be pr_merge or agent_report.");
+    }
+    const requireHumanCheck =
+      optionalBooleanFlag(parsed.flags, "require-human-check") ?? false;
+    const humanCheckText = parsed.flags.get("human-check-text")?.trim();
+    if (requireHumanCheck && !humanCheckText) {
+      throw new Error(
+        "--human-check-text is required when --require-human-check is true.",
+      );
+    }
+    const taskId = requiredFlag(parsed.flags, "task-id");
+    const status = await application.getTaskStatus(taskId);
+    const expectedRevision =
+      expectedRevisionFlag(parsed.flags) ?? status.taskRevision;
+    const expectedWorkflowEpoch =
+      expectedWorkflowEpochFlag(parsed.flags) ?? status.workflowEpoch;
+    let pullRequestRequirements = status.requiredPullRequests.map(
+      ({ pullRequestUrl, required }) => ({ pullRequestUrl, required }),
+    );
+    const configuredRequirements = parsed.flags.get(
+      "pull-request-requirements-json",
+    );
+    if (configuredRequirements !== undefined) {
+      let value: unknown;
+      try {
+        value = JSON.parse(configuredRequirements);
+      } catch {
+        throw new Error(
+          "--pull-request-requirements-json must contain a JSON array.",
+        );
+      }
+      if (
+        !Array.isArray(value) ||
+        value.some(
+          (row) =>
+            !row ||
+            typeof row !== "object" ||
+            typeof row.pullRequestUrl !== "string" ||
+            typeof row.required !== "boolean",
+        )
+      ) {
+        throw new Error(
+          "--pull-request-requirements-json must be an array of {pullRequestUrl, required} rows.",
+        );
+      }
+      pullRequestRequirements = value as typeof pullRequestRequirements;
+    }
+    const task = await application.updateTaskFinishRule({
+      actor: actorFlag(parsed.flags),
+      expectedRevision,
+      expectedWorkflowEpoch,
+      finishRule: { kind, requireHumanCheck },
+      humanCheckText: humanCheckText ?? null,
+      pullRequestRequirements,
+      taskId,
+    });
+    output({ task });
+    return;
+  }
+
+  if (resource === "task" && action === "check") {
+    const task = await application.checkTask({
+      checker: requiredFlag(parsed.flags, "actor"),
+      expectedRevision: positiveRevisionFlag(parsed.flags, "expected-revision"),
+      taskId: requiredFlag(parsed.flags, "task-id"),
+      ...(parsed.flags.get("reason") === undefined
+        ? {}
+        : { reason: parsed.flags.get("reason") }),
+    });
+    output({ task });
+    return;
+  }
+
+  if (resource === "task" && action === "reopen") {
+    const expectedRevision = expectedRevisionFlag(parsed.flags);
+    const task = await application.reopenTask({
+      actor: requiredFlag(parsed.flags, "actor"),
+      reason: requiredFlag(parsed.flags, "reason"),
+      taskId: requiredFlag(parsed.flags, "task-id"),
+      ...(expectedRevision === undefined ? {} : { expectedRevision }),
+    });
+    output({ task });
+    return;
+  }
+
+  if (resource === "task" && action === "mark-done") {
+    const expectedRevision = expectedRevisionFlag(parsed.flags);
+    const task = await application.markTaskDone({
+      actor: requiredFlag(parsed.flags, "actor"),
+      reason: requiredFlag(parsed.flags, "reason"),
+      taskId: requiredFlag(parsed.flags, "task-id"),
+      ...(expectedRevision === undefined ? {} : { expectedRevision }),
+    });
+    output({ task });
+    return;
+  }
+
+  if (resource === "task" && action === "history") {
+    const taskId = requiredFlag(parsed.flags, "task-id");
+    const tail = historyTailFlag(parsed.flags);
+    const direction = tail === undefined ? "forward" : "backward";
+    const history = await application.getTaskActivityHistory({
+      cursor: readCursorFlag(parsed.flags),
+      direction,
+      limit: tail ?? parseReadLimit(parsed.flags, CLI_READ_CAPS.history),
+      ...(historySinceFlag(parsed.flags)
+        ? { since: historySinceFlag(parsed.flags) }
+        : {}),
+      taskId,
+    });
+    warnIfTruncated("Task activity history", {
+      items: history.events,
+      nextCursor: history.nextCursor,
+      totalCount: history.totalCount,
+      truncated: history.truncated,
+    });
+    output({ history });
     return;
   }
 
@@ -1946,12 +2238,17 @@ async function main(args: string[]): Promise<void> {
       parsed.flags.get("branch-name") ?? parsed.flags.get("branch");
     const pullRequestUrl =
       parsed.flags.get("pull-request-url") ?? parsed.flags.get("pr");
+    const pullRequestRequired = optionalBooleanFlag(
+      parsed.flags,
+      "pull-request-required",
+    );
     if (
       title === undefined &&
       description === undefined &&
       acceptanceCriteria === undefined &&
       branchName === undefined &&
-      pullRequestUrl === undefined
+      pullRequestUrl === undefined &&
+      pullRequestRequired === undefined
     ) {
       throw new Error(
         "Provide at least one of --title, --description, --acceptance-criteria, --branch-name, or --pull-request-url.",
@@ -1969,11 +2266,13 @@ async function main(args: string[]): Promise<void> {
       }
     }
     const task = await application.updateTask({
+      actor: actorFlag(parsed.flags),
       acceptanceCriteria,
       branchName,
       name: title,
       objective: description,
       pullRequestUrl,
+      pullRequestRequired,
       taskId,
       ...(expectedRevision === undefined ? {} : { expectedRevision }),
       ...(requestKey === undefined ? {} : { requestKey }),
@@ -2141,6 +2440,10 @@ async function main(args: string[]): Promise<void> {
       name: requiredFlag(parsed.flags, "name"),
       pullRequestUrl:
         parsed.flags.get("pull-request-url") ?? parsed.flags.get("pr"),
+      pullRequestRequired: optionalBooleanFlag(
+        parsed.flags,
+        "pull-request-required",
+      ),
       taskId: requiredFlag(parsed.flags, "task-id"),
       ...(requestKey === undefined ? {} : { requestKey }),
     });
@@ -2154,11 +2457,16 @@ async function main(args: string[]): Promise<void> {
     const description = parsed.flags.get("description");
     const pullRequestUrl =
       parsed.flags.get("pull-request-url") ?? parsed.flags.get("pr");
+    const pullRequestRequired = optionalBooleanFlag(
+      parsed.flags,
+      "pull-request-required",
+    );
     if (
       title === undefined &&
       description === undefined &&
       evidence === undefined &&
-      pullRequestUrl === undefined
+      pullRequestUrl === undefined &&
+      pullRequestRequired === undefined
     ) {
       throw new Error(
         "Provide at least one of --title, --description, --evidence, or --pull-request-url.",
@@ -2167,10 +2475,12 @@ async function main(args: string[]): Promise<void> {
     const expectedRevision = expectedRevisionFlag(parsed.flags);
     const requestKey = requestKeyFlag(parsed.flags, remoteClient !== undefined);
     const subtask = await application.updateSubtask({
+      actor: actorFlag(parsed.flags),
       description,
       evidence,
       name: title,
       pullRequestUrl,
+      pullRequestRequired,
       subtaskId: requiredFlag(parsed.flags, "subtask-id"),
       ...(expectedRevision === undefined ? {} : { expectedRevision }),
       ...(requestKey === undefined ? {} : { requestKey }),
@@ -2219,14 +2529,18 @@ async function main(args: string[]): Promise<void> {
 
   if (resource === "subtask" && action === "reorder") {
     const taskId = requiredFlag(parsed.flags, "task-id");
-    const workState = workStateFlag(parsed.flags);
+    const hasWorkState =
+      parsed.flags.has("state") || parsed.flags.has("work-state");
+    const workState = hasWorkState ? workStateFlag(parsed.flags) : undefined;
     const subtaskIds = orderedIdsFlag(parsed.flags, "subtask-ids");
     await application.reorderSubtasks({
       orderedSubtaskIds: subtaskIds,
       taskId,
-      workState,
+      ...(workState === undefined ? {} : { workState }),
     });
-    output({ order: { subtaskIds, taskId, workState } });
+    output({
+      order: { subtaskIds, taskId, ...(workState ? { workState } : {}) },
+    });
     return;
   }
 
@@ -2348,7 +2662,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   throw new Error(
-    "Usage: doctor, credential create|list|revoke, database backup|check, project create|update|list|context|brief|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|review|state|resume-rollup|status|github-status|reorder|archive|restore|link, subtask create|update|report|review|reorder|status|github-status|archive|restore|history|verify, screenshot upload|list|get",
+    "Usage: doctor, credential create|list|revoke, database backup|check, project create|update|list|context|brief|remove|status|portfolio|attention|link|t3-status, session detail|link|auto-link|unlink, task create|update|detail|report|finish-rule|check|reopen|mark-done|history|review|state|resume-rollup|status|github-status|reorder|archive|restore|link, step create|update|report|reorder|status|github-status|archive|restore|history, subtask create|update|report|review|reorder|status|github-status|archive|restore|history|verify, screenshot upload|list|get",
   );
 }
 

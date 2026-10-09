@@ -1,4 +1,8 @@
-# Reviewer acceptance reference
+# Historical reviewer acceptance reference
+
+The simplified workflow uses direct Steps, Task finish rules, PR reviews, and opt-in human
+checks. The commands below describe retained compatibility APIs and historical evidence.
+They are not required for routine Step or Task completion.
 
 Coding agents keep their coding credential and submit progress and completion reports.
 They must never borrow a reviewer credential or a human session to approve their work.

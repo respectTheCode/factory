@@ -24,8 +24,8 @@ function fixture() {
   return { app, task, first, second, complete };
 }
 
-describe("whole-task readiness", () => {
-  test("keeps legacy report reasons missing without blocking sibling updates", () => {
+describe("Task finish readiness", () => {
+  test("legacy Step-derived review state does not imply Task completion", () => {
     const now = new Date("2026-09-04T12:00:00Z");
     const state: FactoryState = {
       projects: [{ id: "p", name: "Legacy", createdAt: now }],
@@ -64,7 +64,11 @@ describe("whole-task readiness", () => {
       clock: () => now,
       idGenerator: () => "new",
     });
-    expect(app.getTaskStatus("t").taskState).toBe("active");
+
+    expect(app.getTaskStatus("t")).toMatchObject({
+      taskCompleted: false,
+      taskState: "planned",
+    });
     app.reportSubtaskStatus({
       subtaskId: "b",
       reportedState: "complete",
@@ -72,40 +76,40 @@ describe("whole-task readiness", () => {
       reason: "Review second child.",
     });
     expect(app.getTaskStatus("t")).toMatchObject({
-      taskState: "awaiting_verification",
       taskCompleted: false,
+      taskState: "planned",
     });
-    expect(app.getTaskStatus("t").stateReason).toContain("historical report");
+    expect(app.getTaskStatus("t").stateReason).toBeUndefined();
     expect(app.getSubtaskReportHistory("a")[0]).not.toHaveProperty("reason");
-    state.tasks[0]!.stateReason = "Check the legacy task against the release.";
-    const legacy = new FactoryApplication({
-      state,
-      clock: () => now,
-      idGenerator: () => "legacy-new",
-    });
-    expect(legacy.getTaskStatus("t").stateReason).toBe(
-      "Check the legacy task against the release.",
-    );
   });
 
-  test("scope changes move automatic parents to the destination tail and preserve holds", () => {
+  test("Step scope changes update automatic ordering while manual holds persist", () => {
     const { app, task, first, second, complete } = fixture();
     const planned = app.createTask({
       projectId: task.projectId,
       name: "Planned peer",
     });
+    app.reportSubtaskStatus({
+      subtaskId: first.id,
+      reportedState: "in_progress",
+      reporter: "codex",
+    });
     complete(first.id);
     complete(second.id);
     app.archiveSubtask(first.id, "released");
     app.archiveSubtask(second.id, "released");
-    expect(app.getTaskStatus(task.id).taskState).toBe("planned");
-    expect(app.getTaskDetail(task.id).sortOrder).toBeGreaterThan(
+    expect(app.getTaskStatus(task.id).taskState).toBe("active");
+    expect(app.getTaskDetail(task.id).sortOrder).toBeLessThan(
       app.getTaskDetail(planned.id).sortOrder!,
     );
+
     app.restoreSubtask(first.id);
-    expect(app.getTaskStatus(task.id).taskState).toBe("awaiting_verification");
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      taskCompleted: false,
+      taskState: "active",
+    });
     app.removeSubtask(first.id);
-    expect(app.getTaskStatus(task.id).taskState).toBe("planned");
+    expect(app.getTaskStatus(task.id).taskState).toBe("active");
     app.setTaskWorkState({
       taskId: task.id,
       workState: "blocked",
@@ -113,12 +117,13 @@ describe("whole-task readiness", () => {
     });
     app.restoreSubtask(second.id);
     expect(app.getTaskStatus(task.id)).toMatchObject({
-      taskState: "blocked",
+      taskCompleted: false,
       stateReason: "Wait for owner scope decision.",
+      taskState: "blocked",
     });
   });
 
-  test("restoring a parent reconciles child changes made while archived", () => {
+  test("restoring a parent reconciles Step changes without finishing it", () => {
     const { app, task, first, second, complete } = fixture();
     complete(first.id);
     complete(second.id);
@@ -136,45 +141,71 @@ describe("whole-task readiness", () => {
     app.restoreTask(task.id);
     app.restoreSubtask(first.id);
     app.restoreSubtask(second.id);
-    expect(app.getTaskStatus(task.id).taskState).toBe("active");
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      taskCompleted: false,
+      taskState: "active",
+    });
     expect(app.getTaskDetail(task.id).sortOrder).toBeGreaterThan(
       app.getTaskDetail(peer.id).sortOrder!,
     );
   });
 
-  test("waits for every non-archived child before requesting verification", () => {
+  test("Step completion and acceptance leave Task finish to its own report", () => {
     const { app, task, first, second, complete } = fixture();
     const firstReport = complete(first.id);
-    expect(app.getTaskStatus(task.id).taskState).toBe("active");
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      taskCompleted: false,
+      taskState: "planned",
+    });
     app.verifyStatusReport({
       reportId: firstReport.id,
       decision: "accepted",
       verifier: "kevin",
     });
-    expect(app.getTaskStatus(task.id).taskState).toBe("active");
+
     const secondReport = complete(second.id);
-    expect(app.getTaskStatus(task.id).taskState).toBe("awaiting_verification");
     app.verifyStatusReport({
       reportId: secondReport.id,
       decision: "accepted",
       verifier: "kevin",
     });
-    expect(app.getTaskStatus(task.id).taskState).toBe("completed");
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      taskCompleted: false,
+      taskState: "planned",
+    });
+
+    const status = app.getTaskStatus(task.id);
+    app.reportTaskStatus({
+      taskId: task.id,
+      workflowEpoch: status.workflowEpoch,
+      reportedState: "finished",
+      reporter: "codex",
+    });
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      taskCompleted: true,
+      taskState: "completed",
+    });
   });
 
-  test("adding and restoring unfinished scope removes automatic readiness", () => {
+  test("adding or restoring Steps does not create Task finish readiness", () => {
     const { app, task, first, second, complete } = fixture();
     complete(first.id);
     app.archiveSubtask(second.id, "wont_do");
-    expect(app.getTaskStatus(task.id).taskState).toBe("awaiting_verification");
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      taskCompleted: false,
+      taskState: "planned",
+    });
     app.restoreSubtask(second.id);
-    expect(app.getTaskStatus(task.id).taskState).toBe("active");
+    expect(app.getTaskStatus(task.id).taskState).toBe("planned");
     complete(second.id);
     app.createSubtask({ taskId: task.id, name: "New scope" });
-    expect(app.getTaskStatus(task.id).taskState).toBe("active");
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      taskCompleted: false,
+      taskState: "planned",
+    });
   });
 
-  test("explicitly resumes child status without creating reports or acceptance", () => {
+  test("resuming the automatic rollup never accepts or finishes Steps", () => {
     const { app, task, first, second, complete } = fixture();
     complete(first.id);
     complete(second.id);
@@ -182,8 +213,8 @@ describe("whole-task readiness", () => {
     const before = app.getTaskStatus(task.id);
     app.resumeTaskRollup(task.id);
     expect(app.getTaskStatus(task.id)).toMatchObject({
-      taskState: "awaiting_verification",
       taskCompleted: false,
+      taskState: "active",
       subtasks: before.subtasks,
     });
     for (const subtask of before.subtasks) {
@@ -196,8 +227,33 @@ describe("whole-task readiness", () => {
     app.setTaskWorkState({ taskId: task.id, workState: "planned" });
     app.resumeTaskRollup(task.id);
     expect(app.getTaskStatus(task.id)).toMatchObject({
-      taskState: "completed",
-      taskCompleted: true,
+      taskCompleted: false,
+      taskState: "planned",
+    });
+  });
+
+  test("the first Doing Step promotes a Planned Task; Blocked Steps do not", () => {
+    const { app, task, first } = fixture();
+
+    app.reportSubtaskStatus({
+      subtaskId: first.id,
+      reportedState: "blocked",
+      reporter: "codex",
+      reason: "Waiting on the Step dependency.",
+    });
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      taskCompleted: false,
+      taskState: "planned",
+    });
+
+    app.reportSubtaskStatus({
+      subtaskId: first.id,
+      reportedState: "in_progress",
+      reporter: "codex",
+    });
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      taskCompleted: false,
+      taskState: "active",
     });
   });
 });

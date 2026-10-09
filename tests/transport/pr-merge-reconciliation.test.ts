@@ -10,6 +10,7 @@ import type {
   GitHubStatusReader,
 } from "../../src/github";
 import { createFactoryServer } from "../../src/server";
+import { createTestServer, loginTestOperator } from "./helpers";
 
 async function waitFor(
   predicate: () => boolean,
@@ -24,7 +25,7 @@ async function waitFor(
   throw new Error(`Timed out waiting for ${description}.`);
 }
 
-function status(databasePath: string, taskId: string) {
+function currentStatus(databasePath: string, taskId: string) {
   const app = createFactoryApplication({ databasePath });
   try {
     return app.getTaskStatus(taskId);
@@ -33,8 +34,8 @@ function status(databasePath: string, taskId: string) {
   }
 }
 
-describe("automatic PR merge reconciliation", () => {
-  test("waits for confirmed merge evidence, accepts eligible work once, and stops its timer", async () => {
+describe("automatic Task PR merge reconciliation", () => {
+  test("waits for fresh default-branch reachability and records no Step approval", async () => {
     const directory = mkdtempSync(join(tmpdir(), "factory-pr-reconciler-"));
     const databasePath = join(directory, "factory.sqlite");
     const app = createFactoryApplication({ databasePath });
@@ -43,24 +44,35 @@ describe("automatic PR merge reconciliation", () => {
       name: "Merge scanner",
     });
     const task = app.createTask({
-      name: "Reconcile the merged pull request",
+      name: "Reconcile the required Step pull request",
       projectId: project.id,
-      pullRequestUrl: "https://github.com/example/reconciler/pull/10",
     });
-    const subtask = app.createSubtask({
-      name: "Review report",
+    const step = app.createSubtask({
+      name: "Ship the linked code",
+      pullRequestUrl: "https://github.com/example/reconciler/pull/10",
       taskId: task.id,
     });
-    app.reportSubtaskStatus({
-      reason: "Check the merged implementation.",
+    const beforeReport = app.getTaskStatus(task.id);
+    const workflowStartedAt = app.getTaskDetail(task.id).workflowStartedAt;
+    app.reportTaskStatus({
       reporter: "codex",
-      reportedState: "complete",
-      subtaskId: subtask.id,
+      reportedState: "finished",
+      summary: "The required PR is ready.",
+      taskId: task.id,
+      workflowEpoch: beforeReport.workflowEpoch,
     });
     app.close();
 
     let calls = 0;
-    let mergeEvidence: { mergeSha?: string; mergedAt?: string } | undefined;
+    let evidence = {
+      defaultBranch: "main",
+      mergeSha: "0123456789abcdef0123456789abcdef01234567",
+      mergedAt: new Date(
+        (workflowStartedAt?.getTime() ?? Date.now()) + 1,
+      ).toISOString(),
+      observedAt: new Date(Date.now() - 16 * 60_000).toISOString(),
+      reachedDefaultBranch: true as const,
+    };
     let lastReference: GitHubPullRequestReference | undefined;
     const githubStatusReader: GitHubStatusReader = {
       read: async () => ({
@@ -74,7 +86,7 @@ describe("automatic PR merge reconciliation", () => {
       readMergeEvidence: async (reference) => {
         calls += 1;
         lastReference = reference;
-        return mergeEvidence;
+        return evidence;
       },
     };
     const server = createFactoryServer({
@@ -93,48 +105,139 @@ describe("automatic PR merge reconciliation", () => {
         repo: "reconciler",
         number: 10,
       });
-      expect(status(databasePath, task.id).taskCompleted).toBe(false);
-      const beforeMerge = createFactoryApplication({ databasePath });
-      expect(beforeMerge.getSubtaskVerificationHistory(subtask.id)).toEqual([]);
-      beforeMerge.close();
+      expect(currentStatus(databasePath, task.id).taskCompleted).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(currentStatus(databasePath, task.id).taskCompleted).toBe(false);
 
-      mergeEvidence = {
-        mergeSha: "0123456789abcdef0123456789abcdef01234567",
-        mergedAt: new Date(Date.now() + 10_000).toISOString(),
+      evidence = {
+        ...evidence,
+        observedAt: new Date().toISOString(),
       };
       await waitFor(
-        () => status(databasePath, task.id).taskCompleted,
-        "the confirmed merge reconciliation",
+        () => currentStatus(databasePath, task.id).taskCompleted,
+        "fresh merge evidence proving the commit reached main",
       );
       const reconciled = createFactoryApplication({ databasePath });
       try {
-        expect(
-          reconciled.getSubtaskVerificationHistory(subtask.id),
-        ).toMatchObject([
+        const status = reconciled.getTaskStatus(task.id);
+        expect(status.requiredPullRequests).toMatchObject([
           {
-            decision: "accepted",
-            source: "pr_merge",
-            mergeSha: mergeEvidence!.mergeSha,
+            pullRequestUrl: step.pullRequestUrl,
+            required: true,
+            merge: {
+              defaultBranch: "main",
+              mergeSha: evidence.mergeSha,
+              reachedDefaultBranch: true,
+              workflowEpoch: status.workflowEpoch,
+            },
           },
         ]);
+        expect(reconciled.getSubtaskVerificationHistory(step.id)).toEqual([]);
       } finally {
         reconciled.close();
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(calls).toBeGreaterThan(1);
       await server.stop();
       const callsAtStop = calls;
       await new Promise((resolve) => setTimeout(resolve, 60));
       expect(calls).toBe(callsAtStop);
-      const afterStop = createFactoryApplication({ databasePath });
-      try {
-        expect(
-          afterStop.getSubtaskVerificationHistory(subtask.id),
-        ).toHaveLength(1);
-      } finally {
-        afterStop.close();
-      }
+    } finally {
+      await server.stop();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  test("supports human-triggered reconciliation and keeps the route human-only", async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "factory-pr-manual-reconcile-"),
+    );
+    const databasePath = join(directory, "factory.sqlite");
+    const app = createFactoryApplication({ databasePath });
+    const project = app.createProject({
+      gitOriginUrl: "https://github.com/example/manual-reconcile.git",
+      name: "Manual reconciliation",
+    });
+    const task = app.createTask({
+      name: "Wait for default branch",
+      projectId: project.id,
+      pullRequestUrl: "https://github.com/example/manual-reconcile/pull/11",
+    });
+    const workflowStartedAt = app.getTaskDetail(task.id).workflowStartedAt;
+    app.reportTaskStatus({
+      reporter: "codex",
+      reportedState: "finished",
+      summary: "The code change is ready.",
+      taskId: task.id,
+      workflowEpoch: app.getTaskStatus(task.id).workflowEpoch,
+    });
+    app.close();
+
+    const githubStatusReader: GitHubStatusReader = {
+      read: async () => ({
+        checkRuns: [],
+        checkRunsStatus: "ok",
+        fetchedAt: new Date().toISOString(),
+        status: "ok",
+        workflowRuns: [],
+        workflowRunsStatus: "ok",
+      }),
+      readMergeEvidence: async () => ({
+        defaultBranch: "main",
+        mergeSha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        mergedAt: new Date(
+          (workflowStartedAt?.getTime() ?? Date.now()) + 1,
+        ).toISOString(),
+        observedAt: new Date().toISOString(),
+        reachedDefaultBranch: true,
+      }),
+    };
+    const server = createTestServer({
+      databasePath,
+      githubStatusReader,
+      hostname: "127.0.0.1",
+      port: 0,
+      pullRequestReconciliationIntervalMs: 0,
+    });
+
+    try {
+      const denied = await fetch(
+        new URL("/api/tasks.reconcileMergedPullRequest", server.url),
+        {
+          body: JSON.stringify({ taskId: task.id }),
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(denied.status).toBe(401);
+
+      const humanCookie = await loginTestOperator(server);
+      const response = await fetch(
+        new URL("/api/tasks.reconcileMergedPullRequest", server.url),
+        {
+          body: JSON.stringify({ taskId: task.id }),
+          headers: {
+            Cookie: humanCookie,
+            "Content-Type": "application/json",
+          },
+          method: "POST",
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        result: {
+          data: {
+            reconciled: true,
+            updates: [
+              {
+                defaultBranch: "main",
+                mergeSha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+                reachedDefaultBranch: true,
+              },
+            ],
+          },
+        },
+      });
+      expect(currentStatus(databasePath, task.id).taskCompleted).toBe(true);
     } finally {
       await server.stop();
       rmSync(directory, { force: true, recursive: true });

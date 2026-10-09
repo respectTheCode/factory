@@ -79,7 +79,8 @@ describe("subtask descriptions", () => {
     });
 
     expect(app.getTaskStatus(task.id)).toMatchObject({
-      taskCompleted: true,
+      taskCompleted: false,
+      taskState: "planned",
       subtasks: [
         {
           evidence: "bun test passed",

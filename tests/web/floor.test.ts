@@ -69,11 +69,11 @@ describe("Floor projection view model", () => {
       ],
       queue: [
         {
-          action: "stamp",
-          id: "stamp:report-1",
+          action: "check",
+          id: "check:task-1",
           projectId: "project-1",
           projectName: "Factory",
-          summary: "Stamp Floor work / Verify Floor",
+          summary: "Check Floor work",
           target: {
             kind: "work",
             target: {
@@ -93,15 +93,11 @@ describe("Floor projection view model", () => {
     const view = normalizeFloorSnapshot(snapshot);
     expect(view.projects[0]?.stations[0]?.reporter).toBe("codex");
     expect(view.projects[0]?.stations[0]?.tokenState).toBe("working");
-    expect(view.projects[0]?.counter[0]?.reportId).toBe("report-1");
-    expect(view.projects[0]?.counter[0]?.claim).toBe(
-      "Claim reason stays separate from evidence.",
-    );
-    expect(view.projects[0]?.counter[0]?.evidence).toBe(
-      "Synthetic evidence: Floor claim is ready for review.",
-    );
-    expect(view.projects[0]?.counter[0]?.simpleId).toBe("ST-1");
-    expect(view.yourTurn.items[0]?.paper?.reportId).toBe("report-1");
+    expect(view.projects[0]?.counter[0]?.kind).toBe("check");
+    expect(view.projects[0]?.counter[0]?.name).toBe("Check Floor work");
+    expect(view.projects[0]?.counter[0]?.evidence).toBeUndefined();
+    expect(view.projects[0]?.counter[0]?.simpleId).toBe("T-1");
+    expect(view.yourTurn.items[0]?.kind).toBe("check");
     expect(view.scoreboard.workingNow).toBe(1);
   });
 
@@ -151,7 +147,7 @@ describe("Floor projection view model", () => {
 
     const view = normalizeFloorSnapshot(snapshot);
     expect(view.stale).toBe(true);
-    expect(view.yourTurn.items[0]?.kind).toBe("unblock");
+    expect(view.yourTurn.items[0]?.kind).toBe("review");
     expect(view.yourTurn.items[0]?.paper).toBeUndefined();
   });
 });

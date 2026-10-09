@@ -28,18 +28,21 @@ describe("Task and Subtask revisions", () => {
         taskId: task.id,
       });
 
-      expect(application.getTaskDetail(task.id).revision).toBe(1);
+      const taskRevisionAfterScopeChange = application.getTaskDetail(
+        task.id,
+      ).revision;
+      expect(taskRevisionAfterScopeChange).toBe(2);
       expect(application.getSubtaskDetail(subtask.id).revision).toBe(1);
 
       const updatedTask = application.updateTask({
-        expectedRevision: 1,
+        expectedRevision: taskRevisionAfterScopeChange,
         name: "Updated task",
         taskId: task.id,
       });
-      expect(updatedTask.revision).toBe(2);
+      expect(updatedTask.revision).toBe(taskRevisionAfterScopeChange + 1);
       expect(() =>
         application.updateTask({
-          expectedRevision: 1,
+          expectedRevision: taskRevisionAfterScopeChange,
           name: "Stale task edit",
           taskId: task.id,
         }),
@@ -66,7 +69,9 @@ describe("Task and Subtask revisions", () => {
         subtaskId: subtask.id,
       });
       expect(application.getSubtaskDetail(subtask.id).revision).toBe(3);
-      expect(application.getTaskDetail(task.id).revision).toBe(3);
+      expect(application.getTaskDetail(task.id).revision).toBe(
+        taskRevisionAfterScopeChange + 3,
+      );
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }

@@ -6,6 +6,7 @@ import type {
   TaskStatus,
   Verification,
 } from "./application";
+import type { GitHubStatusSnapshot } from "./github";
 import type {
   T3ObservedActivity,
   T3ObservedConnection,
@@ -90,13 +91,7 @@ export type FloorProject = {
   };
 };
 
-export type FloorQueueAction =
-  | "approve"
-  | "input"
-  | "stamp"
-  | "unblock"
-  | "reconcile"
-  | "review";
+export type FloorQueueAction = "review" | "check" | "decide" | "unblock";
 
 export type FloorQueueTarget =
   | { kind: "work"; target: FloorTarget }
@@ -150,6 +145,7 @@ export type FloorConnection = {
 
 export type FloorScoreboard = {
   stampedToday: number;
+  finishedToday?: number;
   reportsToday: number;
   workingNow: number;
   oldestPendingAt?: string;
@@ -163,6 +159,7 @@ export type FloorSnapshot = {
   events: FloorEvent[];
   scoreboard: FloorScoreboard;
   connections: FloorConnection[];
+  trackingNotes?: FloorQueueItem[];
 };
 
 export type FloorTaskInput = {
@@ -177,6 +174,7 @@ export type FloorProjectionInput = {
   statusReports: StatusReport[];
   verifications: Verification[];
   activities: FloorProjectActivity[];
+  githubStatuses?: Readonly<Record<string, GitHubStatusSnapshot | undefined>>;
   now: Date;
   timezone?: string;
 };
@@ -668,6 +666,7 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
 
   const queue: FloorQueueItem[] = [];
   const events: FloorEvent[] = [];
+  const trackingNotes: FloorQueueItem[] = [];
   const claimsByTask = new Map<string, FloorClaim[]>();
   const reviewByTask = new Map<string, FloorWorkItem[]>();
 
@@ -675,118 +674,180 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
     const project = projects.get(task.projectId);
     if (!project) continue;
     const target = targetFor(project, task);
-    if (status.taskState === "awaiting_verification") {
-      const latestComplete = status.subtasks
-        .filter(
-          (subtask) =>
-            subtask.subtaskId &&
-            subtask.reportedState === "complete" &&
-            subtask.verificationState === "awaiting_verification",
+    if (status.latestTaskReport)
+      events.push({
+        id: `task-report:${status.latestTaskReport.id}`,
+        kind: "report",
+        actor: status.latestTaskReport.reporter,
+        timestamp: iso(status.latestTaskReport.createdAt),
+        projectId: project.id,
+        target,
+        summary: `${status.latestTaskReport.reporter} ${status.latestTaskReport.reportedState === "finished" ? (status.finishMetadata?.kind === "agent_report" ? "finished" : "reported ready on") : "reported on"} ${task.name}${status.latestTaskReport.summary ? `: ${status.latestTaskReport.summary}` : ""}`,
+      });
+    if (status.finishMetadata)
+      events.push({
+        id: `task-finish:${task.id}:${status.finishMetadata.epoch}`,
+        kind: "verification",
+        actor: status.finishMetadata.actor,
+        timestamp: iso(status.finishMetadata.completedAt),
+        projectId: project.id,
+        target,
+        summary: `${status.finishMetadata.actor} ${status.finishMetadata.kind === "pr_merge" ? "confirmed required PRs reached the default branch" : status.finishMetadata.kind === "human_check" ? "checked" : status.finishMetadata.kind === "human_mark_done" ? "marked done" : "finished"} ${task.name} · Done${status.finishMetadata.reason ? `: ${status.finishMetadata.reason}` : ""}`,
+      });
+    if (
+      status.taskCompleted ||
+      status.taskState === "completed" ||
+      status.archiveState
+    )
+      continue;
+    const add = (
+      action: FloorQueueAction,
+      id: string,
+      summary: string,
+      reason?: string,
+      at?: Date | string,
+      subtask?: Subtask,
+    ) =>
+      queue.push({
+        action,
+        id,
+        projectId: project.id,
+        projectName: project.name,
+        summary,
+        ...(reason ? { reason } : {}),
+        target: {
+          kind: "work",
+          target: subtask ? targetFor(project, task, subtask) : target,
+        },
+        timestamp: iso(at ?? task.createdAt),
+      });
+    const latest = status.latestTaskReport;
+    if (status.humanCheckReady)
+      add(
+        "check",
+        `check:${task.id}`,
+        task.humanCheckText || task.name,
+        `${task.simpleId} · ${task.name} · Finished by ${latest?.reporter || "the recorded agent"}`,
+        latest?.createdAt,
+      );
+    else if (
+      status.finishRule.kind === "pr_merge" &&
+      latest?.reportedState === "finished"
+    ) {
+      const required = status.requiredPullRequests.filter(
+        (row) => row.required,
+      );
+      if (!required.length)
+        add(
+          "decide",
+          `decide:no-pr:${task.id}`,
+          `Choose a finish rule or link a PR for ${task.name}`,
+          "The agent reported finished without a required PR.",
+          latest.createdAt,
+        );
+      for (const row of required) {
+        if (row.merge) continue;
+        const observation = input.githubStatuses?.[row.pullRequestUrl];
+        if (!observation) continue;
+        const age = input.now.getTime() - timestamp(observation.fetchedAt);
+        if (!Number.isFinite(age) || age > 15 * 60_000 || age < -5_000)
+          continue;
+        if (observation.status === "not_configured") {
+          if (!queue.some((item) => item.id === `decide:github:${project.id}`))
+            add(
+              "decide",
+              `decide:github:${project.id}`,
+              `Connect GitHub for ${project.name}`,
+              "Factory cannot check required PRs until GitHub is connected.",
+              latest.createdAt,
+            );
+        } else if (
+          observation.status === "not_found" ||
+          observation.status === "permission_denied"
         )
-        .sort(
-          (left, right) =>
-            timestamp(
-              left.reportId
-                ? reportById(input.statusReports, left.reportId)?.createdAt
-                : undefined,
-            ) -
-            timestamp(
-              right.reportId
-                ? reportById(input.statusReports, right.reportId)?.createdAt
-                : undefined,
-            ),
-        )[0];
-      if (!latestComplete?.subtaskId || !latestComplete.reportId) {
-        const item = taskItem(project, task, status);
-        if (item) {
-          const items = reviewByTask.get(project.id) ?? [];
-          items.push(item);
-          reviewByTask.set(project.id, items);
-          queue.push({
-            action: "review",
-            id: `review:${task.id}`,
-            projectId: project.id,
-            projectName: project.name,
-            summary: `Review ${task.name}`,
-            target: { kind: "work", target },
-            timestamp: iso(task.createdAt),
-          });
+          add(
+            "decide",
+            `decide:pr:${task.id}:${row.pullRequestUrl}`,
+            `Resolve the required PR for ${task.name}`,
+            observation.status === "not_found"
+              ? "PR not found"
+              : "No access to this PR",
+            latest.createdAt,
+          );
+        else if (observation.status === "ok" && observation.pullRequest) {
+          const pr = observation.pullRequest;
+          if (pr.mergedAt) continue; // Stacked code waits for default-branch reachability, without a human decision.
+          if (pr.state === "closed")
+            add(
+              "decide",
+              `decide:closed:${task.id}:${row.pullRequestUrl}`,
+              `Decide how to handle closed PR #${pr.number}`,
+              `PR #${pr.number} closed without merging`,
+              latest.createdAt,
+            );
+          else if (!pr.draft)
+            add(
+              "review",
+              `review:${task.id}:${row.pullRequestUrl}`,
+              `PR #${pr.number} · ${task.name}`,
+              `Required PR is open`,
+              latest.createdAt,
+            );
         }
       }
     }
-    for (const subtaskStatus of status.subtasks) {
-      if (
-        subtaskStatus.archiveState ||
-        !subtaskStatus.subtaskId ||
-        subtaskStatus.reportedState !== "complete" ||
-        subtaskStatus.verificationState !== "awaiting_verification"
-      )
-        continue;
-      const subtask = subtasks.find(
-        (candidate) => candidate.id === subtaskStatus.subtaskId,
+    const hasFreshSession = input.activities
+      .filter((entry) => entry.projectId === project.id)
+      .some(({ activity }) =>
+        activityThreads([activity]).some(
+          (thread) =>
+            sourceIsFresh(activity, thread.sourceId, input.now) &&
+            thread.association.state === "linked" &&
+            targetsForLinks(
+              projects,
+              activeTasks,
+              project.id,
+              thread.association.links,
+            ).some((link) => link.taskId === task.id) &&
+            (thread.latestSessionState === "running" ||
+              thread.latestTurnState === "running"),
+        ),
       );
-      const report =
-        reportById(input.statusReports, subtaskStatus.reportId) ??
-        latestReportForSubtask(input.statusReports, subtaskStatus.subtaskId);
-      if (!subtask || subtask.archiveState !== undefined || !report) continue;
-      const claim: FloorClaim = {
-        ...targetFor(project, task, subtask),
-        ...((subtaskStatus.evidence ?? report.evidence)
-          ? { evidence: subtaskStatus.evidence ?? report.evidence }
-          : {}),
-        ...(report.reason ? { reason: report.reason } : {}),
-        reportId: report.id,
-        reportedAt: iso(report.createdAt),
-        reporter: report.reporter,
-      };
-      const claims = claimsByTask.get(project.id) ?? [];
-      claims.push(claim);
-      claimsByTask.set(project.id, claims);
-      queue.push({
-        action: "stamp",
-        id: `stamp:${report.id}`,
-        projectId: project.id,
-        projectName: project.name,
-        reason: report.reason,
-        summary: `Stamp ${task.name} / ${subtask.name}`,
-        target: { kind: "work", target: claim },
-        timestamp: claim.reportedAt,
-      });
-    }
-    if (status.taskState === "blocked") {
-      const blockedReport = status.subtasks
-        .filter(
-          (subtask) =>
-            subtask.subtaskId && subtask.effectiveState === "blocked",
-        )
-        .map((subtask) => reportById(input.statusReports, subtask.reportId))
-        .filter((report): report is StatusReport => report !== undefined)
-        .sort(
-          (left, right) =>
-            timestamp(left.createdAt) - timestamp(right.createdAt),
-        )[0];
+    if (
+      status.taskState === "blocked" &&
+      (latest ||
+        task.workStateSource === "manual" ||
+        !status.subtasks.some((step) => step.reportedState === "blocked")) &&
+      (latest?.handoff?.nextOwnerKind === "human" ||
+        ((!latest?.handoff || latest.handoff.nextOwnerKind === "unknown") &&
+          !hasFreshSession))
+    )
+      add(
+        "unblock",
+        `unblock:${task.id}`,
+        status.stateReason || task.name,
+        `${task.simpleId} · ${task.name}`,
+        latest?.createdAt,
+      );
+    for (const stepStatus of status.subtasks) {
+      if (stepStatus.reportedState !== "blocked" || stepStatus.archiveState)
+        continue;
+      const step = subtasks.find((item) => item.id === stepStatus.subtaskId);
+      if (!step || step.archiveState) continue;
       if (
-        !hasFreshAgentHandoffChildren(
-          task,
-          status,
-          subtasks,
-          projects,
-          activeTasks,
-          input.activities,
-          input.now,
-        )
-      ) {
-        queue.push({
-          action: "unblock",
-          id: `unblock:${task.id}`,
-          projectId: project.id,
-          projectName: project.name,
-          ...(status.stateReason ? { reason: status.stateReason } : {}),
-          summary: `Unblock ${task.name}`,
-          target: { kind: "work", target },
-          timestamp: iso(blockedReport?.createdAt ?? task.createdAt),
-        });
-      }
+        stepStatus.handoff?.nextOwnerKind === "human" ||
+        ((!stepStatus.handoff ||
+          stepStatus.handoff.nextOwnerKind === "unknown") &&
+          !hasFreshSession)
+      )
+        add(
+          "unblock",
+          `unblock:${step.id}`,
+          stepStatus.reason || step.name,
+          `${task.simpleId} · ${task.name} / ${step.name}`,
+          stepStatus.reportCreatedAt,
+          step,
+        );
     }
   }
 
@@ -834,7 +895,7 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
       id: `verification:${verification.id}`,
       kind: "verification",
       projectId: project.id,
-      summary: `${verification.verifier} stamped ${taskInput.task.name} / ${subtask.name}`,
+      summary: `${verification.verifier} accepted ${taskInput.task.name} / ${subtask.name} · earlier review`,
       target,
       timestamp: iso(verification.createdAt),
     });
@@ -888,22 +949,24 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
         iso(input.now);
       if (thread.hasPendingApprovals)
         queue.push({
-          action: "approve",
+          action: "decide",
           id: `approve:${thread.sourceId}:${thread.threadId}`,
+          reason: `Approval in T3${thread.agent ? ` · ${thread.agent}` : ""}`,
           projectId: project.id,
           projectName: project.name,
-          summary: `Approve ${thread.title}`,
+          summary: thread.title,
           target: queueTargetForThread(project, thread, target),
           timestamp: actionTimestamp,
           ...(relatedTargets.length > 1 ? { relatedTargets } : {}),
         });
       if (thread.hasPendingUserInput)
         queue.push({
-          action: "input",
+          action: "decide",
           id: `input:${thread.sourceId}:${thread.threadId}`,
+          reason: `Question in T3${thread.agent ? ` · ${thread.agent}` : ""}`,
           projectId: project.id,
           projectName: project.name,
-          summary: `Respond to ${thread.title}`,
+          summary: thread.title,
           target: queueTargetForThread(project, thread, target),
           timestamp: actionTimestamp,
           ...(relatedTargets.length > 1 ? { relatedTargets } : {}),
@@ -990,8 +1053,8 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
             }
           : undefined,
       );
-      queue.push({
-        action: "reconcile",
+      trackingNotes.push({
+        action: "decide",
         id: `reconcile:${finding.dedupeKey}`,
         projectId: project.id,
         projectName: project.name,
@@ -1176,14 +1239,9 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
       projectTasks.filter(({ status }) => status.taskState === "blocked")
         .length +
       stations.filter((station) => station.state === "error").length;
-    const waiting =
-      counter.length +
-      reviewNeeded.length +
-      stations.filter(
-        (station) =>
-          station.state === "waiting_approval" ||
-          station.state === "waiting_input",
-      ).length;
+    const waiting = queue.filter(
+      (item) => item.projectId === project.id,
+    ).length;
     return {
       bench,
       counter,
@@ -1233,7 +1291,18 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
     }),
   ).size;
   const scoreboard: FloorScoreboard = {
-    reportsToday: todayReports.length,
+    reportsToday:
+      todayReports.length +
+      input.tasks.filter(
+        ({ status }) =>
+          status.latestTaskReport &&
+          isToday(status.latestTaskReport.createdAt, input.now, timezone),
+      ).length,
+    finishedToday: input.tasks.filter(
+      ({ status }) =>
+        status.finishMetadata &&
+        isToday(status.finishMetadata.completedAt, input.now, timezone),
+    ).length,
     stampedToday: input.verifications.filter(
       (verification) =>
         verification.decision === "accepted" &&
@@ -1241,19 +1310,11 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
         stampedReportIds.has(verification.reportId),
     ).length,
     workingNow,
-    ...(counterClaims[0]
-      ? {
-          oldestPendingAt: counterClaims
-            .slice()
-            .sort(
-              (left, right) =>
-                timestamp(left.reportedAt) - timestamp(right.reportedAt),
-            )[0]!.reportedAt,
-        }
-      : {}),
+    ...(orderedQueue[0] ? { oldestPendingAt: orderedQueue[0].timestamp } : {}),
   };
   return {
     connections: connectionViews(input.activities, input.now),
+    trackingNotes: trackingNotes.sort(compareOldest),
     events: orderedEvents,
     generatedAt,
     projects: floorProjects,

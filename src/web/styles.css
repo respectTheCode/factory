@@ -610,6 +610,15 @@ textarea {
 .github-status-ok span {
   color: var(--sig-ok);
 }
+.github-status-neutral span {
+  color: var(--ink-dim);
+}
+.github-status-warn span {
+  color: var(--sig-warn);
+}
+.github-status-down span {
+  color: var(--sig-down);
+}
 
 .github-status-not_found span,
 .github-status-permission_denied span,
@@ -2979,7 +2988,7 @@ option {
 }
 .task-progress::-webkit-progress-value,
 .task-progress::-moz-progress-bar {
-  background: var(--sig-ok);
+  background: var(--ink-dim);
 }
 
 .status-icon-planned {

@@ -36,7 +36,7 @@ function accept(app: FactoryApplication, taskId: string) {
 }
 
 describe("human task-wide acceptance", () => {
-  test("accepts mixed child states, preserves history, and clears dispositions and manual holds", () => {
+  test("accepts mixed child states and restores dispositions without finishing the Task", () => {
     const app = createInMemoryApplication();
     const project = app.createProject({ name: "Factory" });
     const task = app.createTask({
@@ -107,8 +107,9 @@ describe("human task-wide acceptance", () => {
 
     const status = app.getTaskStatus(task.id);
     expect(status).toMatchObject({
-      taskCompleted: true,
-      taskState: "completed",
+      taskCompleted: false,
+      stateReason: "Review the stalled task.",
+      taskState: "blocked",
     });
     expect(status.archiveState).toBeUndefined();
     expect(status.subtasks).toHaveLength(4);
@@ -198,7 +199,7 @@ describe("human task-wide acceptance", () => {
     );
   });
 
-  test("rejects empty tasks, stale children, and same-state reports changed after review", () => {
+  test("rejects empty tasks, stale scope, and same-state reports changed after review", () => {
     const app = createInMemoryApplication();
     const project = app.createProject({ name: "Factory" });
     const emptyTask = app.createTask({ name: "Empty", projectId: project.id });
@@ -252,10 +253,10 @@ describe("human task-wide acceptance", () => {
         taskId: task.id,
         verifier: "kevin",
       }),
-    ).toThrow("every current Subtask exactly once");
+    ).toThrow("current revision");
   });
 
-  test("new child work reopens a task accepted through rollup", () => {
+  test("new child work does not finish a task after Step acceptance", () => {
     const app = createInMemoryApplication();
     const project = app.createProject({ name: "Factory" });
     const task = app.createTask({
@@ -278,7 +279,7 @@ describe("human task-wide acceptance", () => {
 
     expect(app.getTaskStatus(task.id)).toMatchObject({
       taskCompleted: false,
-      taskState: "active",
+      taskState: "planned",
     });
   });
 
@@ -540,7 +541,7 @@ describe("human task-wide acceptance", () => {
     ]);
   });
 
-  test("persists task-wide acceptance across application instances", () => {
+  test("persists child acceptance without completing the Task", () => {
     const databasePath = `/tmp/factory-task-acceptance-${crypto.randomUUID()}.sqlite`;
     const app = createFactoryApplication({ databasePath });
     const project = app.createProject({ name: "Factory" });
@@ -562,8 +563,8 @@ describe("human task-wide acceptance", () => {
 
     const reopened = createFactoryApplication({ databasePath });
     expect(reopened.getTaskStatus(task.id)).toMatchObject({
-      taskCompleted: true,
-      taskState: "completed",
+      taskCompleted: false,
+      taskState: "planned",
       subtasks: [expect.objectContaining({ verificationState: "accepted" })],
     });
     app.close();

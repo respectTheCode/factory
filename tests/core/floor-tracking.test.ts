@@ -214,8 +214,8 @@ describe("Floor report tracking projection", () => {
     const { status, snapshot, task } = createBlockedHandoff();
     const project = snapshot.projects[0]!;
 
-    expect(status.taskState).toBe("blocked");
-    expect(project.counts.blocked).toBe(1);
+    expect(status.taskState).toBe("active");
+    expect(project.counts).toMatchObject({ working: 1, blocked: 0 });
     expect(project.stations).toContainEqual(
       expect.objectContaining({ state: "working", threadId: "child-thread" }),
     );
@@ -224,34 +224,59 @@ describe("Floor report tracking projection", () => {
     ).toBe(false);
   });
 
-  test("keeps an independent unknown blocker visible beside a satisfied agent handoff", () => {
+  test("does not count an unknown blocker while a fresh linked agent session is active", () => {
     const { snapshot, task, status } = createBlockedHandoff({
       secondBlockerOwnerKind: "unknown",
     });
 
-    expect(status.taskState).toBe("blocked");
-    expect(
-      snapshot.queue.some((item) => item.id === `unblock:${task.id}`),
-    ).toBe(true);
+    expect(status.taskState).toBe("active");
+    expect(snapshot.queue.some((item) => item.action === "unblock")).toBe(
+      false,
+    );
   });
 
+  test("keeps a human-owned Step blocker actionable with its precise target", () => {
+    const { snapshot, taskInput } = createBlockedHandoff({
+      ownerKind: "human",
+    });
+    const item = snapshot.queue.find((item) => item.action === "unblock");
+    expect(item?.target).toMatchObject({
+      kind: "work",
+      target: { subtaskId: taskInput.subtasks[0]!.id },
+    });
+  });
   test.each([
-    ["human-owned handoff", { ownerKind: "human" as const }],
-    ["unknown handoff owner", { ownerKind: "unknown" as const }],
-    ["missing handoff", { handoff: false }],
-    ["handoff without a child dependency", { waiting: false }],
-    ["child is not active in Factory", { activeChild: false }],
-    ["child observation is stale", { observationAt: STALE_ISO }],
-    ["child source has been superseded", { childSourceCurrent: false }],
-    ["child is waiting for human approval", { childPendingApproval: true }],
-    ["task block is manual", { manualTaskBlock: true }],
-  ])("keeps the unblock action for %s", (_label, options) => {
-    const { snapshot, task, status } = createBlockedHandoff(options);
-
-    expect(status.taskState).toBe("blocked");
-    expect(snapshot.projects[0]?.counts.blocked).toBe(1);
+    ["unknown owner", { ownerKind: "unknown" as const }],
+    ["no handoff", { handoff: false }],
+  ])("suppresses %s with fresh linked agent activity", (_label, options) => {
     expect(
-      snapshot.queue.some((item) => item.id === `unblock:${task.id}`),
+      createBlockedHandoff(options).snapshot.queue.filter(
+        (item) => item.action === "unblock",
+      ),
+    ).toEqual([]);
+  });
+  test.each([
+    ["unknown owner", { ownerKind: "unknown" as const }],
+    ["no handoff", { handoff: false }],
+  ])("shows %s when linked agent activity is stale", (_label, options) => {
+    expect(
+      createBlockedHandoff({
+        ...options,
+        observationAt: STALE_ISO,
+      }).snapshot.queue.some((item) => item.action === "unblock"),
     ).toBe(true);
+  });
+  test.each([
+    ["missing child dependency", { waiting: false }],
+    ["child not active", { activeChild: false }],
+    ["stale child", { observationAt: STALE_ISO }],
+    ["superseded source", { childSourceCurrent: false }],
+    ["child waiting for approval", { childPendingApproval: true }],
+  ])("agent-owned blocker is not a human action: %s", (_label, options) => {
+    expect(
+      createBlockedHandoff(options).snapshot.queue.filter(
+        (item) => item.action === "unblock",
+      ),
+    ).toEqual([]);
   });
 });
