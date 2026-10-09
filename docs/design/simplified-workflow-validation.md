@@ -87,3 +87,12 @@ uses the same deliberate manual-hold definition as the server.
   document horizontal overflow or broken images; replacement phone screenshot
   visually inspected. Earlier stronger ancestor-clipping checks remain applicable
   to unchanged layouts.
+
+Opus 5.5 round 5 confirmed S16 and the focus/brief corrections: **Ready**, no
+blockers or unresolved objections. Its evidence limits are preserved in the
+review. A supplemental Chrome API readback explicitly asserts Task PR #39,
+Step PR #37 still required, and Task unfinished after reload; returned JSON is
+logged at `/tmp/factory-s16-readback.log`. The earlier background rename did not
+supply a valid expected revision (status uses `taskRevision`), but did change
+the revision and exercise stale-form refusal; authoritative revision guards
+remain covered by the application/API tests.
