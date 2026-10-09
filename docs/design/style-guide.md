@@ -188,12 +188,12 @@ drawn inline SVG with a text twin (`<title>` + adjacent state code).
 
 The awaiting dial is the system's hinge: the work is *full* (the claim
 exists) but the ring is *dashed* (unsealed) — the same dashed-equals-
-unverified grammar as the Countersign. Verification seals the ring.
+unverified grammar as the Countersign. The Task finish rule seals the ring.
 
 **Progress dials:** a task-level dial may fill as a pie of
-`verified / total` subtasks — neutral `--rule` ring, `--sig-ok` wedge,
-mono fraction beside it (`3/5`). The pie only counts *verified* work;
-claims don't move the needle.
+`done / total` Steps — neutral `--rule` ring, `--sig-ok` wedge,
+mono fraction beside it (`3/5`). The count records Step progress; it does not establish Task completion.
+Step indicators stay matte and neutral, including Done.
 
 Signal-colored dials carry the LED glow (`--glow-*`, §5) — they are lit
 positions on the gauge. Planned and wont-do stay matte and unlit.
@@ -303,25 +303,18 @@ glow. A token never has a face, limbs, a desk graphic, or a walk cycle.
 
 ### 8.4 Counter and papers
 
-Claims awaiting verification render as **papers**: `--tint-warn` fill,
-35% `sig-warn` border, Countersign slot (§7) at the left, name, and the
-claim's age in mono `sig-warn` at the right. Age is the pressure: papers
-older than three days step the border to 60% alpha and the age to 700
-weight. A bay shows at most three papers and a `+N more waiting` line,
-oldest first. Accepting a paper fills its slot with the 120ms stamp
-(§9) and the paper leaves the counter on the next render.
+Actionable human requests render as **papers**: `--tint-warn` fill,
+35% `sig-warn` border, request kind, name, and age. Only opt-in human checks
+carry a Countersign slot. A bay shows at most three papers and a `+N more`
+line, oldest first. Confirming a check removes its request on the next render.
 
 ### 8.5 Sidecar
 
-- **Your Turn** — the amber column, now a queue. A 56px mono count of
-  everything only the human can do, a Plex Sans sub-line breaking it
-  into approvals, stamps, and unblocks, then rows ordered oldest first.
-  Each row carries a 9px mono verb chip — `APPROVE` and `STAMP` in
-  `sig-warn`, `UNBLOCK` in `sig-down` — a prose line saying what is
-  wanted, and a mono line naming the task and its wait. Verbs are the
-  human vocabulary of §10; agent verbs never appear here. When the
-  queue is empty the panel says `Nothing needs you` and its border drops
-  to `--rule`.
+- **Needs you** — the amber queue of actionable PR reviews, explicit checks,
+  decisions, and human blockers, ordered oldest first. Verb chips read
+  `REVIEW`, `CHECK`, `DECIDE` in `sig-warn`, and `UNBLOCK` in `sig-down`.
+  Routine Step reports and tracking notes do not count. When empty, the panel
+  says `Nothing needs you` and its border drops to `--rule`.
 - **Shift Log** — a live, newest-first list of events: reports, turn
   completions, sessions clocking in, stamps. Rows are `time · initials ·
   sentence`; the sentence names the actor first (`Claude reported …`,

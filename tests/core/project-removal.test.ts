@@ -111,7 +111,8 @@ describe("project removal", () => {
         ],
       });
       expect(app.getTaskStatus(remainingTask.id)).toMatchObject({
-        taskCompleted: true,
+        taskCompleted: false,
+        taskState: "planned",
         subtasks: [
           {
             reportId: remainingReport.id,

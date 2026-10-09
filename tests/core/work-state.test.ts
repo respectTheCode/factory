@@ -11,7 +11,7 @@ function createApplication() {
 }
 
 describe("task work state", () => {
-  test("allows a task to move in either direction and requires reasons for blocked and awaiting states", () => {
+  test("allows manual planning and blocks, while In review comes from the finish rule", () => {
     const app = createApplication();
     const project = app.createProject({ name: "Factory V1" });
     const task = app.createTask({
@@ -38,11 +38,20 @@ describe("task work state", () => {
         taskId: task.id,
         workState: "awaiting_verification",
       }),
-    ).toThrow("reason");
-    app.setTaskWorkState({
-      reason: "Check the mobile flow in the PWA.",
+    ).toThrow("Task reaches In review through a Task-level finished report");
+    app.setTaskWorkState({ taskId: task.id, workState: "active" });
+    app.updateTaskFinishRule({
+      actor: "kevin",
+      finishRule: { kind: "agent_report", requireHumanCheck: true },
+      humanCheckText: "Check the mobile flow in the PWA.",
       taskId: task.id,
-      workState: "awaiting_verification",
+    });
+    const beforeReport = app.getTaskStatus(task.id);
+    app.reportTaskStatus({
+      taskId: task.id,
+      workflowEpoch: beforeReport.workflowEpoch,
+      reportedState: "finished",
+      reporter: "codex",
     });
     expect(app.getTaskStatus(task.id)).toMatchObject({
       stateReason: "Check the mobile flow in the PWA.",
@@ -82,7 +91,7 @@ describe("task work state", () => {
     expect(app.getTaskStatus(task.id)).toMatchObject({ taskState: "planned" });
   });
 
-  test("keeps a manual task state when every subtask is accepted", () => {
+  test("Step acceptance does not complete or reopen its parent Task", () => {
     const app = createApplication();
     const project = app.createProject({ name: "Factory V1" });
     const task = app.createTask({
@@ -106,23 +115,23 @@ describe("task work state", () => {
       verifier: "kevin",
     });
     expect(app.getTaskStatus(task.id)).toMatchObject({
-      taskCompleted: true,
-      taskState: "completed",
+      taskCompleted: false,
+      taskState: "planned",
     });
 
     app.setTaskWorkState({ taskId: task.id, workState: "planned" });
     expect(app.getTaskStatus(task.id)).toMatchObject({
-      taskCompleted: true,
+      taskCompleted: false,
       taskState: "planned",
     });
     app.setTaskWorkState({ taskId: task.id, workState: "active" });
     expect(app.getTaskStatus(task.id)).toMatchObject({
-      taskCompleted: true,
+      taskCompleted: false,
       taskState: "active",
     });
   });
 
-  test("recomputes a rollup parent downward when a child reopens", () => {
+  test("Doing promotes the Task and later Step completion does not demote it", () => {
     const app = createApplication();
     const project = app.createProject({ name: "Factory V1" });
     const task = app.createTask({
@@ -138,8 +147,8 @@ describe("task work state", () => {
       subtaskId: subtask.id,
     });
     expect(app.getTaskStatus(task.id)).toMatchObject({
-      taskState: "awaiting_verification",
-      stateReason: "The child is ready for verification.",
+      taskState: "planned",
+      taskCompleted: false,
     });
 
     app.reportSubtaskStatus({
@@ -150,6 +159,7 @@ describe("task work state", () => {
     });
     expect(app.getTaskStatus(task.id)).toMatchObject({
       taskState: "active",
+      taskCompleted: false,
     });
     expect(app.getTaskStatus(task.id)).not.toHaveProperty("stateReason");
 
@@ -164,14 +174,19 @@ describe("task work state", () => {
       reportId: completeReport.id,
       verifier: "kevin",
     });
+    expect(app.getTaskStatus(task.id)).toMatchObject({
+      taskState: "active",
+      taskCompleted: false,
+    });
   });
 
-  test("reopens an auto-completed parent when a newer child report is active", () => {
+  test("a Task finishes on its own report and must be explicitly reopened", () => {
     const app = createApplication();
     const project = app.createProject({ name: "Factory V1" });
     const task = app.createTask({
       name: "Auto complete work",
       projectId: project.id,
+      finishRule: { kind: "agent_report", requireHumanCheck: false },
     });
     const subtask = app.createSubtask({ name: "Child work", taskId: task.id });
 
@@ -187,19 +202,30 @@ describe("task work state", () => {
       verifier: "kevin",
     });
     expect(app.getTaskStatus(task.id)).toMatchObject({
+      taskCompleted: false,
+      taskState: "planned",
+    });
+
+    const beforeTaskReport = app.getTaskStatus(task.id);
+    app.reportTaskStatus({
+      taskId: task.id,
+      workflowEpoch: beforeTaskReport.workflowEpoch,
+      reportedState: "finished",
+      reporter: "codex",
+    });
+    expect(app.getTaskStatus(task.id)).toMatchObject({
       taskCompleted: true,
       taskState: "completed",
     });
-
-    app.reportSubtaskStatus({
-      reason: "The child has a follow-up fix.",
-      reportedState: "in_progress",
-      reporter: "codex",
-      subtaskId: subtask.id,
+    app.reopenTask({
+      taskId: task.id,
+      actor: "kevin",
+      reason: "The Task needs a follow-up implementation pass.",
     });
     expect(app.getTaskStatus(task.id)).toMatchObject({
       taskCompleted: false,
       taskState: "active",
+      workflowEpoch: beforeTaskReport.workflowEpoch + 1,
     });
   });
 
@@ -281,18 +307,10 @@ describe("subtask effective work state", () => {
           reason: "The fixture is missing the production account.",
         },
       ],
-      taskState: "blocked",
+      taskState: "planned",
     });
 
-    expect(() =>
-      app.reportSubtaskStatus({
-        reportedState: "complete",
-        reporter: "codex",
-        subtaskId: subtask.id,
-      }),
-    ).toThrow("reason");
     const completeReport = app.reportSubtaskStatus({
-      reason: "Check the result against the acceptance criteria.",
       reportedState: "complete",
       reporter: "codex",
       subtaskId: subtask.id,
@@ -300,11 +318,12 @@ describe("subtask effective work state", () => {
     expect(app.getTaskStatus(task.id)).toMatchObject({
       subtasks: [
         {
-          effectiveState: "awaiting_verification",
-          reason: "Check the result against the acceptance criteria.",
+          effectiveState: "completed",
+          verificationState: "not_required",
         },
       ],
-      taskState: "awaiting_verification",
+      taskState: "planned",
+      taskCompleted: false,
     });
 
     expect(() =>
@@ -328,7 +347,7 @@ describe("subtask effective work state", () => {
           verificationState: "deferred",
         },
       ],
-      taskState: "blocked",
+      taskState: "planned",
     });
   });
 });

@@ -204,10 +204,8 @@ describe("Floor projection regressions", () => {
       ],
     });
 
-    expect(result.queue.map((item) => item.action)).toEqual(["approve"]);
-    expect(result.queue.some((item) => item.action === "reconcile")).toBe(
-      false,
-    );
+    expect(result.queue.map((item) => item.action)).toEqual(["decide"]);
+    expect(result.trackingNotes).toEqual([]);
   });
 
   test("excludes archived-only work from queue and working counts while retaining daily history", () => {
@@ -419,8 +417,10 @@ describe("Floor projection regressions", () => {
       statusReports: [report],
     });
 
-    expect(result.projects[0]?.counter[0]?.evidence).toBe(
+    expect(result.projects[0]?.counter).toEqual([]);
+    expect(app.getSubtaskDetail(subtask.id).evidence).toBe(
       "Edited current evidence",
     );
+    expect(result.queue).toEqual([]);
   });
 });

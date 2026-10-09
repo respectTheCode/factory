@@ -23,6 +23,7 @@ export type SummarySubtaskStatus = {
     | "awaiting_verification"
     | "deferred"
     | "rejected"
+    | "not_required"
     | "unreported";
 };
 
@@ -179,8 +180,7 @@ export function summarizeTaskProgress(
     status: subtaskStatus,
   }: (typeof visibleSubtasks)[number]) =>
     subtaskStatus?.archiveState === "released" ||
-    (subtaskStatus?.reportedState === "complete" &&
-      subtaskStatus.verificationState === "accepted");
+    subtaskStatus?.reportedState === "complete";
   const completedSubtasks = visibleSubtasks.filter(isComplete).length;
   const nextSubtask = visibleSubtasks.find((entry) => !isComplete(entry));
 

@@ -34,6 +34,49 @@ function makeTemporaryPaths(prefix: string) {
 }
 
 describe("project brief CLI", () => {
+  test("names a manual hold only when the Task is deliberately blocked", async () => {
+    const { databasePath, temporaryDirectory } = makeTemporaryPaths(
+      "software-factory-project-brief-hold-",
+    );
+    const app = createFactoryApplication({ databasePath });
+    try {
+      const project = app.createProject({
+        name: "Hold distinction",
+        workspaceRoot: temporaryDirectory,
+      });
+      const task = app.createTask({
+        projectId: project.id,
+        name: "Deliver work",
+      });
+      const read = () =>
+        runCli([
+          "project",
+          "brief",
+          "--workspace-root",
+          temporaryDirectory,
+          "--task-id",
+          task.id,
+          "--database",
+          databasePath,
+        ]);
+      app.setTaskWorkState({ taskId: task.id, workState: "active" });
+      const active = await read();
+      expect(active.exitCode).toBe(0);
+      expect(active.stdout).not.toContain("manual hold");
+      app.setTaskWorkState({
+        taskId: task.id,
+        workState: "blocked",
+        reason: "Wait for the release owner",
+      });
+      const held = await read();
+      expect(held.exitCode).toBe(0);
+      expect(held.stdout).toContain("manual hold");
+    } finally {
+      app.close();
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
   test("renders the configured compiled client command", () => {
     const rendered = renderBrief({
       checkoutPath: "/agent/repository",
@@ -110,7 +153,7 @@ describe("project brief CLI", () => {
     }
   });
 
-  test("renders the matched Task and only the first open Subtask commands", async () => {
+  test("renders the matched Task and only the first unfinished Step commands", async () => {
     const { databasePath, temporaryDirectory } = makeTemporaryPaths(
       "software-factory-project-brief-branch-",
     );
@@ -221,37 +264,43 @@ describe("project brief CLI", () => {
         `## Task ${task.simpleId}: Add project brief`,
       );
       expect(payload.brief.markdown).toContain(
-        `- ${accepted.simpleId} — Accepted check: accepted`,
+        `- ${accepted.simpleId} — Accepted check: Done`,
       );
-      expect(payload.brief.markdown).not.toContain(
+      expect(payload.brief.markdown).toContain(
         "This description is hidden after acceptance.",
       );
       expect(payload.brief.markdown).toContain(
-        `- ${awaiting.simpleId} — Awaiting check: awaiting verification`,
+        `- ${awaiting.simpleId} — Awaiting check: Done`,
       );
-      expect(payload.brief.markdown).not.toContain(
+      expect(payload.brief.markdown).toContain(
         "This description is hidden while awaiting verification.",
       );
       expect(payload.brief.markdown).not.toContain(
-        `subtask report --json --subtask-id ${awaiting.simpleId}`,
+        `step report --step-id ${awaiting.simpleId}`,
       );
       expect(payload.brief.markdown).toContain(
-        `- ${open.simpleId} — Open check: Render the current work evidence.`,
+        `- ${open.simpleId} — Open check: Doing · Render the current work evidence.`,
       );
       expect(payload.brief.markdown).toContain(
-        `subtask report --json --subtask-id ${open.simpleId} --state in_progress --reporter "$FACTORY_REPORTER"`,
+        `task report --json --task-id ${task.simpleId} --state in_progress --workflow-epoch 0 --reporter "$FACTORY_REPORTER"`,
+      );
+      expect(payload.brief.markdown).toContain(
+        `task report --json --task-id ${task.simpleId} --state finished --workflow-epoch 0 --reporter "$FACTORY_REPORTER"`,
+      );
+      expect(payload.brief.markdown).toContain(
+        `step report --json --step-id ${open.simpleId} --state in_progress --reporter "$FACTORY_REPORTER"`,
       );
       expect(payload.brief.markdown).toContain(
         `session auto-link --project-id ${project.id} --task-id ${task.simpleId} --branch-name '${branchName}'`,
       );
       expect(payload.brief.markdown).toContain(
-        `subtask history --subtask-id ${open.simpleId} --json`,
+        `step history --step-id ${open.simpleId} --json`,
       );
       expect(payload.brief.markdown).toContain(
-        `task detail --task-id ${task.simpleId} --json`,
+        `task history --task-id ${task.simpleId} --json`,
       );
       expect(payload.brief.markdown).not.toContain(
-        `subtask history --subtask-id ${accepted.simpleId}`,
+        `step history --step-id ${accepted.simpleId}`,
       );
       expect(payload.brief.markdown).toContain(
         "- linear FACT-1: https://linear.app/app-press/issue/FACT-1",
@@ -435,7 +484,7 @@ describe("project brief CLI", () => {
     }
   });
 
-  test("includes the three How to work lines", async () => {
+  test("includes the How to work guidance", async () => {
     const { databasePath, temporaryDirectory } = makeTemporaryPaths(
       "software-factory-project-brief-how-to-work-",
     );
@@ -458,10 +507,13 @@ describe("project brief CLI", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain(
-        "- Before starting a Subtask, report in_progress with --evidence. At handoff, report complete with --reason naming the human check, or blocked with the blocker.",
+        "- Report Task progress with the current --workflow-epoch. At handoff, report finished with a summary; Factory applies the finish rule.",
       );
       expect(result.stdout).toContain(
-        "- Never verify or complete; a human does that in the dashboard. Reports are append-only claims.",
+        "- Steps are optional progress labels. Report their progress directly; do not request a Step review.",
+      );
+      expect(result.stdout).toContain(
+        "- Human checks and marking a Task done are human-only. Reports are append-only claims.",
       );
       expect(result.stdout).toContain(
         "- Set FACTORY_REPORTER=claude or codex. Full rules: skills/software-factory/SKILL.md",

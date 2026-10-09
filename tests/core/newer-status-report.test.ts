@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { FactoryApplication } from "../../src/application";
 
 describe("current subtask status", () => {
-  test("a newer report supersedes an accepted report and reopens its task", () => {
+  test("a newer Step report supersedes verification without finishing the Task", () => {
     const app = new FactoryApplication({
       clock: () => new Date("2026-08-22T12:00:00.000Z"),
       idGenerator: (() => {
@@ -44,7 +44,8 @@ describe("current subtask status", () => {
 
     expect(app.getTaskStatus(task.id)).toMatchObject({
       subtasks: [{ reportedState: "complete", verificationState: "accepted" }],
-      taskCompleted: true,
+      taskCompleted: false,
+      taskState: "planned",
     });
 
     app.reportSubtaskStatus({
@@ -58,10 +59,11 @@ describe("current subtask status", () => {
       subtasks: [
         {
           reportedState: "in_progress",
-          verificationState: "awaiting_verification",
+          verificationState: "unreported",
         },
       ],
       taskCompleted: false,
+      taskState: "active",
     });
 
     expect(app.getSubtaskReportHistory(subtask.id)).toMatchObject([

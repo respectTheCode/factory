@@ -68,7 +68,7 @@ describe("screenshot proof dashboard", () => {
     expect(mainSource).toContain("trpc.current!.screenshots.upload.mutate");
     expect(mainSource).toContain("trpc.current.screenshots.get.query");
     expect(mainSource).toContain("ownerLabel={`Task ${task.simpleId}`}");
-    expect(mainSource).toContain("ownerLabel={`Subtask ${subtask.simpleId}`}");
+    expect(mainSource).toContain("ownerLabel={`Step ${step.simpleId}`}");
     expect(proofSource).toContain(
       "Evidence supplements reports and never verifies work.",
     );
@@ -108,7 +108,7 @@ describe("screenshot proof dashboard", () => {
     expect(proofSource).not.toContain("<span>Pair ID</span>");
 
     const actions = mainSource.indexOf('className="subtask-actions"');
-    const subtaskScreenshot = mainSource.indexOf("ownerLabel={`Subtask");
+    const subtaskScreenshot = mainSource.indexOf("ownerLabel={`Step");
     expect(subtaskScreenshot).toBeGreaterThan(actions);
     expect(stylesheet).toContain(".subtask.row-expanded > .screenshot-proof {");
     expect(stylesheet).toContain(

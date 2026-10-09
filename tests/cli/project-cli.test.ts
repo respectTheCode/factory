@@ -328,7 +328,7 @@ describe("project CLI", () => {
     }
   });
 
-  test("reports subtask progress and reserves verification for a human", async () => {
+  test("reports a Step Done without completing its parent Task", async () => {
     const temporaryDirectory = mkdtempSync(
       join(tmpdir(), "software-factory-cli-status-"),
     );
@@ -405,11 +405,13 @@ describe("project CLI", () => {
         schemaVersion: 1,
         status: {
           taskCompleted: false,
+          taskState: "planned",
           subtasks: [
             {
               id: report.id,
+              effectiveState: "completed",
               reportedState: "complete",
-              verificationState: "awaiting_verification",
+              verificationState: "not_required",
               reporter: "codex",
               evidence: "Build 2026-08-22 passed in CI.",
             },

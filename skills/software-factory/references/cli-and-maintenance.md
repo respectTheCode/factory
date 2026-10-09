@@ -1,3 +1,4 @@
+<!-- Simplified workflow: Task reports replace mandatory report-only children. -->
 # Factory CLI and maintenance reference
 
 Read this for task creation/edits, archive/restore, backups, or database maintenance. The entrypoint owns the reporting loop.
@@ -88,16 +89,16 @@ Artifact and preview links are reported claims, not verified deployment status.
 
 ```bash
 bun run src/cli.ts subtask report --subtask-id SUBTASK_ID --state complete \
-  --reporter "$FACTORY_REPORTER" --reason "Inspect the revision and preview before accepting" \
+  --reporter "$FACTORY_REPORTER" \
   --evidence "Focused checks passed locally" --tested-revision FULL_COMMIT_SHA \
-  --next-owner Kevin --next-owner-kind human --next-action "Review the packet" \
   --artifacts-json '[{"label":"Candidate preview","url":"https://preview.example.test","kind":"preview"}]' \
   --json --database "$FACTORY_DB"
 ```
 
 Use the configured remote environment and omit `--database` in remote mode. On a
 retry reuse the same `--request-key` for the identical report; a changed claim
-needs a new key. A completion claim remains awaiting authorized acceptance.
+needs a new key. A Step completion report changes the Step directly. Task completion follows its finish rule;
+only an explicitly requested human check waits for human confirmation.
 
 Screenshot proof is scoped to one Task or Subtask. Uploads retain a caller-supplied
 `--request-key` in remote mode so a retry after an uncertain response is idempotent; reuse
@@ -139,7 +140,8 @@ Agent-facing read bounds:
   local-only `credential list` caps credential records at 50 without exposing token values.
 - `task status` and `subtask status` cap Subtask rows at 100; `project t3-status` caps sources
   at 20; GitHub check/workflow runs cap at 50 each; and session-detail findings cap at 50.
-- `subtask history` caps reports at 100 and accepts `--tail N` or `--since ISO_TIMESTAMP`.
+- `task history` and `subtask history` cap events or reports at 100 and accept
+  `--tail N` or `--since ISO_TIMESTAMP`.
   Use the returned `--cursor` to continue a page. History cursors bind the normalized `--since`
   filter and use the timestamp and report ID together, so a cursor cannot continue with a
   changed or missing filter and equal timestamps remain stable. GitHub status returns a composite
@@ -233,16 +235,30 @@ criteria edits once the Task is active, blocked, awaiting verification, complete
 
 Agents may directly move Tasks between `backlog`, `planned`, `active`,
 `awaiting_verification`, and `blocked` with `task state`, and may
-reorder Tasks or Subtasks within one state. Moving into `blocked` or
-`awaiting_verification` requires `--reason`; direct state changes never rewrite
-Subtasks. Completed is set by acceptance from Kevin, an explicitly assigned reviewer, or
-server-verified PR merge reconciliation. Coding credentials cannot directly assign completed. State changes are durable and
-remain `schemaVersion: 1` in CLI output.
+reorder Tasks or Steps. Direct Step reports change their state without approval;
+Task state and completion are independent of Step counts. CLI output retains schemaVersion 1.
 
-Agents may report `backlog`, `not_started`, `in_progress`, `blocked`, or `complete`.
-Reports are append-only. Reports for `blocked` and `complete` require `--reason`
-describing the blocker or the verification check. A complete report remains
-`awaiting_verification` until an authorized review decision accepts it. The coding CLI
-intentionally refuses verification so an implementation agent cannot approve its own work.
-Reviewer credentials use separate review commands for explicitly assigned work; see
-[reviewer acceptance](reviewer-acceptance.md).
+Steps accept `backlog`, `not_started`, `in_progress`, `blocked`, or `complete`.
+Blocked reports require a reason; Done needs no mandatory reason or verification.
+Tasks accept `in_progress`, `blocked`, or `finished` reports, including on zero-Step Tasks.
+Retain `workflowEpoch` from `task status` when starting work and pass it explicitly with
+`--workflow-epoch`, including epoch `0`. A stale epoch after reopening is a conflict;
+do not fetch a newer epoch just to resubmit an old claim.
+A finished report completes an agent-report Task, or leaves a code Task In review until
+required PRs reach the default branch. Either rule may opt into a human check. Human-only
+check, reopen, and reasoned mark-done actions cannot be performed by coding or reviewer
+credentials. Historical compatibility reviews remain described in
+[historical reviewer acceptance](reviewer-acceptance.md).
+
+`task finish-rule --task-id TASK_ID --kind pr_merge|agent_report` saves a finish-rule
+edit. `--require-human-check true` requires `--human-check-text`. Remote edits require
+a human session. The command reads one current Task snapshot to supply the revision,
+workflow epoch, and complete canonical PR requirement list. To preserve a previously
+opened edit, supply `--expected-revision` and `--expected-workflow-epoch`; a stale
+guard fails rather than applying the draft to newer work. Optional
+`--pull-request-requirements-json` accepts the complete array of
+`{"pullRequestUrl":"https://github.com/org/repository/pull/123","required":true}`
+rows. The rule and requirements save together, and Activity records the actor and
+changes. Removing a requirement can finish the Task if every remaining required PR
+has reached the default branch. Local maintenance can supply `--actor`; remote
+attribution comes from the authenticated identity.

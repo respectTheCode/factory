@@ -1,0 +1,878 @@
+<!doctype html>
+<html lang="en" data-screen="floor">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#141210">
+  <title>Simplified workflow · Factory design preview</title>
+  <link rel="stylesheet" href="../../../src/web/styles.css">
+  <link rel="stylesheet" href="../../../src/web/floor.css">
+  <style>
+    @font-face{font-family:"IBM Plex Sans";src:url("../../../src/web/fonts/ibm-plex-sans-latin-400-normal.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+    @font-face{font-family:"IBM Plex Sans";src:url("../../../src/web/fonts/ibm-plex-sans-latin-500-normal.woff2") format("woff2");font-weight:500;font-style:normal;font-display:swap}
+    @font-face{font-family:"IBM Plex Sans";src:url("../../../src/web/fonts/ibm-plex-sans-latin-600-normal.woff2") format("woff2");font-weight:600;font-style:normal;font-display:swap}
+    @font-face{font-family:"IBM Plex Sans";src:url("../../../src/web/fonts/ibm-plex-sans-latin-700-normal.woff2") format("woff2");font-weight:700;font-style:normal;font-display:swap}
+    @font-face{font-family:"IBM Plex Mono";src:url("../../../src/web/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+    @font-face{font-family:"IBM Plex Mono";src:url("../../../src/web/fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2");font-weight:500;font-style:normal;font-display:swap}
+    @font-face{font-family:"IBM Plex Mono";src:url("../../../src/web/fonts/ibm-plex-mono-latin-600-normal.woff2") format("woff2");font-weight:600;font-style:normal;font-display:swap}
+    :root{font-synthesis:none;text-rendering:optimizeLegibility}
+    *{box-sizing:border-box}
+    [hidden]{display:none!important}
+    html,body{min-width:320px;min-height:100%;background:var(--canvas)}
+    body{margin:0;color:var(--ink);font:400 14px/1.45 var(--sans);background:var(--canvas)}
+    button,input,textarea,select{font:inherit}
+    button{color:inherit;cursor:pointer}
+    a{color:inherit;text-decoration:none}
+    .topbar{min-height:60px;display:flex;align-items:center;gap:28px;padding:0 max(20px,calc((100vw - 1336px)/2));border-bottom:1px solid var(--rule);background:rgba(20,18,16,.95)}
+    .brand{display:flex;align-items:center;gap:9px;min-width:190px;font-size:12px;font-weight:700;letter-spacing:.14em}
+    .brand-mark{width:27px;height:27px;color:var(--ink)}
+    .brand-mark rect:last-child{fill:var(--accent)}
+    .brand small{margin-left:2px;color:var(--ink-dim);font:500 10px/1 var(--mono);letter-spacing:.04em}
+    .primary-nav{display:flex;align-items:center;gap:4px;min-width:0}
+    .primary-nav a{display:flex;align-items:center;min-height:44px;padding:0 13px;color:var(--ink-dim);font-size:12px}
+    .primary-nav a[aria-current="page"]{color:var(--ink);border-bottom:2px solid var(--accent)}
+    .top-spacer{flex:1}
+    .sample-label{display:inline-flex;align-items:center;min-height:30px;padding:0 9px;border:1px solid var(--rule);border-radius:5px;color:var(--ink-dim);font:500 9px/1.2 var(--mono);letter-spacing:.04em;white-space:nowrap}
+    .app-shell{max-width:1360px;margin:0 auto;padding:16px 24px 40px}
+    .preview-strip{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;padding:8px 10px;border:1px solid var(--rule);border-radius:6px;background:var(--panel);color:var(--ink-dim);font:500 10px/1.2 var(--mono)}
+    .preview-strip strong{color:var(--ink);font-weight:600}
+    .preview-strip span:last-child{white-space:nowrap}
+    .scene-nav{display:flex;gap:3px;overflow-x:auto;scrollbar-width:thin;padding:3px;border:1px solid var(--rule);border-radius:8px;background:var(--panel)}
+    .scene-nav a{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:42px;padding:0 11px;border:1px solid transparent;border-radius:5px;color:var(--ink-dim);font-size:11px;font-weight:500;white-space:nowrap}
+    .scene-nav a[aria-current="page"]{background:var(--raised);border-color:var(--rule);color:var(--ink)}
+    .scene-nav .num{margin-right:6px;color:var(--ink-faint);font:400 9px/1 var(--mono)}
+    .scene{display:none}
+    html[data-screen="floor"] #scene-floor,html[data-screen="active"] #scene-active,html[data-screen="review"] #scene-review,html[data-screen="done"] #scene-done,html[data-screen="check"] #scene-check,html[data-screen="rule"] #scene-rule,html[data-screen="blocked"] #scene-blocked,html[data-screen="failures"] #scene-failures,html[data-screen="empty"] #scene-empty{display:block}
+    .page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin:18px 0 14px}
+    .eyebrow{color:var(--ink-dim);font:700 10px/1.2 var(--sans);letter-spacing:.16em;text-transform:uppercase}
+    h1{margin:5px 0 2px;font-size:clamp(20px,2.2vw,25px);font-weight:600;line-height:1.16;letter-spacing:-.02em}
+    h2,h3,p{margin:0}
+    .lede{color:var(--ink-dim);font-size:12px;line-height:1.45}
+    .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+    .muted{color:var(--ink-dim)}
+    .faint{color:var(--ink-faint)}
+    .panel{display:block;align-items:initial;justify-content:initial;margin:0;min-width:0;border:1px solid var(--rule);border-radius:var(--r-card);background:var(--panel);box-shadow:var(--edge-machined)}
+    .panel-pad{padding:14px 16px}
+    .app-shell .panel button{width:auto}
+    .app-shell .panel .step-dial-button{width:44px}
+    .panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+    .app-shell .panel-head{flex-direction:row}
+    .rule-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:nowrap}
+    .rule-title-line{display:flex;align-items:center;gap:8px;min-width:0}
+    .rule-title-line .section-label{white-space:nowrap}
+    .rule-title-line .panel-title{font:600 10px/1.2 var(--mono);letter-spacing:.04em;white-space:nowrap}
+    .rule-panel-head .text-button{flex:0 0 auto}
+    .panel-title{font-size:13px;font-weight:600;line-height:1.25}
+    .panel-meta{color:var(--ink-dim);font:400 10px/1.25 var(--mono)}
+    .section-label{color:var(--ink-dim);font:700 10px/1.2 var(--sans);letter-spacing:.16em;text-transform:uppercase}
+    .chip{display:inline-flex;align-items:center;gap:5px;min-height:23px;padding:3px 7px;border:1px solid var(--rule);border-radius:var(--r-chip);background:var(--raised);color:var(--ink-dim);font:600 9px/1.2 var(--mono);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+    .chip.warn{border-color:rgba(240,180,41,.45);background:rgba(240,180,41,.12);color:var(--sig-warn)}
+    .chip.down{border-color:rgba(229,72,77,.45);background:var(--tint-down);color:var(--sig-down)}
+    .chip.ok{border-color:rgba(47,190,107,.45);background:var(--tint-ok);color:var(--sig-ok)}
+    .chip.info{border-color:rgba(74,163,224,.45);background:var(--tint-info);color:var(--sig-info)}
+    .chip.accent{border-color:rgba(148,153,203,.45);background:var(--tint-accent);color:var(--accent)}
+    .button,.text-button,.icon-button,.segment,.scene-action{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:44px;padding:0 13px;border:1px solid var(--rule);border-radius:var(--r-field);background:var(--raised);color:var(--ink);font-size:12px;font-weight:500}
+    .button:hover,.icon-button:hover,.segment:hover{border-color:var(--accent)}
+    .button.primary{border-color:var(--accent);background:var(--accent);color:var(--on-accent);font-weight:600}
+    .button.tertiary{border-color:transparent;background:transparent;color:var(--accent)}
+    .button.danger{border-color:rgba(229,72,77,.5);background:var(--tint-down);color:var(--sig-down)}
+    .text-button{border-color:transparent;background:transparent;color:var(--accent);font-weight:500}
+    .button:focus-visible,.text-button:focus-visible,.icon-button:focus-visible,.segment:focus-visible,.scene-nav a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .task-hero{position:relative;display:grid;grid-template-columns:46px minmax(0,1fr) auto;gap:10px;align-items:start;margin:14px 0 12px;padding:15px 17px;border:1px solid var(--rule);border-radius:var(--r-card);background:var(--panel);box-shadow:var(--edge-machined)}
+    .task-dial{position:relative;display:grid;place-items:center;width:28px;height:28px;margin:4px 0 0 5px;border:2px dashed var(--ink-dim);border-radius:50%;color:var(--ink-dim)}
+    .task-dial.active{border-style:solid;border-color:var(--sig-info);filter:var(--glow-info)}
+    .task-dial.active:after{position:absolute;right:-2px;top:-2px;width:13px;height:13px;border-radius:0 100% 0 0;background:var(--sig-info);content:""}
+    .task-dial.review{border-color:var(--sig-warn);border-style:dashed;color:var(--sig-warn);filter:var(--glow-warn)}
+    .task-dial.review:after{position:absolute;inset:7px;border-radius:50%;background:var(--sig-warn);content:""}
+    .task-dial.done{border:0;background:var(--sig-ok);color:var(--canvas);filter:var(--glow-ok)}
+    .task-dial.done:after{content:"✓";font:700 14px/1 var(--mono)}
+    .task-dial.blocked{border-color:var(--sig-down);border-style:solid;color:var(--sig-down);filter:var(--glow-down)}
+    .task-dial.blocked:after{width:14px;height:2px;background:var(--sig-down);content:""}
+    .task-title{font-size:18px;font-weight:600;line-height:1.2}
+    .task-id{margin-right:7px;color:var(--accent);font:500 12px/1.2 var(--mono);white-space:nowrap}
+    .task-meta{display:flex;flex-wrap:wrap;gap:7px 12px;align-items:center;margin-top:7px;color:var(--ink-dim);font:400 10px/1.35 var(--mono)}
+    .task-now{margin-top:7px;color:var(--ink-dim);font-size:11px;line-height:1.4}
+    .task-now b{color:var(--ink);font-weight:500}
+    .progress-line{display:flex;align-items:center;gap:8px;margin-top:9px}
+    .progress-track{height:4px;max-width:245px;flex:1;border-radius:2px;background:var(--raised)}
+    .progress-track i{display:block;height:100%;border-radius:2px;background:var(--accent)}
+    .progress-caption{color:var(--ink-dim);font:400 9px/1 var(--mono)}
+    .detail-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:14px;align-items:start}
+    .main-column,.detail-rail{display:grid;gap:12px;min-width:0}
+    .needs-callout{padding:12px 14px;border:1px solid rgba(240,180,41,.45);border-radius:var(--r-card);background:var(--panel)}
+    .needs-callout .panel-head{margin-bottom:7px}
+    .needs-item{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:9px;align-items:center;padding:8px 0;border-top:1px solid var(--rule)}
+    .needs-item:first-of-type{border-top:0}
+    .needs-copy strong,.needs-copy small{display:block}
+    .needs-copy strong{font-size:12px;font-weight:500;line-height:1.3}
+    .needs-copy small{margin-top:3px;color:var(--ink-dim);font:400 10px/1.25 var(--mono)}
+    .needs-item .button{min-height:44px;padding:0 10px}
+    .rule-summary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 12px;align-items:center}
+    .rule-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .rule-copy{grid-column:1/2;color:var(--ink);font-size:13px;line-height:1.45}
+    .rule-extra{grid-column:1/2;color:var(--ink-dim);font-size:11px;line-height:1.4}
+    .rule-link{justify-self:end;grid-column:2;grid-row:1 / span 3}
+    .pr-list{display:grid;gap:8px;margin-top:12px}
+    .pr-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;padding:9px 10px;border:1px solid var(--rule);border-radius:var(--r-field);background:var(--raised)}
+    .pr-primary{display:flex;flex-wrap:wrap;gap:6px 9px;align-items:center;min-width:0}
+    .pr-number{color:var(--accent);font:500 11px/1.3 var(--mono)}
+    .pr-title{font-size:12px;line-height:1.3}
+    .pr-required{align-self:center;color:var(--ink-dim);font:400 9px/1.2 var(--mono);text-transform:uppercase}
+    .pr-evidence{grid-column:1/-1;color:var(--ink-dim);font:400 10px/1.45 var(--mono)}
+    .pr-evidence.warn{color:var(--sig-warn)}
+    .pr-evidence.down{color:var(--sig-down)}
+    .pr-row.changed{border-color:rgba(240,180,41,.48)}
+    .step-list{display:grid;gap:0}
+    .step-item{border-top:1px solid var(--rule)}
+    .step-item:first-child{border-top:0}
+    .step-row{display:grid;grid-template-columns:44px minmax(0,1fr) auto auto;gap:8px;align-items:center;min-height:54px}
+    .step-dial-button{display:grid;place-items:center;width:44px;height:44px;border:0;border-radius:6px;background:transparent}
+    .step-dial{position:relative;display:block;width:14px;height:14px;border:1.5px dashed var(--ink-dim);border-radius:50%}
+    .step-dial.doing{border-style:solid;border-color:var(--sig-info)}
+    .step-dial.doing:after{position:absolute;right:-1px;top:-1px;width:7px;height:7px;border-radius:0 100% 0 0;background:var(--sig-info);content:""}
+    .step-dial.done{border:0;background:var(--ink-dim)}
+    .step-dial.done:after{position:absolute;left:4px;top:2px;width:4px;height:7px;border-right:1.5px solid var(--canvas);border-bottom:1.5px solid var(--canvas);transform:rotate(45deg);content:""}
+    .step-dial.blocked{border-style:solid;border-color:var(--sig-down)}
+    .step-dial.blocked:after{position:absolute;left:1px;right:1px;top:5px;height:2px;background:var(--sig-down);content:""}
+    .step-dial.skipped{border-style:solid;border-color:var(--ink-faint)}
+    .step-dial.skipped:after{position:absolute;left:5px;top:-2px;width:1px;height:16px;background:var(--ink-faint);transform:rotate(45deg);content:""}
+    .step-name{display:block;width:100%;min-height:44px;padding:5px 0;border:0;background:transparent;color:var(--ink);text-align:left;font-size:13px;font-weight:500;line-height:1.3}
+    .step-name:hover{color:var(--accent)}
+    .step-meta{color:var(--ink-dim);font:400 9px/1.2 var(--mono);white-space:nowrap}
+    .step-state{min-width:57px;text-align:right;color:var(--ink-dim);font:600 10px/1.2 var(--mono);letter-spacing:.08em}
+    .step-state.doing{color:var(--sig-info)}
+    .step-state.blocked{color:var(--sig-down)}
+    .step-state-button{display:grid;place-items:center;width:44px;height:44px;border:0;background:transparent;color:var(--ink-dim);font:400 13px/1 var(--mono)}
+    .step-control{display:none;padding:0 0 10px 43px}
+    .step-control.open{display:block}
+    .segments{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));overflow:hidden;border:1px solid var(--rule);border-radius:var(--r-field)}
+    .segment{min-width:0;min-height:44px;padding:0 7px;border:0;border-right:1px solid var(--rule);border-radius:0;background:var(--raised);color:var(--ink-dim);font-size:11px}
+    .segment:last-child{border-right:0}
+    .segment[aria-checked="true"]{background:var(--tint-accent);color:var(--ink)}
+    .segment .tiny-dial{font:600 11px/1 var(--mono)}
+    .note-trigger{min-height:44px;margin-top:3px;padding:0 6px;border:0;background:transparent;color:var(--accent);font-size:11px}
+    .note-field{display:none;margin-top:6px}
+    .note-field.open{display:block}
+    input,textarea,select{width:100%;min-height:44px;padding:9px 10px;border:1px solid var(--rule);border-radius:var(--r-field);background:var(--canvas);color:var(--ink)}
+    textarea{min-height:72px;resize:vertical}
+    input::placeholder,textarea::placeholder{color:var(--ink-faint)}
+    label{display:grid;gap:5px;color:var(--ink-dim);font-size:11px}
+    .blocked-editor{display:none;gap:10px;margin-top:10px;padding:12px;border:1px solid rgba(229,72,77,.4);border-radius:var(--r-field);background:var(--panel)}
+    .blocked-editor.open{display:grid}
+    .owner-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+    .owner-option{display:flex;align-items:center;gap:7px;min-height:44px;padding:6px 8px;border:1px solid var(--rule);border-radius:var(--r-field);background:var(--raised);color:var(--ink);font-size:11px}
+    .owner-option input{width:16px;min-height:16px;height:16px;margin:0;accent-color:var(--accent)}
+    .step-detail{display:none;margin:0 0 10px 42px;padding:10px 12px;border-left:2px solid var(--rule);background:var(--panel);color:var(--ink-dim);font-size:11px;line-height:1.5}
+    .step-detail.open{display:block}
+    .step-detail dl{display:grid;grid-template-columns:65px minmax(0,1fr);gap:5px;margin:0}
+    .step-detail dt{font-family:var(--mono);font-size:10px}
+    .step-detail dd{margin:0;color:var(--ink)}
+    .activity-list{display:grid}
+    .activity-row{display:grid;grid-template-columns:50px 25px minmax(0,1fr);gap:8px;align-items:start;padding:8px 0;border-top:1px solid var(--rule);font-size:11px;line-height:1.4}
+    .activity-row:first-child{border-top:0}
+    .activity-time{color:var(--ink-dim);font:400 9px/1.5 var(--mono)}
+    .activity-who{font:600 10px/1.5 var(--mono)}
+    .activity-copy{color:var(--ink)}
+    .activity-copy small{display:block;margin-top:3px;color:var(--ink-dim);font:400 9px/1.35 var(--mono)}
+    details.disclosure{border-top:1px solid var(--rule)}
+    details.disclosure summary{display:flex;align-items:center;justify-content:flex-start;gap:10px;min-height:44px;cursor:pointer;color:var(--ink);font-size:12px;font-weight:500;list-style:none}
+    details.disclosure summary::-webkit-details-marker{display:none}
+    details.disclosure summary:before{content:"▸";color:var(--ink-dim);font:400 12px/1 var(--mono)}
+    details.disclosure[open] summary:before{content:"▾"}
+    .disclosure-body{padding:0 0 10px 20px;color:var(--ink-dim);font-size:11px;line-height:1.5}
+    .finish-editor{display:grid;gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid var(--rule)}
+    .choice-list{display:grid;gap:6px}
+    .choice{display:grid;grid-template-columns:20px minmax(0,1fr);gap:8px;align-items:start;padding:8px;border:1px solid var(--rule);border-radius:var(--r-field);background:var(--raised)}
+    .choice input{width:16px;min-height:16px;height:16px;margin:2px 0 0;accent-color:var(--accent)}
+    .choice strong{display:block;color:var(--ink);font-size:12px;font-weight:500}
+    .choice small{display:block;margin-top:3px;color:var(--ink-dim);font-size:10px;line-height:1.4}
+    .rule-check{display:flex;align-items:flex-start;gap:9px}
+    .rule-check input{width:18px;height:18px;min-height:18px;margin:2px 0 0;accent-color:var(--accent)}
+    .rule-check > span{display:grid;gap:3px}
+    .rule-check > span strong,.rule-check > span small{display:block}
+    .consequence{padding:10px 11px;border:1px solid var(--rule);border-radius:var(--r-field);background:var(--raised);color:var(--ink);font-size:11px;line-height:1.4}
+    .consequence.warn{border-color:rgba(240,180,41,.45);color:var(--sig-warn)}
+    .consequence.ok{border-color:rgba(47,190,107,.45);color:var(--sig-ok)}
+    .editor-actions{display:flex;flex-wrap:wrap;gap:8px}
+    .inline-note{margin-top:8px;color:var(--ink-dim);font-size:10px;line-height:1.4}
+    .floor-layout{grid-template-columns:minmax(0,1fr) minmax(320px,400px);grid-template-areas:"bays side"}
+    .floor-sidecar{grid-template-rows:auto auto auto}
+    .floor-bays{grid-template-columns:minmax(0,1fr)}
+    .floor-bay{min-height:525px}
+    .floor-plate{min-height:62px}
+    .floor-plate h2{font-size:15px}
+    .floor-turn{padding:13px 14px}
+    .floor-turn-big{margin-top:1px}
+    .floor-turn-count{font-size:3rem}
+    .floor-turn-list{gap:2px;margin-top:6px}
+    .floor-action{min-height:45px;padding:6px 8px;gap:7px}
+    .floor-action-copy strong{font-size:11px}
+    .floor-action-copy small{font-size:9px}
+    .floor-action-age{font-size:9px}
+    .floor-kind{font-size:8px}
+    .floor-paper{min-height:42px}
+    .floor-paper-name{font-size:11px}
+    .floor-score{gap:7px}
+    .floor-tile{padding:8px}
+    .floor-tile strong{font-size:18px}
+    .floor-tile span{font-size:9px}
+    .tracking-notes{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0 0;margin-top:8px;border-top:1px solid var(--rule);color:var(--ink-dim);font:400 9px/1.3 var(--mono)}
+    .tracking-notes button{min-height:44px;padding:0 6px;border:0;background:transparent;color:var(--accent);font:500 10px/1 var(--sans)}
+    .count-line{margin-top:1px;color:var(--ink-dim);font-size:10px}
+    .floor-kind.review,.floor-kind.check,.floor-kind.decide{background:var(--tint-warn);border-color:rgba(240,180,41,.45);color:var(--sig-warn)}
+    .floor-kind.unblock{background:var(--tint-down);border-color:rgba(229,72,77,.45);color:var(--sig-down)}
+    .paper-verb{display:inline-flex;align-items:center;justify-content:center;min-width:47px;min-height:22px;padding:2px 5px;border:1px solid rgba(240,180,41,.45);border-radius:var(--r-chip);color:var(--sig-warn);font:600 8px/1.2 var(--mono)}
+    .floor-paper.unblock{border-color:rgba(229,72,77,.45)}
+    .paper-slot{display:inline-grid;place-items:center;flex:0 0 16px;width:16px;height:16px;border:1px dashed var(--ink-dim);border-radius:4px;color:var(--sig-ok);font:700 10px/1 var(--mono)}
+    .floor-log ul{max-height:none}
+    .floor-log li{grid-template-columns:45px 20px minmax(0,1fr);min-height:35px;font-size:10px}
+    .floor-log-time{font-size:9px}
+    .floor-log-who{font-size:9px}
+    .floor-tally{font-size:9px}
+    .floor-tally span{gap:3px}
+    .floor-tally-dot{width:7px;height:7px}
+    .task-card-row{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:9px;align-items:start;padding:10px 0;border-top:1px solid var(--rule)}
+    .task-card-row:first-child{border-top:0}
+    .task-row-dial{width:16px;height:16px;margin-top:3px;border:1.5px solid var(--sig-info);border-radius:50%;position:relative}
+    .task-row-dial.info:after{position:absolute;right:-1px;top:-1px;width:7px;height:7px;background:var(--sig-info);border-radius:0 100% 0 0;content:""}
+    .task-card-title{font-size:12px;font-weight:500;line-height:1.3}
+    .task-card-meta{margin-top:3px;color:var(--ink-dim);font:400 9px/1.4 var(--mono)}
+    .task-card-now{margin-top:4px;color:var(--ink-dim);font-size:10px;line-height:1.35}
+    .task-card-now b{font-weight:500;color:var(--ink)}
+    .floor-zone-list{gap:6px}
+    .floor-zone{padding:10px 12px}
+    .floor-zone > .eyebrow{font-size:9px}
+    .counter-note{padding:8px 9px;border:1px solid var(--rule);border-radius:var(--r-field);background:var(--raised);color:var(--ink-dim);font-size:10px;line-height:1.35}
+    .support-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+    .failure-card{display:grid;align-content:start;gap:9px;min-width:0;padding:13px;border:1px solid var(--rule);border-radius:var(--r-card);background:var(--panel)}
+    .failure-card h2{font-size:13px}
+    .failure-card p{color:var(--ink-dim);font-size:11px;line-height:1.45}
+    .empty-state{display:grid;justify-items:start;gap:9px;min-height:210px;padding:22px;border:1px dashed var(--rule);border-radius:var(--r-card);background:repeating-linear-gradient(45deg,rgba(234,230,223,.035) 0 1px,transparent 1px 9px),var(--panel)}
+    .empty-state h2{font-size:15px}
+    .empty-state p{max-width:540px;color:var(--ink-dim);font-size:12px;line-height:1.5}
+    .dialog-backdrop{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.64)}
+    .dialog-backdrop[hidden]{display:none}
+    .check-dialog{display:grid;gap:12px;width:min(560px,100%);max-height:calc(100vh - 40px);overflow:auto;padding:17px;border:1px solid rgba(240,180,41,.45);border-radius:var(--r-card);background:var(--panel);box-shadow:var(--shadow-overlay)}
+    .dialog-head{display:flex;align-items:start;justify-content:space-between;gap:10px}
+    .dialog-head h2{margin-top:2px;font-size:16px}
+    .dialog-meta{margin-top:5px;color:var(--ink-dim);font:400 10px/1.4 var(--mono)}
+    .quote-box{padding:10px 11px;border-left:2px solid var(--accent);background:var(--raised);font-size:11px;line-height:1.5}
+    .dialog-actions{display:flex;gap:8px;flex-wrap:wrap}
+    .checked-stamp{display:inline-grid;place-items:center;width:16px;height:16px;border:1px dashed var(--ink-dim);border-radius:4px;color:var(--ink-dim);font:700 10px/1 var(--mono)}
+    .checked-stamp.checked{border:1px solid var(--sig-ok);background:var(--tint-ok);color:var(--sig-ok);animation:stamp .12s ease-out}
+    @keyframes stamp{from{transform:scale(1.6)}to{transform:scale(1)}}
+    .state-save-note{min-height:20px;margin-top:5px;color:var(--ink-dim);font-size:10px}
+    .left-open{margin-top:8px}
+    .left-open summary{font-weight:500}
+    .left-open .step-name{color:var(--ink-dim)}
+    .floor-paper.unblock .paper-verb{border-color:rgba(229,72,77,.45);color:var(--sig-down)}
+    .task-row-dial.review{border-style:dashed;border-color:var(--sig-warn)}
+    .task-row-dial.review:after{position:absolute;inset:4px;border-radius:50%;background:var(--sig-warn);content:""}
+    .task-row-dial.done{display:grid;place-items:center;border:0;background:var(--sig-ok);color:var(--canvas)}
+    .task-row-dial.done:after{content:"✓";font:700 10px/1 var(--mono)}
+    .earlier{display:inline-flex;margin-left:5px;padding:2px 5px;border:1px solid var(--rule);border-radius:4px;color:var(--ink-dim);font:600 8px/1.2 var(--mono);letter-spacing:.05em}
+    .sample-foot{display:flex;justify-content:space-between;gap:12px;margin-top:18px;padding-top:10px;border-top:1px solid var(--rule);color:var(--ink-faint);font:400 9px/1.4 var(--mono)}
+    @media(max-width:900px){
+      .floor-layout{grid-template-columns:minmax(0,1fr) minmax(280px,340px)}
+      .detail-layout{grid-template-columns:minmax(0,1fr) 270px}
+      .support-grid{grid-template-columns:1fr}
+    }
+    @media(max-width:700px){
+      .topbar{min-height:54px;padding:0 14px;gap:12px}
+      .brand{min-width:0;font-size:11px}
+      .brand small{display:none}
+      .primary-nav{display:none}
+      .top-spacer{flex:1}
+      .sample-label{font-size:8px;padding:0 6px}
+      .app-shell{padding:10px 12px 28px}
+      .preview-strip{align-items:flex-start;font-size:9px}
+      .preview-strip span:last-child{white-space:normal;text-align:right}
+      .scene-nav{margin-right:-12px;padding-right:12px;border-right:0;border-radius:7px 0 0 7px}
+      .scene-nav a{min-height:44px;padding:0 10px;font-size:10px}
+      .page-heading{align-items:flex-start;flex-direction:column;gap:5px;margin:14px 0 10px}
+      .task-hero{grid-template-columns:36px minmax(0,1fr);gap:7px;margin:11px 0 10px;padding:12px}
+      .task-hero > .chip{grid-column:2;justify-self:start}
+      .task-title{font-size:16px}
+      .task-meta{gap:5px 9px;font-size:9px}
+      .task-now{font-size:10px}
+      .detail-layout{grid-template-columns:minmax(0,1fr);gap:10px}
+      .detail-rail{grid-row:auto}
+      .panel-pad{padding:12px}
+      .needs-item{grid-template-columns:auto minmax(0,1fr);gap:7px}
+      .needs-item .button{grid-column:2;justify-self:start}
+      .rule-summary{grid-template-columns:minmax(0,1fr);gap:6px}
+      .rule-copy,.rule-extra{grid-column:1/-1}
+      .rule-link{grid-column:1;grid-row:auto;justify-self:start}
+      .step-row{grid-template-columns:44px minmax(0,1fr) auto;gap:5px}
+      .step-meta{display:none}
+      .step-state-button{width:36px}
+      .step-state{min-width:55px;font-size:10px}
+      .step-control{padding-left:38px}
+      .segment{padding:0 3px;font-size:10px}
+      .owner-options{grid-template-columns:1fr}
+      .activity-row{grid-template-columns:43px 22px minmax(0,1fr);gap:6px;font-size:10px}
+      .activity-time,.activity-who{font-size:8px}
+      .pr-row{grid-template-columns:minmax(0,1fr) auto;padding:8px}
+      .pr-evidence{font-size:9px}
+      .floor-layout{grid-template-columns:minmax(0,1fr);grid-template-areas:"turn" "bays" "score" "log";gap:10px}
+      .floor-sidecar{display:contents}.floor-turn{grid-area:turn}.floor-score{grid-area:score}.floor-log{grid-area:log}
+      .floor-turn{grid-area:turn}
+      .floor-score{grid-area:score;display:flex;align-items:center;gap:10px;overflow:hidden;padding:7px 9px}
+      .floor-score .floor-tile{display:flex;align-items:baseline;gap:5px;padding:0;border:0;background:transparent;box-shadow:none;white-space:nowrap}
+      .floor-score .floor-tile strong{font-size:12px}
+      .floor-score .floor-tile span{font:400 8px/1.2 var(--mono)}
+      .floor-score .floor-tile:nth-child(2){display:none}
+      .floor-score{flex-wrap:wrap;overflow:visible}
+      .floor-log{grid-area:log}
+      .floor-bay{min-height:0}
+      .floor-zone{padding:9px}
+      .floor-turn-count{font-size:2.6rem}
+      .floor-action{min-height:48px}
+      .floor-action-copy strong{font-size:11px}
+      .floor-action-copy small{white-space:normal}
+      .floor-kind{font-size:8px}
+      .floor-paper{min-height:44px}
+      .task-card-row{grid-template-columns:24px minmax(0,1fr) auto;gap:6px}
+      .task-card-title{font-size:11px}
+      .task-card-meta{font-size:8px}
+      .dialog-backdrop{align-items:flex-end;padding:12px;inset:0}
+      .check-dialog{width:100%;max-height:calc(100dvh - 24px);padding:14px;margin:0}
+      .dialog-actions{display:grid;grid-template-columns:1fr}
+      .dialog-actions .button{width:100%}
+      .sample-foot{flex-direction:column}
+    }
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important}}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <a class="brand" href="?screen=floor" aria-label="Factory preview home">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="3" width="15" height="3.5" rx=".6"/><rect x="4.5" y="3" width="3" height="18" rx=".6"/><rect x="4.5" y="10.5" width="9" height="3.5" rx=".6"/><rect x="16" y="10.5" width="3.5" height="3.5" rx="1"/></svg>
+      FACTORY <small>WORK LEDGER</small>
+    </a>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a href="?screen=floor">Floor</a><a href="?screen=active">Projects</a>
+    </nav>
+    <div class="top-spacer"></div>
+    <span class="sample-label">DESIGN PREVIEW · SAMPLE DATA</span>
+  </div>
+
+  <main class="app-shell">
+    <div class="preview-strip"><strong>Design preview · sample data</strong><span>Local interactions only · no service requests</span></div>
+    <nav class="scene-nav" aria-label="Preview screens">
+      <a href="?screen=floor" data-nav="floor"><span class="num">01</span>Floor</a>
+      <a href="?screen=active" data-nav="active"><span class="num">02</span>Active steps</a>
+      <a href="?screen=review" data-nav="review"><span class="num">03</span>PR review</a>
+      <a href="?screen=done" data-nav="done"><span class="num">04</span>Done</a>
+      <a href="?screen=rule" data-nav="rule"><span class="num">05</span>Finish rule</a>
+      <a href="?screen=check" data-nav="check"><span class="num">06</span>Human check</a>
+      <a href="?screen=blocked" data-nav="blocked"><span class="num">07</span>Blocked</a>
+      <a href="?screen=failures" data-nav="failures"><span class="num">08</span>PR states</a>
+      <a href="?screen=empty" data-nav="empty"><span class="num">09</span>Empty</a>
+    </nav>
+
+    <section class="scene" id="scene-floor" aria-labelledby="floor-title">
+      <div class="page-heading"><div><div class="eyebrow">HOME · FLOOR</div><h1 id="floor-title">The Floor</h1><p class="lede">A project view of what needs you, who is working, and what changed.</p></div><span class="chip info">● OBSERVING · SAMPLE</span></div>
+      <div class="floor-layout">
+        <aside class="floor-sidecar" aria-label="Needs you and activity">
+          <section class="floor-turn attention" aria-labelledby="needs-title">
+            <div class="eyebrow" id="needs-title">Needs you</div>
+            <div class="floor-turn-big"><span class="floor-turn-count">4</span><span class="floor-turn-label">things only you can do<small class="count-line">1 review · 1 check · 1 decision · 1 unblock</small></span></div>
+            <ol class="floor-turn-list">
+              <li><button class="floor-action floor-action-unblock" type="button" data-goto="blocked" aria-label="Unblock: GitHub token for Dokploy has expired, T-73, 1 day"><span class="floor-kind unblock">UNBLOCK</span><span class="floor-action-copy"><strong>GitHub token for Dokploy has expired</strong><small>T-73 · Restore Factory GitHub integration</small></span><span class="floor-action-age">1d</span></button></li>
+              <li><button class="floor-action floor-action-check" type="button" data-goto="check" aria-label="Check: Confirm the Floor loads on the M5 mini, T-62, 5 hours"><span class="floor-kind check">CHECK ▢</span><span class="floor-action-copy"><strong>Confirm the Floor loads on the M5 mini</strong><small>T-62 · Configure Factory on the M5 mini</small></span><span class="floor-action-age">5h</span></button></li>
+              <li><button class="floor-action floor-action-review" type="button" data-goto="review" aria-label="Review: PR 18 is ready for your review, T-91, 2 hours"><span class="floor-kind review">REVIEW</span><span class="floor-action-copy"><strong>PR #18 is ready for your review</strong><small>T-91 · Deploy production from main</small></span><span class="floor-action-age">2h</span></button></li>
+              <li><button class="floor-action floor-action-decide" type="button" data-goto="active" aria-label="Decide: Approve the UI screenshots before final implementation, T-94, 12 minutes"><span class="floor-kind decide">DECIDE</span><span class="floor-action-copy"><strong>Approve the UI screenshots before final implementation</strong><small>T-94 · Question in T3 · Codex</small></span><span class="floor-action-age">12m</span></button></li>
+            </ol>
+            <div class="tracking-notes"><span>3 tracking notes · not counted</span><button type="button" data-local-message="Observed Activity is sample-only.">Open</button></div>
+          </section>
+          <section class="floor-log" aria-labelledby="shift-log-title">
+            <div class="panel-head"><div><div class="eyebrow">Latest updates</div><h2 class="panel-title" id="shift-log-title">Shift log</h2></div><span class="panel-meta">TODAY</span></div>
+            <ul>
+              <li><span class="floor-log-time">12:20</span><span class="floor-log-who">CX</span><span>Codex: T-91 is ready for review</span></li>
+              <li><span class="floor-log-time">09:20</span><span class="floor-log-who">CL</span><span>Claude finished T-62 · awaiting your check</span></li>
+              <li><span class="floor-log-time">8 Oct<br>14:02</span><span class="floor-log-who">GH</span><span>PR #16 merged · d4e6f81 · T-88 done</span></li>
+            </ul>
+          </section>
+          <div class="floor-score" aria-label="Floor scoreboard">
+            <div class="floor-tile ok"><strong>0</strong><span>done today</span></div><div class="floor-tile"><strong>2</strong><span>updates today</span></div><div class="floor-tile"><strong>1</strong><span>working now</span></div><div class="floor-tile"><strong>1d</strong><span>oldest waiting on you</span></div>
+          </div>
+        </aside>
+        <section class="floor-bays" aria-label="Project bays">
+          <article class="floor-bay attention">
+            <div class="floor-plate"><button class="floor-bay-title" type="button" data-goto="active"><h2>Factory</h2></button><div class="floor-tally"><span><i class="floor-tally-dot info"></i>1 working</span><span><i class="floor-tally-dot warn"></i>4 needs you</span><span><i class="floor-tally-dot down"></i>1 blocked</span></div></div>
+            <div class="floor-track">
+              <section class="floor-zone bench"><div class="eyebrow">Bench</div><div class="floor-zone-list"><div class="counter-note">2 planned tasks · 1 waiting for an agent</div></div></section>
+              <section class="floor-zone stations"><div class="eyebrow">Stations</div><div class="floor-zone-list">
+                <button class="floor-work" type="button" data-goto="active"><span class="floor-worker codex working">CX</span><span class="floor-work-copy"><strong><span class="floor-ref">T-94</span>Simplify tasks, checklist steps, and PR completion</strong><small>DOING · Build screenshot preview · 4m</small></span></button>
+                <button class="floor-work" type="button" data-goto="blocked"><span class="floor-worker claude">CL<span class="floor-badge error">!</span></span><span class="floor-work-copy"><strong><span class="floor-ref">T-73</span>Restore Factory GitHub integration</strong><small>BLOCKED · Rotate Dokploy GitHub token</small></span></button>
+              </div></section>
+              <section class="floor-zone counter hot"><div class="eyebrow">Counter · needs you</div><div class="floor-zone-list">
+                <button class="floor-paper" type="button" data-goto="check"><span class="paper-verb">CHECK</span><span class="paper-slot"> </span><span class="floor-paper-name">T-62 · Configure Factory on the M5 mini</span><span class="floor-paper-age">5h</span></button>
+                <button class="floor-paper" type="button" data-goto="review"><span class="paper-verb">REVIEW</span><span class="floor-paper-name">T-91 · Deploy production from main</span><span class="floor-paper-age">2h</span></button>
+                <button class="floor-paper unblock" type="button" data-goto="blocked"><span class="paper-verb">UNBLOCK</span><span class="floor-paper-name">T-73 · GitHub token expired</span><span class="floor-paper-age">1d</span></button>
+                <button class="floor-more" type="button" data-goto="active">+1 more needs you</button>
+              </div></section>
+            </div>
+          </article>
+          <section class="panel panel-pad" aria-labelledby="task-list-title">
+            <div class="panel-head"><div><div class="eyebrow">PROJECT · FACTORY</div><h2 class="panel-title" id="task-list-title">Recent work</h2></div><span class="panel-meta">3 TASKS</span></div>
+            <div class="task-card-row"><span class="task-row-dial info"></span><div><div class="task-card-title">T-94 · Simplify tasks, checklist steps, and PR completion</div><div class="task-card-meta">HIGH · 1 OF 5 STEPS DONE · ON MERGE · NO PR YET</div><div class="task-card-now"><b>Now · CX · 4m</b> — Building the screenshot preview from the spec</div></div><button class="icon-button" type="button" data-goto="active" aria-label="Open T-94">›</button></div>
+            <div class="task-card-row"><span class="task-row-dial review" role="img" aria-label="In review"></span><div><div class="task-card-title">T-91 · Deploy production automatically from main</div><div class="task-card-meta">2 OF 2 STEPS DONE · ON MERGE · PR #18 OPEN</div><div class="task-card-now"><b>REVIEW</b> · PR #18 is ready for your review</div></div><button class="icon-button" type="button" data-goto="review" aria-label="Open T-91">›</button></div>
+            <div class="task-card-row"><span class="task-row-dial done" role="img" aria-label="Done"></span><div><div class="task-card-title">T-88 · Manage agent credentials and project access</div><div class="task-card-meta">DONE · PR #16 MERGED · D4E6F81</div></div><button class="icon-button" type="button" data-goto="done" aria-label="Open T-88">›</button></div>
+          </section>
+        </section>
+      </div>
+    </section>
+
+    <section class="scene" id="scene-active" aria-labelledby="active-title">
+      <div class="page-heading"><div><div class="eyebrow">PROJECT · FACTORY / TASK DETAIL</div><h1 id="active-title">Task detail</h1><p class="lede">Progress stays visible. The finish rule determines when the Task is Done.</p></div></div>
+      <article class="task-hero">
+        <span class="task-dial active" role="img" aria-label="Active"></span>
+        <div><h2 class="task-title"><span class="task-id">T-94</span> Simplify tasks, checklist steps, and PR completion</h2><div class="task-meta"><span>HIGH</span><span>1 of 5 steps done</span><span class="chip">ON MERGE</span><span>no PR yet</span></div><p class="task-now"><b>Now · CX · 4m</b> — Building the screenshot preview from the spec</p><div class="progress-line"><div class="progress-track"><i style="width:20%"></i></div><span class="progress-caption">1 OF 5</span></div></div>
+        <span class="chip info">ACTIVE</span>
+      </article>
+      <div class="detail-layout">
+        <div class="main-column">
+          <section class="needs-callout" aria-labelledby="active-needs-title"><div class="panel-head"><div class="section-label" id="active-needs-title">Needs you</div></div><div class="needs-item" aria-label="Decide: T-94, 12 minutes"><span class="chip warn">DECIDE</span><div class="needs-copy"><strong>Approve the UI screenshots before final implementation</strong><small>Question in T3 · Codex · 12m ago</small></div><button class="button" type="button" data-local-message="The T3 thread link is a local sample placeholder.">Open in T3 ↗</button></div></section>
+          <section class="panel panel-pad" aria-labelledby="active-rule-title"><div class="panel-head rule-panel-head"><div class="rule-title-line"><span class="section-label">Finish rule</span><span class="chip panel-title" id="active-rule-title">ON MERGE</span></div><button class="text-button" type="button" data-goto="rule">Edit</button></div><div class="rule-summary"><p class="rule-copy">Finishes when its required PRs merge. No PR is linked yet.</p><button class="text-button rule-link" type="button" data-local-message="Link PR is a local design-preview control.">Link a PR</button></div></section>
+          <section class="panel panel-pad" aria-labelledby="active-steps-title"><div class="panel-head"><div><div class="section-label">Steps</div><h2 class="panel-title" id="active-steps-title">1 of 5 done</h2></div><span class="panel-meta">AUTHOR ORDER</span></div>
+            <div class="step-list" id="active-step-list">
+              <article class="step-item" data-step="Write design spec"><div class="step-row"><button class="step-dial-button" type="button" aria-label="Step 1, Write design spec: Done. Change state"><span class="step-dial done"></span></button><button class="step-name" type="button" data-step-detail>Write design spec</button><span class="step-meta">CL · 2h</span><span class="step-state">DONE</span></div><div class="step-detail"><dl><dt>Notes</dt><dd>Design behavior and sample content from the draft.</dd><dt>History</dt><dd>12:20 · Claude set this Step to Done.</dd></dl></div></article>
+              <article class="step-item" data-step="Build screenshot preview"><div class="step-row"><button class="step-dial-button" type="button" aria-label="Step 2, Build screenshot preview: Doing. Change state" data-state-toggle><span class="step-dial doing"></span></button><button class="step-name" type="button" data-step-detail>Build screenshot preview</button><span class="step-meta">CX · 4m</span><span class="step-state doing">DOING</span></div><div class="step-control open" role="radiogroup" aria-label="State for step Build screenshot preview">
+                <div class="segments"><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="To do"><span class="tiny-dial">○</span> To do</button><button class="segment" type="button" role="radio" aria-checked="true" data-state-choice="Doing"><span class="tiny-dial">◔</span> Doing</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Done"><span class="tiny-dial">●</span> Done</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Blocked"><span class="tiny-dial">⊖</span> Blocked</button></div>
+                <button class="note-trigger" type="button" data-note-toggle>Add a note</button><div class="note-field"><label>Note (optional)<input type="text" placeholder="Add context for this update"></label></div>
+                <div class="blocked-editor" data-blocked-editor><label>What's in the way?<input type="text" placeholder="Describe the blocker"></label><fieldset style="border:0;padding:0;margin:0"><legend class="section-label">Who can unblock it?</legend><div class="owner-options"><label class="owner-option"><input type="radio" name="owner-active" value="human" checked>Me</label><label class="owner-option"><input type="radio" name="owner-active" value="agent">The agent</label><label class="owner-option"><input type="radio" name="owner-active" value="other">Someone else</label></div></fieldset><label data-owner-name hidden>Who should we name?<input type="text" placeholder="Name"></label><div class="editor-actions"><button class="button primary" type="button" data-save-blocked>Save as blocked</button><button class="button" type="button" data-cancel-state>Cancel</button></div></div>
+                <p class="state-save-note" aria-live="polite"></p>
+              </div><div class="step-detail"><dl><dt>Notes</dt><dd>Static HTML from the design spec using Ledger tokens.</dd><dt>History</dt><dd>14:16 · CX · Doing · Codex<br>14:02 · CX · To do · Codex</dd></dl></div></article>
+              <article class="step-item" data-step="Implement Steps and finish rules"><div class="step-row"><button class="step-dial-button" type="button" aria-label="Step 3, Implement Steps and finish rules: To do. Change state" data-state-toggle><span class="step-dial"></span></button><button class="step-name" type="button" data-step-detail>Implement Steps and finish rules</button><span class="step-state">TODO</span></div><div class="step-control" role="radiogroup" aria-label="State for step Implement Steps and finish rules"><div class="segments"><button class="segment" type="button" role="radio" aria-checked="true" data-state-choice="To do">To do</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Doing">Doing</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Done">Done</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Blocked">Blocked</button></div><button class="note-trigger" type="button" data-note-toggle>Add a note</button><div class="note-field"><label>Note (optional)<input type="text" placeholder="Add context for this update"></label></div><p class="state-save-note" aria-live="polite"></p></div><div class="step-detail"><dl><dt>Notes</dt><dd>Build the inline state controls and rule display.</dd><dt>History</dt><dd>No updates yet.</dd></dl></div></article>
+              <article class="step-item" data-step="Chrome functional check"><div class="step-row"><button class="step-dial-button" type="button" data-state-toggle aria-label="Step 4, Chrome functional check: To do. Change state"><span class="step-dial"></span></button><button class="step-name" type="button" data-step-detail>Chrome functional check</button><span class="step-state">TODO</span></div><div class="step-control" role="radiogroup" aria-label="State for step Chrome functional check"><div class="segments"><button class="segment" type="button" role="radio" aria-checked="true" data-state-choice="To do">To do</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Doing">Doing</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Done">Done</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Blocked">Blocked</button></div><button class="note-trigger" type="button" data-note-toggle>Add a note</button><div class="note-field"><label>Note (optional)<input type="text" placeholder="Add context for this update"></label></div><p class="state-save-note" aria-live="polite"></p></div><div class="step-detail"><dl><dt>Notes</dt><dd>Capture the core journeys at desktop and phone widths.</dd></dl></div></article>
+              <article class="step-item" data-step="Open PR and babysit to ready"><div class="step-row"><button class="step-dial-button" type="button" data-state-toggle aria-label="Step 5, Open PR and babysit to ready: To do. Change state"><span class="step-dial"></span></button><button class="step-name" type="button" data-step-detail>Open PR and babysit to ready</button><span class="step-state">TODO</span></div><div class="step-control" role="radiogroup" aria-label="State for step Open PR and babysit to ready"><div class="segments"><button class="segment" type="button" role="radio" aria-checked="true" data-state-choice="To do">To do</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Doing">Doing</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Done">Done</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Blocked">Blocked</button></div><button class="note-trigger" type="button" data-note-toggle>Add a note</button><div class="note-field"><label>Note (optional)<input type="text" placeholder="Add context for this update"></label></div><p class="state-save-note" aria-live="polite"></p></div><div class="step-detail"><dl><dt>Notes</dt><dd>Link the preview after approval.</dd></dl></div></article>
+            </div>
+            <form class="add-step-form" data-add-step-form style="display:flex;gap:8px;margin-top:8px"><input aria-label="New step title" type="text" placeholder="+ Add a step" data-add-step-input><button class="button" type="submit">Add</button></form>
+          </section>
+          <section class="panel panel-pad" aria-labelledby="active-activity-title"><div class="panel-head"><div><div class="section-label">Task history</div><h2 class="panel-title" id="active-activity-title">Activity</h2></div><span class="panel-meta">TODAY</span></div><div class="activity-list"><div class="activity-row"><span class="activity-time">14:16</span><span class="activity-who">CX</span><span class="activity-copy">Codex set “Build screenshot preview” to Doing<small>source t3-m4 · thread …a91c</small></span></div><div class="activity-row"><span class="activity-time">12:20</span><span class="activity-who">CL</span><span class="activity-copy">Claude finished “Write design spec”</span></div><div class="activity-row"><span class="activity-time">09:40</span><span class="activity-who">KE</span><span class="activity-copy">Kevin created the Task</span></div></div><button class="text-button" type="button" data-local-message="Earlier activity is sample-only.">Show all (9)</button></section>
+          <details class="disclosure panel panel-pad"><summary>Evidence · sessions, handoffs, PR packet, screenshots</summary><div class="disclosure-body">Sessions, handoffs, report details, screenshots, and T3 history stay available here. Evidence does not change the finish rule.</div></details>
+        </div>
+        <aside class="detail-rail">
+          <section class="panel panel-pad"><div class="panel-head"><h2 class="panel-title">Task information</h2><span class="panel-meta">T-94</span></div><p class="lede">Agents report progress. The finish rule decides when it is Done.</p><div class="metric-line">Priority <b>High</b></div><div class="metric-line">Project <b>Factory</b></div><div class="metric-line">Updated <b>4m ago</b></div></section>
+          <section class="panel panel-pad"><div class="panel-head"><h2 class="panel-title">Current report</h2><span class="chip info">ACTIVE</span></div><p class="lede">Building the screenshot preview from the design spec.</p><div class="metric-line">Codex <b>· 4m</b></div></section>
+        </aside>
+      </div>
+    </section>
+
+    <section class="scene" id="scene-review" aria-labelledby="review-title">
+      <div class="page-heading"><div><div class="eyebrow">PROJECT · FACTORY / TASK DETAIL</div><h1 id="review-title">PR review</h1><p class="lede">In review means the report is recorded; the required merge still finishes the Task.</p></div></div>
+      <article class="task-hero">
+        <span class="task-dial review" role="img" aria-label="In review"></span>
+        <div><h2 class="task-title"><span class="task-id">T-91</span> Deploy production automatically from main</h2><div class="task-meta"><span>2 of 2 steps done</span><span class="chip">ON MERGE</span><span>PR #18 open</span></div><p class="task-now"><b class="chip warn">REVIEW</b> PR #18 is ready for your review</p><div class="progress-line"><div class="progress-track"><i style="width:100%"></i></div><span class="progress-caption">2 OF 2</span></div></div>
+        <span class="chip warn">IN REVIEW</span>
+      </article>
+      <div class="detail-layout">
+        <div class="main-column">
+          <section class="needs-callout"><div class="panel-head"><div class="section-label">Needs you</div></div><div class="needs-item" aria-label="Review: T-91, 2 hours"><span class="chip warn">REVIEW</span><div class="needs-copy"><strong>PR #18 is ready for your review</strong><small>T-91 · Deploy production automatically from main · 2h</small></div><button class="button" type="button" data-local-message="GitHub PR links are disabled in this sample preview.">Open PR ↗</button></div><p class="pr-evidence warn changed-warning" hidden>New commits since Codex reported ready (a91c4e2 → c7d8e91). Review stays open at this new head.</p></section>
+          <section class="panel panel-pad"><div class="panel-head"><div><div class="section-label">Finish rule</div><h2 class="panel-title">ON MERGE</h2></div><button class="text-button" type="button" data-goto="rule">Edit</button></div><p class="rule-copy">Finishes when PR #18 merges.</p>
+            <div class="pr-list"><article class="pr-row" data-pr-row><div class="pr-primary"><span class="pr-number">PR #18</span><span class="pr-title">Deploy production from main</span><span class="chip">OPEN</span></div><span class="pr-required">required</span><div class="pr-evidence" data-head-copy>checks passing · CodeRabbit reviewed this head · 0 open threads · head a91c4e2 · checked 2m ago</div></article></div>
+            <div class="inline-note">The Task becomes Done after Factory confirms the required merge on the repository’s default branch. Deployment is separate evidence.</div>
+          </section>
+          <section class="panel panel-pad"><div class="panel-head"><div><div class="section-label">Steps</div><h2 class="panel-title">2 of 2 done</h2></div></div><div class="step-list">
+            <article class="step-item"><div class="step-row"><button class="step-dial-button" type="button" aria-label="Write deployment workflow: Done"><span class="step-dial done"></span></button><button class="step-name" type="button" data-step-detail>Write deployment workflow</button><span class="step-meta">CL · 1d</span><span class="step-state">DONE</span></div><div class="step-detail">Done · reported by Claude</div></article>
+            <article class="step-item"><div class="step-row"><button class="step-dial-button" type="button" aria-label="Add release checks: Done"><span class="step-dial done"></span></button><button class="step-name" type="button" data-step-detail>Add release checks</button><span class="step-meta">CX · 4h</span><span class="step-state">DONE</span></div><div class="step-detail">Done · reported by Codex</div></article>
+          </div></section>
+          <section class="panel panel-pad"><div class="panel-head"><div class="section-label">Activity</div><span class="panel-meta">TODAY</span></div><div class="activity-row"><span class="activity-time">12:20</span><span class="activity-who">CX</span><span class="activity-copy">Codex finished the Task: PR #18 is ready — CI passing on a91c4e2, CodeRabbit reviewed this head.</span></div></section>
+        </div>
+        <aside class="detail-rail"><section class="panel panel-pad"><div class="panel-head"><h2 class="panel-title">Review evidence</h2><span class="chip ok" data-review-checks>CHECKS PASSING</span></div><div class="metric-line">Review head <b class="mono head-short">a91c4e2</b></div><div class="metric-line">Open threads <b data-review-threads>0</b></div><div class="metric-line">CodeRabbit <b data-review-coderabbit>Reviewed this head</b></div><button class="button" type="button" data-toggle-head style="width:100%;margin-top:12px">Show new commits since ready</button><p class="inline-note">Local preview control · updates the exact-head evidence.</p></section><section class="panel panel-pad"><div class="panel-head"><h2 class="panel-title">Task state</h2><span class="chip warn">IN REVIEW</span></div><p class="lede">All Steps are Done. Steps do not finish the Task; PR #18 must merge.</p></section></aside>
+      </div>
+    </section>
+
+    <section class="scene" id="scene-done" aria-labelledby="done-title">
+      <div class="page-heading"><div><div class="eyebrow">PROJECT · FACTORY / TASK DETAIL</div><h1 id="done-title">Done via merge</h1><p class="lede">The Task is Done by its finish rule. The Steps preserve their recorded states.</p></div></div>
+      <article class="task-hero">
+        <span class="task-dial done" role="img" aria-label="Done"></span>
+        <div><h2 class="task-title"><span class="task-id">T-88</span> Manage agent credentials and project access from Connections</h2><div class="task-meta"><span>3 of 4 steps done</span><span class="chip">ON MERGE</span><span>PR #16</span></div><p class="task-now mono">Done · PR #16 merged 8 Oct 14:02 · <a href="#commit-d4e6f81" class="pr-number">d4e6f81</a></p></div>
+        <span class="chip ok">DONE</span>
+      </article>
+      <div class="detail-layout">
+        <div class="main-column">
+          <section class="panel panel-pad"><div class="panel-head"><div><div class="section-label">Finish rule</div><h2 class="panel-title">ON MERGE</h2></div><button class="button" type="button" data-local-message="Finish rules are locked on Done tasks. Reopen first to change the rule.">Reopen to change</button></div><p class="rule-copy">Finishes when PR #16 merges to the default branch.</p><div class="pr-list"><article class="pr-row"><div class="pr-primary"><span class="pr-number">PR #16</span><span class="pr-title">Manage agent credentials from Connections</span><span class="chip ok">MERGED</span></div><span class="pr-required">required</span><div class="pr-evidence">merged to main · 8 Oct 14:02 · merge SHA <a href="#commit-d4e6f81" class="pr-number">d4e6f81</a></div></article></div></section>
+          <section class="panel panel-pad"><div class="panel-head"><div><div class="section-label">Steps</div><h2 class="panel-title">3 of 4 done</h2></div><span class="panel-meta">TASK DONE</span></div><div class="step-list">
+            <article class="step-item"><div class="step-row"><span class="step-dial-button" role="img" type="button" aria-label="Add Connections credential form: Done"><span class="step-dial done"></span></span><button class="step-name" type="button" data-step-detail>Add Connections credential form</button><span class="step-meta">CL · 2d</span><span class="step-state">DONE</span></div><div class="step-detail">Done · reported by Claude</div></article>
+            <article class="step-item"><div class="step-row"><span class="step-dial-button" role="img" type="button" aria-label="Scope tokens to projects: Done"><span class="step-dial done"></span></span><button class="step-name" type="button" data-step-detail>Scope tokens to projects</button><span class="step-meta">CL · 2d</span><span class="step-state">DONE</span></div><div class="step-detail">Done · reported by Claude</div></article>
+            <article class="step-item"><div class="step-row"><span class="step-dial-button" role="img" type="button" aria-label="Audit log entries: Done"><span class="step-dial done"></span></span><button class="step-name" type="button" data-step-detail>Audit log entries</button><span class="step-meta">CX · 1d</span><span class="step-state">DONE</span></div><div class="step-detail">Done · reported by Codex</div></article>
+          </div>
+          <details class="disclosure left-open" open><summary>Left open when the task finished (1)</summary><div class="disclosure-body"><div class="step-row"><span class="step-dial-button" aria-hidden="true"><span class="step-dial"></span></span><span class="step-name">Update Connections help text</span><span class="step-meta">— · 3d</span><span class="step-state">TODO</span></div><p class="inline-note">Recorded state at completion. This Step does not reopen the Task or create UNBLOCK.</p></div></details></section>
+          <section class="panel panel-pad"><div class="panel-head"><div class="section-label">Activity</div><span class="panel-meta">8 OCT</span></div><div class="activity-row"><span class="activity-time">14:02</span><span class="activity-who">GH</span><span class="activity-copy">GitHub: PR #16 merged · d4e6f81. Task done.</span></div><div class="panel-head" style="margin-top:8px"><div class="section-label">Earlier history</div><span class="panel-meta">7 OCT</span></div><div class="activity-row"><span class="activity-time">13:50</span><span class="activity-who">KE</span><span class="activity-copy">Accepted by Kevin · 7 Oct <span class="earlier">EARLIER REVIEW</span></span></div><details class="disclosure"><summary>Step history · earlier review</summary><div class="disclosure-body">Accepted by PR Merge · PR #12 · merge 6ec12b4 <span class="earlier">EARLIER REVIEW</span><br>Legacy wording is preserved as recorded history.</div></details></section>
+          <details class="disclosure panel panel-pad"><summary>Evidence · sessions, handoffs, PR packet, screenshots</summary><div class="disclosure-body">A preview link, if present, is an artifact claim. Deployment stays separate from the merge and Task completion.</div></details>
+        </div>
+        <aside class="detail-rail"><section class="panel panel-pad"><div class="panel-head"><h2 class="panel-title">Completion proof</h2><span class="chip ok">DONE</span></div><p class="lede">PR #16 merged to main. Factory observed the merge and recorded the merge SHA.</p><div class="metric-line">Commit <b class="mono" id="commit-d4e6f81">d4e6f81</b></div><div class="metric-line">Steps left open <b>1 · unchanged</b></div></section></aside>
+      </div>
+    </section>
+
+    <section class="scene" id="scene-check" aria-labelledby="check-title">
+      <div class="page-heading"><div><div class="eyebrow">PROJECT · FACTORY / TASK DETAIL</div><h1 id="check-title">Explicit human check</h1><p class="lede">The human check is opt-in; it is the only place the Countersign appears.</p></div></div>
+      <article class="task-hero">
+        <span class="task-dial review" role="img" aria-label="In review"></span>
+        <div><h2 class="task-title"><span class="task-id">T-62</span> Configure Factory on the M5 mini using M4 as reference</h2><div class="task-meta"><span>No steps</span><span class="chip">AGENT FINISHES + YOUR CHECK</span></div><p class="task-now">Finished by Claude 5h ago · awaiting your check</p></div>
+        <span class="chip warn">IN REVIEW</span>
+      </article>
+      <div class="detail-layout">
+        <div class="main-column">
+          <section class="needs-callout"><div class="panel-head"><div class="section-label">Needs you</div><span class="chip warn">CHECK ▢</span></div><div class="needs-item" aria-label="Check: T-62, 5 hours"><span class="checked-stamp" aria-label="Awaiting your check"></span><div class="needs-copy"><strong>Confirm the Floor loads on the M5 mini</strong><small>Finished by Claude · 5h ago · T-62</small></div><button class="button primary" type="button" data-open-check>Check…</button></div></section>
+          <section class="panel panel-pad"><div class="panel-head rule-panel-head"><div class="rule-title-line"><span class="section-label">Finish rule</span><span class="chip panel-title">AGENT FINISHES + YOUR CHECK</span></div><button class="text-button" type="button" data-goto="rule">Edit</button></div><p class="rule-copy">Finishes when the agent reports it finished, then your check.</p><div class="rule-summary" style="margin-top:8px"><span class="chip warn">YOUR CHECK</span><p class="rule-extra">Open Factory on the M5 mini and confirm the Floor loads with live T3 dots.</p></div></section>
+          <section class="panel panel-pad"><div class="panel-head"><div><div class="section-label">Steps</div><h2 class="panel-title">No steps</h2></div></div><div class="empty-state" style="min-height:115px;padding:13px"><p>No steps. Agents can report progress on the Task itself, or add steps to track its parts.</p><form class="add-step-form" data-add-step-form style="display:flex;gap:8px;width:100%"><input aria-label="New step title" type="text" placeholder="+ Add a step" data-add-step-input><button class="button" type="submit">Add</button></form></div></section>
+          <section class="panel panel-pad"><div class="panel-head"><div class="section-label">Agent finish report</div><span class="panel-meta">CLAUDE · 5H AGO</span></div><p class="lede">Factory runs under launchd on the M5 mini; Tailscale serve on :443; /health ok at 09:15. Evidence: launchctl list, curl /health.</p></section>
+          <details class="disclosure panel panel-pad"><summary>Evidence · sessions, handoffs, PR packet, screenshots</summary><div class="disclosure-body">Task report, session evidence, screenshots, and T3 history.</div></details>
+        </div>
+        <aside class="detail-rail"><section class="panel panel-pad"><div class="panel-head"><h2 class="panel-title">Your check</h2><span class="checked-stamp" aria-label="Awaiting your check"></span></div><p class="lede">Check the stated condition against the finished result. Your note is optional.</p><button class="button primary" type="button" data-open-check style="width:100%;margin-top:12px">Check…</button></section></aside>
+      </div>
+      <div class="dialog-backdrop" id="check-backdrop" hidden>
+        <section class="check-dialog" role="dialog" aria-modal="true" aria-labelledby="check-dialog-title">
+          <div class="dialog-head"><div><div class="section-label">Your check</div><h2 id="check-dialog-title" tabindex="-1"><span class="task-id">T-62</span> Configure Factory on the M5 mini</h2><p class="dialog-meta">Finished by Claude 5h ago · rule: agent finishes + your check</p></div><button class="icon-button" type="button" data-close-check aria-label="Close check dialog">×</button></div>
+          <div><div class="section-label">What to check</div><p class="quote-box" style="margin-top:6px">Open Factory on the M5 mini and confirm the Floor loads with live T3 dots.</p></div>
+          <div><div class="section-label">Agent’s finish report</div><p class="quote-box" style="margin-top:6px">Factory runs under launchd on the M5 mini; Tailscale serve on :443; /health ok at 09:15. Evidence: launchctl list, curl /health.</p></div>
+          <label>What you checked (optional)<textarea placeholder="Add a short note about the result"></textarea></label>
+          <label class="sendback-field" hidden>What needs to change?<textarea placeholder="Describe what needs to change"></textarea></label>
+          <p class="dialog-message muted" aria-live="polite"></p>
+          <div class="dialog-actions"><button class="button primary" type="button" data-mark-checked>Mark checked</button><button class="button" type="button" data-sendback>Send back…</button><button class="button tertiary" type="button" data-close-check>Cancel</button></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="scene" id="scene-rule" aria-labelledby="rule-title">
+      <div class="page-heading"><div><div class="eyebrow">PROJECT · FACTORY / TASK DETAIL</div><h1 id="rule-title">Finish-rule editor</h1><p class="lede">Changing the rule takes effect only when you save it.</p></div></div>
+      <article class="task-hero">
+        <span class="task-dial active" role="img" aria-label="Active"></span>
+        <div><h2 class="task-title"><span class="task-id">T-97</span> Update preview routing</h2><div class="task-meta"><span class="chip">CURRENT · AGENT FINISHES</span><span>PR #20 already merged to main</span></div><p class="task-now">Edit the finish rule · saving can finish this Task now.</p></div>
+        <span class="chip info">ACTIVE</span>
+      </article>
+      <div class="detail-layout">
+        <div class="main-column">
+          <section class="panel panel-pad"><div class="panel-head"><div><div class="section-label">Finish rule</div><h2 class="panel-title">How does this task finish?</h2></div><span class="panel-meta">UNSAVED CHANGES</span></div>
+            <form class="finish-editor" data-rule-form>
+              <div class="choice-list">
+                <label class="choice"><input type="radio" name="finish-mode" value="merge" checked><span><strong>When its required PRs merge</strong><small>Code work. Factory confirms each required merge on the repository’s default branch.</small></span></label>
+                <label class="choice"><input type="radio" name="finish-mode" value="agent"><span><strong>When the agent finishes</strong><small>Non-code work. The agent’s Task-level finish report completes it.</small></span></label>
+              </div>
+              <div class="rule-prs" data-rule-prs><div class="section-label">Required PRs</div>
+                <label class="choice"><input type="checkbox" checked data-required-pr><span><strong>PR #20 · Update preview routing <span class="chip ok">MERGED</span></strong><small>merged to main · 9 Oct 13:10 · f97a620</small></span></label>
+                <label class="choice"><input type="checkbox" data-required-pr><span><strong>PR #19 · Stacked routing change <span class="chip warn">MERGED → feat/base</span></strong><small>Not on the default branch yet · does not satisfy this rule.</small></span></label>
+                <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px"><input type="url" aria-label="Pull request URL" placeholder="https://github.com/org/repo/pull/…"><button class="button" type="button" data-local-message="PR linking is a local sample control.">Link PR</button></div>
+                <p class="inline-note">Required PRs must merge to the repository’s default branch. A temporary or stacked-base merge leaves the Task waiting.</p>
+              </div>
+              <div>
+                <label class="rule-check"><input type="checkbox" data-require-check><span><strong style="color:var(--ink);font-size:12px;font-weight:500">Also require my check</strong><small class="muted">The check is required after the finish condition is met.</small></span></label>
+                <div class="check-text" hidden style="margin-top:9px"><label>What should you check?<textarea minlength="1" maxlength="500" placeholder="Describe the result to check">Open the production health page and confirm it reports the merged revision.</textarea></label></div>
+              </div>
+              <p class="consequence ok" data-consequence aria-live="polite">Saving finishes this task now: PR #20 already merged.</p>
+              <div class="editor-actions"><button class="button primary" type="submit" data-save-rule>Save and finish</button><button class="button" type="button" data-cancel-rule data-local-message="Rule changes cancelled locally.">Cancel</button></div>
+              <p class="dialog-message muted" aria-live="polite"></p>
+            </form>
+          </section>
+          <section class="panel panel-pad"><div class="panel-head"><div><div class="section-label">Linked PRs</div><h2 class="panel-title">Task and Step evidence</h2></div><span class="panel-meta">2 SAMPLE PRS</span></div><div class="pr-list"><article class="pr-row"><div class="pr-primary"><span class="pr-number">PR #20</span><span class="pr-title">Update preview routing</span><span class="chip ok">MERGED</span></div><span class="pr-required">required</span><div class="pr-evidence">default branch · main · merge SHA f97a620</div></article><article class="pr-row"><div class="pr-primary"><span class="pr-number">PR #19</span><span class="pr-title">Stacked routing change</span><span class="chip warn">MERGED → feat/base</span></div><span class="pr-required" data-stacked-required>optional</span><div class="pr-evidence warn">Optional · merged to feat/base · code not on main · ab19e72.</div></article></div></section>
+        </div>
+        <aside class="detail-rail"><section class="panel panel-pad"><div class="panel-head"><h2 class="panel-title">Live consequence</h2><span class="chip ok" data-rule-readiness>READY TO SAVE</span></div><p class="lede">PR #20 is already merged to the default branch. If it remains required and no check is selected, saving finishes T-97 immediately.</p><div class="metric-line">Required default-branch merges <b data-rule-merge-count>1 of 1</b></div><div class="metric-line">Steps <b>No steps · do not finish the Task</b></div><div class="metric-line">Deployment <b>separate evidence</b></div></section><section class="panel panel-pad"><div class="panel-head"><h2 class="panel-title">Human check</h2><span class="chip">OPTIONAL</span></div><p class="lede">Enable the check to require your confirmation after the finish condition is met.</p></section></aside>
+      </div>
+    </section>
+
+    <section class="scene" id="scene-blocked" aria-labelledby="blocked-title">
+      <div class="page-heading"><div><div class="eyebrow">PROJECT · FACTORY / TASK DETAIL</div><h1 id="blocked-title">Blocked Step</h1><p class="lede">A blocked Step names the reason and who can unblock it.</p></div></div>
+      <article class="task-hero"><span class="task-dial active" role="img" aria-label="Active"></span><div><h2 class="task-title"><span class="task-id">T-73</span> Restore Factory GitHub integration in Dokploy</h2><div class="task-meta"><span>1 of 2 steps done</span><span class="chip">ON MERGE</span><span>PR #22 open</span></div><p class="task-now">Blocked: GitHub token for Dokploy has expired · <span class="chip warn">on you</span></p></div><span class="chip info">ACTIVE</span></article>
+      <div class="detail-layout">
+        <div class="main-column">
+          <section class="needs-callout"><div class="panel-head"><div class="section-label">Needs you</div></div><div class="needs-item" aria-label="Unblock: T-73, 1 day"><span class="chip down">UNBLOCK</span><div class="needs-copy"><strong>GitHub token for Dokploy has expired</strong><small data-owner-label>T-73 · Rotate Dokploy GitHub token · 1d · owner: you</small></div><button class="button" type="button" data-local-message="Go to blocker is a local sample control.">Go to blocker</button></div></section>
+          <section class="panel panel-pad"><div class="panel-head"><div><div class="section-label">Steps</div><h2 class="panel-title">1 of 2 done</h2></div></div><div class="step-list"><article class="step-item" data-step="Rotate Dokploy GitHub token"><div class="step-row"><button class="step-dial-button" type="button" data-state-toggle aria-label="Change Rotate Dokploy GitHub token state"><span class="step-dial blocked"></span></button><button class="step-name" type="button" data-step-detail>Rotate Dokploy GitHub token</button><span class="step-state blocked">BLOCKED</span></div><p class="inline-note" style="color:var(--sig-down)">Blocked: GitHub token for Dokploy has expired · <span class="muted">on you</span></p><div class="step-control open" role="radiogroup" aria-label="State for step Rotate Dokploy GitHub token"><div class="segments"><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="To do">To do</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Doing">Doing</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Done">Done</button><button class="segment" type="button" role="radio" aria-checked="true" data-state-choice="Blocked">Blocked</button></div><div class="blocked-editor open" data-blocked-editor><label>What's in the way?<input type="text" placeholder="Describe the blocker" value="GitHub token for Dokploy has expired"></label><fieldset style="border:0;padding:0;margin:0"><legend class="section-label">Who can unblock it?</legend><div class="owner-options"><label class="owner-option"><input type="radio" name="owner-blocked" value="human" checked>Me</label><label class="owner-option"><input type="radio" name="owner-blocked" value="agent">The agent</label><label class="owner-option"><input type="radio" name="owner-blocked" value="other">Someone else</label></div></fieldset><label data-owner-name hidden>Who should we name?<input type="text" placeholder="Name"></label><div class="editor-actions"><button class="button primary" type="button" data-save-blocked>Save as blocked</button><button class="button" type="button" data-cancel-state>Cancel</button></div></div></div><div class="step-detail"><dl><dt>Notes</dt><dd>Refresh the scoped GitHub credential in Dokploy.</dd><dt>History</dt><dd>8 Oct 14:20 · Claude set this Step to Blocked.</dd></dl></div></article><article class="step-item"><div class="step-row"><span class="step-dial-button"><span class="step-dial done"></span></span><span class="step-name">Confirm repository access</span><span class="step-meta">CL · 1d</span><span class="step-state">DONE</span></div></article></div></section>
+          <section class="panel panel-pad" data-result-paper><div class="panel-head"><div class="section-label">Resulting Floor paper</div><span class="panel-meta">LOCAL PREVIEW</span></div><button class="floor-paper unblock" type="button" data-local-message="This sample UNBLOCK paper reflects the selected human owner."><span class="paper-verb" style="border-color:rgba(229,72,77,.45);color:var(--sig-down)">UNBLOCK</span><span class="floor-paper-name">T-73 · GitHub token for Dokploy has expired</span><span class="floor-paper-age">1d</span></button><p class="inline-note">“Me” creates UNBLOCK. A named other owner or the agent does not. No owner and no fresh agent session also creates UNBLOCK.</p></section>
+        </div>
+        <aside class="detail-rail"><section class="panel panel-pad"><div class="panel-head"><h2 class="panel-title">Blocker owner</h2><span class="chip down">HUMAN</span></div><p class="lede">The owner determines whether this Step creates an UNBLOCK item. It does not change the Task state.</p></section></aside>
+      </div>
+    </section>
+
+    <section class="scene" id="scene-failures" aria-labelledby="failure-title">
+      <div class="page-heading"><div><div class="eyebrow">PROJECT · FACTORY / PR OBSERVATION</div><h1 id="failure-title">PR edge states</h1><p class="lede">Stale or unavailable observations do not change Task state. A confirmed merge SHA is final.</p></div></div>
+      <div class="support-grid">
+        <article class="failure-card"><div class="panel-head"><h2>T-95 · Required PR closed</h2><span class="task-dial review" aria-hidden="true" style="width:18px;height:18px;margin:0"></span></div><div class="pr-row"><div class="pr-primary"><span class="pr-number">PR #24</span><span class="pr-title">Add deployment workflow</span><span class="chip down">CLOSED</span></div><span class="pr-required">required</span><div class="pr-evidence down">closed without merge</div></div><p>PR #24 closed without merging. Link another PR or mark #24 not required.</p><div class="needs-item" aria-label="Decide: Required PR 24 closed without merging, T-95, 30 minutes"><span class="chip warn">DECIDE</span><div class="needs-copy"><strong>Required PR #24 closed without merging</strong><small>T-95 · 30m · In review</small></div></div><div class="editor-actions"><button class="button" type="button" data-local-message="Link another PR is a local sample action.">Link another PR</button><button class="button" type="button" data-local-message="PR #24 marked optional locally; no merge is claimed.">Mark not required</button><button class="button" type="button" data-local-message="GitHub links stay local in this sample.">Open PR ↗</button></div></article>
+        <article class="failure-card"><div class="panel-head"><h2>T-99 · Open PR observation stale</h2><span class="chip warn">STALE</span></div><div class="pr-row"><div class="pr-primary"><span class="pr-number">PR #28</span><span class="pr-title">Add preview diagnostics</span><span class="chip">OPEN</span></div><span class="pr-required">required</span><div class="pr-evidence warn">Last observation: checks passing · head e9928a1 · checked 2h ago</div></div><p>Open observations go stale after 15 minutes. Task state stays In review.</p><button class="button" type="button" data-local-message="Check now is a local sample action.">Check now</button></article>
+        <article class="failure-card"><div class="panel-head"><h2>T-96 · GitHub outage</h2><span class="chip warn">UNAVAILABLE</span></div><div class="pr-row"><div class="pr-primary"><span class="pr-number">PR #27</span><span class="pr-title">Update service routing</span><span class="chip warn">UNAVAILABLE</span></div><span class="pr-required">required</span><div class="pr-evidence warn">GitHub did not answer at 14:02 · last known head e9627b3.</div></div><p>Connection is configured. Task stays In review. No Needs-you item is created by this outage.</p><button class="button" type="button" data-local-message="Try again is a local sample action.">Try again</button></article>
+        <article class="failure-card"><div class="panel-head"><h2>T-98 · GitHub not connected</h2><span class="chip warn">CAN’T CHECK</span></div><p>Project Papertrail has no GitHub connection. T-98 stays In review; Factory cannot confirm required PR #25.</p><div class="needs-item" aria-label="Decide: Connect GitHub for Papertrail, T-98, 1 hour"><span class="chip warn">DECIDE</span><div class="needs-copy"><strong>Connect GitHub for Papertrail</strong><small>1 project decision · T-98 · 1h</small></div></div><button class="button" type="button" data-local-message="Open Connections is a local sample action.">Open Connections</button></article>
+      </div>
+      <section class="panel panel-pad" style="margin-top:12px"><div class="panel-head"><h2 class="panel-title">T-100 · Default-branch merge rule</h2><span class="chip warn">WAITING</span></div><p class="lede">T-100 is In review · not in Needs you. Factory waits for PR #29’s code to reach main.</p><div class="pr-list"><article class="pr-row"><div class="pr-primary"><span class="pr-number">PR #29</span><span class="pr-title">Stacked integration change</span><span class="chip warn">MERGED → feat/base</span></div><span class="pr-required">required</span><div class="pr-evidence warn">merge SHA a10029c · code not on main · waiting for default branch</div></article></div></section>
+    </section>
+
+    <section class="scene" id="scene-empty" aria-labelledby="empty-title">
+      <div class="page-heading"><div><div class="eyebrow">PROJECT · FACTORY / TASK DETAIL</div><h1 id="empty-title">Empty Task</h1><p class="lede">No Steps and no updates yet.</p></div></div>
+      <article class="task-hero"><span class="task-dial active" role="img" aria-label="Active"></span><div><h2 class="task-title"><span class="task-id">T-102</span> Document local preview setup</h2><div class="task-meta"><span class="chip">AGENT FINISHES</span><span>No steps</span></div><p class="task-now">No updates yet.</p></div><span class="chip info">ACTIVE</span></article>
+      <div class="detail-layout"><div class="main-column">
+        <section class="panel panel-pad"><div class="panel-head"><div><div class="section-label">Finish rule</div><h2 class="panel-title">AGENT FINISHES</h2></div><button class="text-button" type="button" data-goto="rule">Edit</button></div><p class="rule-copy">Finishes when the agent reports it finished.</p></section>
+        <section class="panel panel-pad"><div class="panel-head"><div class="section-label">Steps</div><span class="panel-meta">0 STEPS</span></div><div class="empty-state"><h2>No steps</h2><p>Agents can report progress on the Task itself, or add steps to track its parts.</p><form class="add-step-form" data-add-step-form style="display:flex;gap:8px;width:100%"><input aria-label="New step title" type="text" placeholder="+ Add a step" data-add-step-input><button class="button" type="submit">Add</button></form></div></section>
+        <section class="panel panel-pad"><div class="panel-head"><div class="section-label">Activity</div><span class="panel-meta">0 UPDATES</span></div><p class="lede">No updates yet.</p><button class="text-button" type="button" data-local-message="Task reports are recorded in Factory; this preview does not submit reports.">Report progress</button></section>
+        <details class="disclosure panel panel-pad"><summary>Evidence · sessions, handoffs, PR packet, screenshots</summary><div class="disclosure-body">No evidence has been added.</div></details>
+      </div><aside class="detail-rail"><section class="panel panel-pad"><div class="panel-head"><h2 class="panel-title">Task information</h2><span class="panel-meta">T-102</span></div><p class="lede">No updates yet. The Task can be finished directly by an agent report.</p></section></aside></div>
+    </section>
+
+    <p class="state-save-note" id="toast" aria-live="polite"></p>
+    <footer class="sample-foot"><span>Design preview · sample data · T-94 / T-91 / T-88 / T-62 / T-73</span><span>Ledger tokens and bundled IBM Plex fonts · all interactions stay in this page</span></footer>
+  </main>
+
+  <script>
+    (function(){
+      var validScreens=["floor","active","review","done","rule","check","blocked","failures","empty"];
+      var params=new URLSearchParams(window.location.search);
+      var screen=params.get("screen")||"floor";
+      if(validScreens.indexOf(screen)<0){screen="floor";}
+      document.documentElement.setAttribute("data-screen",screen);
+      document.querySelectorAll("[data-nav]").forEach(function(link){
+        if(link.getAttribute("data-nav")===screen){link.setAttribute("aria-current","page");}
+      });
+      var stepSequence=0;
+      function blockedEditor(){
+        stepSequence+=1;
+        return '<div class="blocked-editor" data-blocked-editor><label>What’s in the way?<input type="text" placeholder="Describe the blocker"></label><fieldset style="border:0;padding:0;margin:0"><legend class="section-label">Who can unblock it?</legend><div class="owner-options"><label class="owner-option"><input type="radio" name="owner-added-'+stepSequence+'" value="human" checked>Me</label><label class="owner-option"><input type="radio" name="owner-added-'+stepSequence+'" value="agent">The agent</label><label class="owner-option"><input type="radio" name="owner-added-'+stepSequence+'" value="other">Someone else</label></div></fieldset><label data-owner-name hidden>Who should we name?<input type="text" placeholder="Name"></label><div class="editor-actions"><button class="button primary" type="button" data-save-blocked>Save as blocked</button><button class="button" type="button" data-cancel-state>Cancel</button></div></div>';
+      }
+      function stateControl(selected){
+        return '<div class="step-control" role="radiogroup" aria-label="Step state"><div class="segments">'+["To do","Doing","Done","Blocked"].map(function(value){return '<button class="segment" type="button" role="radio" aria-checked="'+(selected===value)+'" data-state-choice="'+value+'">'+value+'</button>';}).join("")+'</div><button class="note-trigger" type="button" data-note-toggle>Add a note</button><div class="note-field"><label>Note (optional)<input type="text" placeholder="Add context for this update"></label></div><p class="state-save-note" aria-live="polite"></p></div>';
+      }
+      document.querySelectorAll("#scene-active .step-item,#scene-review .step-item,#scene-blocked .step-item").forEach(function(item){
+        if(!item.getAttribute("data-step")){item.setAttribute("data-step",item.querySelector(".step-name").textContent);}
+        var dial=item.querySelector("button.step-dial-button");
+        if(dial){dial.setAttribute("data-state-toggle","");if(!item.querySelector(".step-control")){var code=item.querySelector(".step-state").textContent;item.insertAdjacentHTML("beforeend",stateControl(code==="DONE"?"Done":code==="DOING"?"Doing":code==="BLOCKED"?"Blocked":"To do"));}}
+      });
+      function initializeChoices(root){root.querySelectorAll("[data-state-choice]").forEach(function(option){option.tabIndex=option.getAttribute("aria-checked")==="true"?0:-1;});}
+      initializeChoices(document);
+      var toast=document.getElementById("toast");
+      function announce(message){
+        if(toast){toast.textContent=message;window.setTimeout(function(){if(toast.textContent===message){toast.textContent="";}},3200);}
+      }
+      document.addEventListener("click",function(event){
+        var goto=event.target.closest("[data-goto]");
+        if(goto){window.location.href="?screen="+encodeURIComponent(goto.getAttribute("data-goto"));return;}
+        var local=event.target.closest("[data-local-message]");
+        if(local){announce(local.getAttribute("data-local-message"));return;}
+        var toggle=event.target.closest("[data-state-toggle]");
+        if(toggle){var item=toggle.closest(".step-item");var control=item&&item.querySelector(".step-control");if(control){control.classList.toggle("open");if(control.classList.contains("open")){var selected=control.querySelector('[aria-checked="true"]');if(selected){selected.focus();}}}return;}
+        var choice=event.target.closest("[data-state-choice]");
+        if(choice){var group=choice.closest(".step-control");var step=choice.closest(".step-item");if(!group||!step){return;}var value=choice.getAttribute("data-state-choice");var editor=group.querySelector("[data-blocked-editor]");group.querySelectorAll("[data-state-choice]").forEach(function(option){option.setAttribute("aria-checked",option===choice?"true":"false");option.tabIndex=option===choice?0:-1;});if(value==="Blocked"){if(!editor){group.insertAdjacentHTML("beforeend",blockedEditor());editor=group.querySelector("[data-blocked-editor]");}editor.classList.add("open");return;}var note=group.querySelector(".note-field input");var noteText=note&&note.value.trim()?(" · "+note.value.trim()):"";setStepState(step,value,noteText);group.classList.remove("open");var opener=step.querySelector("[data-state-toggle]");if(opener){opener.focus();}return;}
+        var noteToggle=event.target.closest("[data-note-toggle]");
+        if(noteToggle){var noteField=noteToggle.nextElementSibling;if(noteField){noteField.classList.toggle("open");var input=noteField.querySelector("input");if(input){input.focus();}}return;}
+        var detail=event.target.closest("[data-step-detail]");
+        if(detail){var stepItem=detail.closest(".step-item");var detailPanel=stepItem&&stepItem.querySelector(".step-detail");if(detailPanel){detailPanel.classList.toggle("open");}return;}
+        var cancel=event.target.closest("[data-cancel-state]");
+        if(cancel){var stepParent=cancel.closest(".step-item");var stateControl=cancel.closest(".step-control");if(stateControl){stateControl.classList.remove("open");}var opener=stepParent&&stepParent.querySelector("[data-state-toggle]");if(opener){opener.focus();}return;}
+        var saveBlocked=event.target.closest("[data-save-blocked]");
+        if(saveBlocked){var blockedControl=saveBlocked.closest(".step-control");var blockedStep=saveBlocked.closest(".step-item");var reason=blockedControl&&blockedControl.querySelector('input[placeholder="Describe the blocker"]');var selected=blockedControl&&blockedControl.querySelector('input[type="radio"]:checked');var who=selected?selected.value:"unknown";var reasonText=reason&&reason.value.trim()?reason.value.trim():"Reason not stated";var named=blockedControl&&blockedControl.querySelector("[data-owner-name] input");if(who==="other"&&(!named||!named.value.trim())){if(named){named.focus();}announce("Name who can unblock this Step.");return;}var ownerText=who==="human"?"on you":who==="agent"?"on the agent":(named&&named.value.trim()?"on "+named.value.trim():"owner not stated");setStepState(blockedStep,"Blocked"," · "+reasonText+" · "+ownerText);if(screen==="blocked"){var callout=document.querySelector("#scene-blocked .needs-callout");var paper=document.querySelector("#scene-blocked [data-result-paper]");var ownerLabel=document.querySelector("#scene-blocked [data-owner-label]");if(callout){callout.hidden=who!=="human";}if(paper){paper.hidden=who!=="human";}if(ownerLabel){ownerLabel.textContent="T-73 · Rotate Dokploy GitHub token · 1d · "+ownerText;}announce(who==="human"?"UNBLOCK added to Needs you.":"This owner does not create a Needs you item.");}if(blockedControl){blockedControl.classList.remove("open");}var opener=blockedStep&&blockedStep.querySelector("[data-state-toggle]");if(opener){opener.focus();}return;}
+        var headToggle=event.target.closest("[data-toggle-head]");
+        if(headToggle){setReviewHead(!document.querySelector("#scene-review [data-pr-row]").classList.contains("changed"));return;}
+        if(event.target.closest("[data-open-check]")){openCheck(event.target.closest("[data-open-check]"));return;}
+        if(event.target.closest("[data-close-check]")){closeCheck();return;}
+        if(event.target.closest("[data-mark-checked]")){
+          document.querySelectorAll("#scene-check .checked-stamp").forEach(function(stamp){stamp.textContent="✓";stamp.classList.add("checked");stamp.setAttribute("aria-label","Checked");});
+          var hero=document.querySelector("#scene-check .task-hero");
+          var taskStatus=hero&&hero.querySelector(".chip.warn");
+          if(taskStatus){taskStatus.className="chip ok";taskStatus.textContent="DONE";}
+          var dial=hero&&hero.querySelector(".task-dial");
+          if(dial){dial.className="task-dial done";dial.setAttribute("aria-label","Done");}
+          var provenance=document.querySelector("#scene-check .task-now");
+          if(provenance){var note=document.querySelector("#scene-check .check-dialog textarea");provenance.textContent="Done · Kevin checked it 14:20"+(note&&note.value.trim()?" · “"+note.value.trim()+"”":"");}
+          var needs=document.querySelector("#scene-check .needs-callout");
+          if(needs){needs.hidden=true;}
+          document.querySelectorAll("#scene-check [data-open-check]").forEach(function(button){button.hidden=true;});
+          var sidecard=document.querySelector("#scene-check .detail-rail .panel");
+          if(sidecard){var heading=sidecard.querySelector(".panel-title");var copy=sidecard.querySelector(".lede");if(heading){heading.textContent="Check recorded";}if(copy){copy.textContent="Kevin checked the Task at 14:20. T-62 is Done.";}}
+          closeCheck();announce("Check recorded. This sample Task is Done.");return;
+        }
+        if(event.target.closest("[data-sendback]")){
+          var dialog=document.querySelector("#scene-check .check-dialog");
+          var field=dialog&&dialog.querySelector(".sendback-field");
+          if(field&&field.hidden){field.hidden=false;field.querySelector("textarea").focus();return;}
+          var reasonField=field&&field.querySelector("textarea");
+          if(!reasonField||!reasonField.value.trim()){if(reasonField){reasonField.focus();}return;}
+          var reason=reasonField.value.trim();
+          var hero=document.querySelector("#scene-check .task-hero");
+          var taskStatus=hero&&hero.querySelector(".chip.warn");
+          if(taskStatus){taskStatus.className="chip info";taskStatus.textContent="ACTIVE";}
+          var dial=hero&&hero.querySelector(".task-dial");
+          if(dial){dial.className="task-dial active";dial.setAttribute("aria-label","Active");}
+          var provenance=document.querySelector("#scene-check .task-now");
+          if(provenance){provenance.textContent="Sent back by Kevin · "+reason;}
+          var needs=document.querySelector("#scene-check .needs-callout");
+          if(needs){needs.hidden=true;}
+          document.querySelectorAll("#scene-check [data-open-check]").forEach(function(button){button.hidden=true;});
+          var sidecard=document.querySelector("#scene-check .detail-rail .panel");
+          if(sidecard){var heading=sidecard.querySelector(".panel-title");var copy=sidecard.querySelector(".lede");if(heading){heading.textContent="Check sent back";}if(copy){copy.textContent="T-62 returned to Active. The agent receives the requested changes."}}
+          var state=document.querySelector("#scene-check .dialog-message");
+          if(state){state.textContent="Sent back to the agent · Task returned to Active.";}
+          window.setTimeout(closeCheck,650);return;
+        }
+        var requireCheck=event.target.closest("[data-require-check]");
+        if(requireCheck){var textField=document.querySelector("#scene-rule .check-text");if(textField){textField.hidden=!requireCheck.checked;}updateConsequence();return;}
+      });
+      function updateActiveProgress(){
+        var list=document.getElementById("active-step-list");
+        if(!list){return;}
+        var items=Array.prototype.slice.call(list.children).filter(function(item){return item.classList.contains("step-item");});
+        var done=items.filter(function(item){return !!item.querySelector(".step-row .step-dial.done");}).length;
+        var total=items.length;
+        var countText=done+" of "+total;
+        var sectionCount=document.getElementById("active-steps-title");
+        var heroCount=document.querySelector("#scene-active .task-hero .task-meta > span:nth-child(2)");
+        var progressCaption=document.querySelector("#scene-active .progress-caption");
+        var progress=document.querySelector("#scene-active .progress-track i");
+        if(sectionCount){sectionCount.textContent=countText+" done";}
+        if(heroCount){heroCount.textContent=countText+" steps done";}
+        if(progressCaption){progressCaption.textContent=done+" OF "+total;}
+        if(progress){progress.style.width=(total?Math.round(done/total*100):0)+"%";}
+      }
+      function updateStepProgress(scene){
+        if(!scene){return;}
+        var items=scene.querySelectorAll(".step-list .step-item");
+        var done=Array.prototype.filter.call(items,function(item){return !!item.querySelector(".step-dial.done");}).length;
+        var total=items.length+scene.querySelectorAll(".left-open .step-row").length;
+        scene.querySelectorAll(".task-meta > span").forEach(function(label){if(/steps done|No steps/.test(label.textContent)){label.textContent=done+" of "+total+" steps done";}});
+        var list=scene.querySelector(".step-list");var section=list&&list.closest("section");
+        if(section){var title=section.querySelector("h2");if(title){title.textContent=done+" of "+total+" done";}else{var count=section.querySelector(".panel-meta");if(count){count.textContent=total+" STEPS";}}}
+        var caption=scene.querySelector(".progress-caption");if(caption){caption.textContent=done+" OF "+total;}
+        var track=scene.querySelector(".progress-track i");if(track){track.style.width=(total?Math.round(done/total*100):0)+"%";}
+      }
+      function setStepState(step,value,suffix){
+        if(!step){return;}var dial=step.querySelector(".step-dial");var state=step.querySelector(".step-state");var row=step.querySelector(".step-row");var note=step.querySelector(".state-save-note");var code=value==="To do"?"TODO":value==="Doing"?"DOING":value==="Done"?"DONE":"BLOCKED";
+        if(dial){dial.className="step-dial"+(value==="Doing"?" doing":value==="Done"?" done":value==="Blocked"?" blocked":"");}
+        if(state){state.className="step-state"+(value==="Doing"?" doing":value==="Blocked"?" blocked":"");state.textContent=code;}
+        if(row){var dialButton=row.querySelector(".step-dial-button");if(dialButton){dialButton.setAttribute("aria-label","Step "+step.getAttribute("data-step")+": "+value+". Change state");}}
+        if(note){note.textContent="Kevin set “"+(step.getAttribute("data-step")||"Step")+"” to "+value+(suffix||"")+" · local preview";}
+        if(step.closest("#active-step-list")){updateActiveProgress();}else{updateStepProgress(step.closest(".scene"));}
+        if(step.closest("#scene-blocked")&&value!=="Blocked"){document.querySelector("#scene-blocked .needs-callout").hidden=true;document.querySelector("#scene-blocked [data-result-paper]").hidden=true;}
+        var history=document.querySelector("#scene-active .activity-list");if(history&&step.closest("#active-step-list")){var rowEl=document.createElement("div");rowEl.className="activity-row";rowEl.innerHTML='<span class="activity-time">NOW</span><span class="activity-who">KE</span><span class="activity-copy">Kevin set “'+escapeHtml(step.getAttribute("data-step")||"Step")+'” to '+code+(suffix?'<small>'+escapeHtml(suffix.replace(/^ · /,""))+'</small>':"")+'</span>';history.prepend(rowEl);}
+        announce("Step state saved locally: "+code+".");
+      }
+      function escapeHtml(value){return value.replace(/[&<>"']/g,function(char){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char];});}
+      var addForms=document.querySelectorAll("[data-add-step-form]");
+      addForms.forEach(function(form){form.addEventListener("submit",function(event){event.preventDefault();var input=form.querySelector("[data-add-step-input]");var value=input&&input.value.trim();if(!value){if(input){input.focus();}return;}var scene=form.closest(".scene");var section=form.closest("section");var list=section.querySelector(".step-list");if(!list){list=document.createElement("div");list.className="step-list";section.insertBefore(list,section.querySelector(".empty-state"));var empty=section.querySelector(".empty-state");if(empty){empty.style.minHeight="0";var emptyCopy=empty.querySelector("h2,p");while(emptyCopy){emptyCopy.remove();emptyCopy=empty.querySelector("h2,p");}}}var safe=escapeHtml(value);var item=document.createElement("article");item.className="step-item";item.setAttribute("data-step",value);item.innerHTML='<div class="step-row"><button class="step-dial-button" type="button" data-state-toggle aria-label="Change '+safe+' state"><span class="step-dial"></span></button><button class="step-name" type="button" data-step-detail>'+safe+'</button><span class="step-state">TODO</span></div><div class="step-control" role="radiogroup" aria-label="State for '+safe+'"><div class="segments"><button class="segment" type="button" role="radio" aria-checked="true" data-state-choice="To do">To do</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Doing">Doing</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Done">Done</button><button class="segment" type="button" role="radio" aria-checked="false" data-state-choice="Blocked">Blocked</button></div><button class="note-trigger" type="button" data-note-toggle>Add a note</button><div class="note-field"><label>Note (optional)<input type="text" placeholder="Add context for this update"></label></div><p class="state-save-note" aria-live="polite"></p></div><div class="step-detail"><dl><dt>Notes</dt><dd>No description yet.</dd></dl></div>';list.appendChild(item);initializeChoices(item);input.value="";input.focus();if(scene.id==="scene-active"){updateActiveProgress();}else{updateStepProgress(scene);}announce("Step added locally: "+value);});});
+      var backdrop=document.getElementById("check-backdrop");
+      var checkOpener=null;
+      var inertBackground=[];
+      var previousOverflow="";
+      function openCheck(opener){
+        if(!backdrop||!backdrop.hidden){return;}
+        checkOpener=opener||document.querySelector("#scene-check [data-open-check]");
+        backdrop.hidden=false;
+        previousOverflow=document.body.style.overflow;
+        document.body.style.overflow="hidden";
+        var branch=backdrop;
+        while(branch.parentElement){
+          Array.prototype.forEach.call(branch.parentElement.children,function(sibling){
+            if(sibling!==branch&&sibling.tagName!=="SCRIPT"&&!sibling.inert){sibling.inert=true;inertBackground.push(sibling);}
+          });
+          if(branch.parentElement===document.body){break;}
+          branch=branch.parentElement;
+        }
+        backdrop.querySelector("#check-dialog-title").focus({preventScroll:true});
+      }
+      function closeCheck(){
+        if(!backdrop||backdrop.hidden){return;}
+        backdrop.hidden=true;
+        document.body.style.overflow=previousOverflow;
+        inertBackground.forEach(function(element){element.inert=false;});inertBackground=[];
+        var target=checkOpener&&!checkOpener.hidden?checkOpener:document.querySelector("#scene-check .task-title");
+        if(target){if(!target.hasAttribute("tabindex")&&target.tagName!=="BUTTON"){target.tabIndex=-1;}target.focus({preventScroll:true});}
+      }
+      if(screen==="check"){openCheck();}
+      document.addEventListener("change",function(event){var radio=event.target.closest("input[type=radio][name^=owner-]");if(radio){var editor=radio.closest(".blocked-editor");var nameField=editor&&editor.querySelector("[data-owner-name]");if(nameField){nameField.hidden=radio.value!=="other";}}});
+      document.addEventListener("keydown",function(event){
+        if(backdrop&&!backdrop.hidden){
+          if(event.key==="Escape"){event.preventDefault();closeCheck();return;}
+          if(event.key==="Tab"){
+            var focusable=Array.prototype.slice.call(backdrop.querySelectorAll('button,textarea,input,[tabindex="0"]')).filter(function(element){return !element.disabled&&!element.closest("[hidden]");});
+            var first=focusable[0],last=focusable[focusable.length-1];
+            if(event.shiftKey&&(document.activeElement===first||document.activeElement===backdrop.querySelector("h2"))){event.preventDefault();last.focus();}
+            else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+          }
+          return;
+        }
+        if(["ArrowRight","ArrowLeft","ArrowDown","ArrowUp","Home","End"].indexOf(event.key)>=0){
+          var option=event.target.closest("[role=radio][data-state-choice]");
+          if(option){var siblings=Array.prototype.slice.call(option.closest(".segments").querySelectorAll("[role=radio]"));var index=siblings.indexOf(option);var next=event.key==="Home"?siblings[0]:event.key==="End"?siblings[siblings.length-1]:siblings[(index+(["ArrowRight","ArrowDown"].indexOf(event.key)>=0?1:-1)+siblings.length)%siblings.length];siblings.forEach(function(item){item.tabIndex=item===next?0:-1;});next.focus();event.preventDefault();}
+        }
+        if(event.key==="Escape"){var openControl=document.querySelector("#scene-"+screen+" .step-control.open");if(openControl){openControl.classList.remove("open");var opener=openControl.closest(".step-item").querySelector("[data-state-toggle]");if(opener){opener.focus();}event.preventDefault();}}
+      });
+      function setReviewHead(changed){
+        var scene=document.getElementById("scene-review");
+        var pr=scene.querySelector("[data-pr-row]");
+        pr.classList.toggle("changed",changed);
+        var evidence=pr.querySelector("[data-head-copy]");
+        evidence.textContent=changed?"checks pending on c7d8e91 · CodeRabbit reviewed a91c4e2, not this head · threads not checked on this head · reported ready at a91c4e2":"checks passing · CodeRabbit reviewed this head · 0 open threads · head a91c4e2 · checked 2m ago";
+        evidence.classList.toggle("warn",changed);
+        scene.querySelector(".changed-warning").hidden=!changed;
+        scene.querySelector(".head-short").textContent=changed?"c7d8e91":"a91c4e2";
+        var checks=scene.querySelector("[data-review-checks]");checks.className=changed?"chip warn":"chip ok";checks.textContent=changed?"CHECKS PENDING":"CHECKS PASSING";
+        scene.querySelector("[data-review-threads]").textContent=changed?"Not checked on this head":"0";
+        scene.querySelector("[data-review-coderabbit]").textContent=changed?"Reviewed a91c4e2 · not this head":"Reviewed this head";
+        scene.querySelector("[data-toggle-head]").textContent=changed?"Reset to reported ready head":"Show new commits since ready";
+      }
+      if(screen==="review"&&params.get("head")==="changed"){setReviewHead(true);}
+      var modeInputs=document.querySelectorAll("#scene-rule input[name='finish-mode']");
+      var requiredInputs=document.querySelectorAll("#scene-rule [data-required-pr]");
+      var consequence=document.querySelector("#scene-rule [data-consequence]");
+      var saveButton=document.querySelector("#scene-rule [data-save-rule]");
+      function updateConsequence(){
+        if(!consequence){return;}
+        var mode=document.querySelector("#scene-rule input[name='finish-mode']:checked");
+        var isMerge=mode&&mode.value==="merge";
+        var check=document.querySelector("#scene-rule [data-require-check]");
+        var requireCheck=check&&check.checked;
+        var pr18=requiredInputs[0]&&requiredInputs[0].checked;
+        var pr19=requiredInputs[1]&&requiredInputs[1].checked;
+        var required=pr18||pr19;
+        var text="";
+        var cls="consequence";
+        var readiness=document.querySelector("[data-rule-readiness]");
+        if(readiness){readiness.className=isMerge&&pr18&&!pr19&&!requireCheck?"chip ok":"chip warn";readiness.textContent=isMerge&&pr18&&!pr19&&!requireCheck?"READY TO FINISH":"RULE CHANGE";}
+        var mergeCount=document.querySelector("[data-rule-merge-count]");if(mergeCount){mergeCount.textContent=(pr18?1:0)+" of "+((pr18?1:0)+(pr19?1:0));}
+        var stacked=document.querySelector("[data-stacked-required]");if(stacked){stacked.textContent=pr19?"required":"optional";}
+        if(isMerge&&!required){text="No required PR. This task can’t finish on merge until you link one.";cls+=" warn";if(saveButton){saveButton.textContent="Save rule";}}
+        else if(isMerge&&!pr18&&pr19){text="After saving: waiting for PR #19’s code to reach main.";if(saveButton){saveButton.textContent="Save rule";}}
+        else if(isMerge&&pr18&&pr19){text=requireCheck?"After saving: 1 of 2 required PRs merged. Waiting for PR #19’s code to reach main, then your check.":"After saving: 1 of 2 required PRs merged. Waiting for PR #19’s code to reach main.";if(saveButton){saveButton.textContent="Save rule";}}
+        else if(isMerge&&pr18&&requireCheck){text="After saving: PR #20 already merged; this task waits for your check.";if(saveButton){saveButton.textContent="Save rule";}}
+        else if(isMerge&&pr18){text="Saving finishes this task now: PR #20 already merged.";cls+=" ok";if(saveButton){saveButton.textContent="Save and finish";}}
+        else if(requireCheck){text="After saving: finishes when the agent reports it finished, then your check.";if(saveButton){saveButton.textContent="Save rule";}}
+        else{text="After saving: finishes when the agent reports it finished.";if(saveButton){saveButton.textContent="Save rule";}}
+        consequence.textContent=text;consequence.className=cls;
+      }
+      modeInputs.forEach(function(input){input.addEventListener("change",function(){var prs=document.querySelector("#scene-rule [data-rule-prs]");if(prs){prs.hidden=input.value==="agent";}updateConsequence();});});
+      requiredInputs.forEach(function(input){input.addEventListener("change",updateConsequence);});
+      var ruleForm=document.querySelector("[data-rule-form]");
+      if(ruleForm){ruleForm.addEventListener("submit",function(event){
+        event.preventDefault();
+        var check=document.querySelector("#scene-rule [data-require-check]");
+        var text=document.querySelector("#scene-rule .check-text textarea");
+        if(check&&check.checked&&(!text||!text.value.trim())){if(text){text.focus();}announce("Add the required check text before saving.");return;}
+        var mode=document.querySelector("#scene-rule input[name='finish-mode']:checked");
+        var isMerge=mode&&mode.value==="merge";
+        var pr18=requiredInputs[0]&&requiredInputs[0].checked;
+        var pr19=requiredInputs[1]&&requiredInputs[1].checked;
+        var hasRequired=pr18||pr19;
+        var done=isMerge&&pr18&&!pr19&&!(check&&check.checked);
+        var waitingForCheck=isMerge&&pr18&&!pr19&&check&&check.checked;
+        var message=ruleForm.querySelector(".dialog-message");
+        var result="";
+        if(done){result="Rule saved. T-97 is Done by PR #20 merged to main.";}
+        else if(waitingForCheck){result="Rule saved. PR #20 satisfies the merge condition; T-97 waits for your check.";}
+        else if(!isMerge){result=check&&check.checked?"Rule saved. T-97 waits for the agent to finish, then your check.":"Rule saved. T-97 waits for the agent’s finish report.";}
+        else if(!hasRequired){result="Rule saved. No required PR; T-97 cannot finish on merge until one is linked.";}
+        else if(!pr18&&pr19){result="Rule saved. T-97 waits for PR #19’s code to reach main.";}
+        else if(pr18&&pr19){result=check&&check.checked?"Rule saved. One of two required PRs merged; T-97 waits for PR #19’s code to reach main, then your check.":"Rule saved. One of two required PRs merged; T-97 waits for PR #19’s code to reach main.";}
+        if(message){message.textContent=result;}
+        var hero=document.querySelector("#scene-rule .task-hero");
+        if(hero){
+          var status=hero.querySelector(".chip.info,.chip.warn,.chip.ok");
+          var dial=hero.querySelector(".task-dial");
+          if(done){if(status){status.className="chip ok";status.textContent="DONE";}if(dial){dial.className="task-dial done";dial.setAttribute("aria-label","Done");}}
+          else if(waitingForCheck){if(status){status.className="chip warn";status.textContent="IN REVIEW";}if(dial){dial.className="task-dial review";dial.setAttribute("aria-label","In review");}}
+          else{if(status){status.className="chip info";status.textContent="ACTIVE";}if(dial){dial.className="task-dial active";dial.setAttribute("aria-label","Active");}}
+        }
+        announce(result);
+      });}
+
+    })();
+  </script>
+</body>
+</html>
+

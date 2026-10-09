@@ -50,7 +50,7 @@ function unavailableReader(): T3ActivityReader {
 }
 
 describe("report tracking HTTP API", () => {
-  test("accepts scoped claims while keeping scope and human verification enforced", async () => {
+  test("accepts scoped claims while keeping scope and human-only actions enforced", async () => {
     const directory = mkdtempSync(
       join(tmpdir(), "factory-report-tracking-api-"),
     );
@@ -201,15 +201,15 @@ describe("report tracking HTTP API", () => {
         taskCompleted: false,
         subtasks: [
           {
-            effectiveState: "awaiting_verification",
-            verificationState: "awaiting_verification",
+            effectiveState: "completed",
+            verificationState: "not_required",
           },
           {
             effectiveState: "planned",
             verificationState: "unreported",
           },
         ],
-        taskState: "active",
+        taskState: "planned",
       });
     } finally {
       credentialStore.close();

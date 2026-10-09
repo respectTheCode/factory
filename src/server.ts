@@ -16,7 +16,6 @@ import {
   type DashboardSnapshot,
   type PortfolioStatus,
   type ProjectHierarchy,
-  type PullRequestMergeEvidence,
   type ReviewerAssignmentTarget,
 } from "./application";
 import {
@@ -29,6 +28,7 @@ import {
 import { createBackupService, type BackupService } from "./backup-service";
 import { FACTORY_API_VERSION } from "./api-version";
 import { reportTrackingSchema } from "./report-tracking";
+import { paginateHistory } from "./cli-reads";
 import {
   createGitHubStatusReader,
   parseGitHubPullRequestUrl,
@@ -248,6 +248,47 @@ function machineCanAccessProject(
 }
 
 const unauthenticatedMessage = "Authentication is required.";
+const MAX_MERGE_OBSERVATION_AGE_MS = 15 * 60_000;
+const FLOOR_GITHUB_STATUS_CACHE_MS = 60_000;
+const FLOOR_GITHUB_STATUS_CACHE_LIMIT = 500;
+const FLOOR_GITHUB_STATUS_CONCURRENCY = 3;
+
+async function readMergedPullRequestEvidence(
+  githubStatusReader: GitHubStatusReader,
+  pullRequestUrl: string,
+) {
+  if (!githubStatusReader.readMergeEvidence) return undefined;
+  const reference = parseGitHubPullRequestUrl(pullRequestUrl);
+  const evidence = await githubStatusReader.readMergeEvidence(reference);
+  if (
+    !evidence?.mergeSha ||
+    !evidence.mergedAt ||
+    !evidence.defaultBranch ||
+    evidence.reachedDefaultBranch !== true
+  ) {
+    return undefined;
+  }
+  const mergedAt = new Date(evidence.mergedAt);
+  const observedAt = new Date(evidence.observedAt);
+  const observationAgeMs = Date.now() - observedAt.getTime();
+  if (
+    !Number.isFinite(mergedAt.getTime()) ||
+    !Number.isFinite(observedAt.getTime()) ||
+    mergedAt.getTime() > observedAt.getTime() + 30_000 ||
+    observationAgeMs < -30_000 ||
+    observationAgeMs > MAX_MERGE_OBSERVATION_AGE_MS
+  ) {
+    return undefined;
+  }
+  return {
+    defaultBranch: evidence.defaultBranch,
+    mergeSha: evidence.mergeSha,
+    mergedAt,
+    observedAt,
+    pullRequestUrl: reference.url,
+    reachedDefaultBranch: true as const,
+  };
+}
 
 function humanProcedure(message = unauthenticatedMessage) {
   return trpc.procedure.use(({ ctx, next }) => {
@@ -760,75 +801,62 @@ function createRouter(
     }
   };
 
-  const readMergedPullRequestEvidence = async (
-    pullRequestUrl: string | undefined,
-  ): Promise<PullRequestMergeEvidence | undefined> => {
-    if (!pullRequestUrl) return undefined;
-    const reference = parseGitHubPullRequestUrl(pullRequestUrl);
-    let mergeEvidence: { mergeSha?: string; mergedAt?: string } | undefined;
-    if (githubStatusReader.readMergeEvidence) {
-      mergeEvidence = await githubStatusReader.readMergeEvidence(reference);
-    } else {
-      const snapshot = await githubStatusReader.read(reference);
-      const pullRequest =
-        snapshot.status === "ok" ? snapshot.pullRequest : undefined;
-      if (pullRequest?.state === "closed") {
-        mergeEvidence = {
-          mergeSha: pullRequest.mergeSha,
-          mergedAt: pullRequest.mergedAt,
-        };
-      }
+  const reconcileTaskFromGitHub = async (taskId: string) => {
+    const projectId = application.getProjectIdForTask(taskId);
+    const status = application.getTaskStatus(taskId);
+    const requiredPullRequests = status.requiredPullRequests.filter(
+      (pullRequest) => pullRequest.required,
+    );
+    if (requiredPullRequests.length === 0) {
+      return {
+        reconciled: false,
+        reason: "No required pull requests are linked to this Task.",
+      };
     }
-    if (!mergeEvidence?.mergeSha || !mergeEvidence.mergedAt) return undefined;
-    const mergedAt = new Date(mergeEvidence.mergedAt);
-    if (!Number.isFinite(mergedAt.getTime())) return undefined;
-    return {
-      pullRequestUrl: reference.url,
-      mergeSha: mergeEvidence.mergeSha,
-      mergedAt,
-    };
-  };
 
-  const reconcileTargetFromGitHub = async (
-    targetType: ReviewerAssignmentTarget,
-    targetId: string,
-  ) => {
-    const pullRequestUrl =
-      targetType === "task"
-        ? application.getTaskDetail(targetId).pullRequestUrl
-        : application.getSubtaskDetail(targetId).pullRequestUrl;
-    if (!pullRequestUrl) {
-      return {
-        reconciled: false,
-        reason: "No pull request is linked to this target.",
-      };
+    const updates = [];
+    const unavailable: string[] = [];
+    for (const pullRequest of requiredPullRequests) {
+      const existing = pullRequest.merge;
+      if (
+        existing?.workflowEpoch === status.workflowEpoch &&
+        existing.reachedDefaultBranch === true
+      ) {
+        continue;
+      }
+      let evidence;
+      try {
+        evidence = await readMergedPullRequestEvidence(
+          githubStatusReader,
+          pullRequest.pullRequestUrl,
+        );
+      } catch {
+        evidence = undefined;
+      }
+      if (!evidence) {
+        unavailable.push(pullRequest.pullRequestUrl);
+        continue;
+      }
+      const merge = await application.recordTaskPullRequestMerge({
+        ...evidence,
+        taskId,
+        workflowEpoch: status.workflowEpoch,
+      });
+      updates.push(merge);
     }
-    let evidence: PullRequestMergeEvidence | undefined;
-    try {
-      evidence = await readMergedPullRequestEvidence(pullRequestUrl);
-    } catch {
-      evidence = undefined;
-    }
-    if (!evidence) {
-      return {
-        reconciled: false,
-        reason:
-          "GitHub did not confirm a closed merged PR with a merge commit SHA.",
-      };
-    }
-    const result = application.reconcileMergedPullRequest({
-      evidence,
-      targetId,
-      targetType,
-    });
-    if (result.reconciled) {
-      const projectId =
-        targetType === "task"
-          ? application.getProjectIdForTask(targetId)
-          : application.getProjectIdForSubtask(targetId);
-      projectUpdates.publish(projectId);
-    }
-    return result;
+    if (updates.length > 0) projectUpdates.publish(projectId);
+    return {
+      reconciled: updates.length > 0,
+      updates,
+      waitingForDefaultBranch: unavailable,
+      ...(updates.length === 0
+        ? {
+            reason: unavailable.length
+              ? "GitHub has not confirmed that all required pull request code has reached the repository default branch."
+              : "All required pull request merge evidence is already recorded for this workflow.",
+          }
+        : {}),
+    };
   };
 
   return trpc.router({
@@ -1653,6 +1681,7 @@ function createRouter(
             description: z.string().optional(),
             name: z.string().min(1),
             pullRequestUrl: z.string().nullable().optional(),
+            pullRequestRequired: z.boolean().optional(),
             requestKey: requestKeySchema.optional(),
             taskId: z.string().min(1),
           }),
@@ -1682,6 +1711,7 @@ function createRouter(
             expectedRevision: z.number().int().min(1).optional(),
             name: z.string().trim().min(1).optional(),
             pullRequestUrl: z.string().nullable().optional(),
+            pullRequestRequired: z.boolean().optional(),
             requestKey: requestKeySchema.optional(),
             subtaskId: z.string().min(1),
           }),
@@ -1690,7 +1720,10 @@ function createRouter(
         .use(idempotentMutation)
         .mutation(({ ctx, input }) => {
           const projectId = application.getProjectIdForSubtask(input.subtaskId);
-          const subtask = application.updateSubtask(input);
+          const subtask = application.updateSubtask({
+            ...input,
+            actor: ctx.human?.name ?? ctx.machine?.machineId,
+          });
           return withContextDashboard(
             ctx,
             subtask,
@@ -1828,7 +1861,7 @@ function createRouter(
           z.object({
             orderedSubtaskIds: z.array(z.string().min(1)).min(1),
             taskId: z.string().min(1),
-            workState: workStateSchema,
+            workState: workStateSchema.optional(),
           }),
         )
         .use(serializedMutation)
@@ -1987,11 +2020,11 @@ function createRouter(
         .input(z.object({ subtaskId: z.string().min(1) }))
         .use(serializedMutation)
         .mutation(async ({ ctx, input }) => {
+          const subtask = application.getSubtaskDetail(input.subtaskId);
           const projectId = application.getProjectIdForSubtask(input.subtaskId);
-          const result = await reconcileTargetFromGitHub(
-            "subtask",
-            input.subtaskId,
-          );
+          // A Step PR contributes merge evidence to its parent Task. A merged
+          // Step PR never creates a child verification or approval record.
+          const result = await reconcileTaskFromGitHub(subtask.taskId);
           return withContextDashboard(
             ctx,
             result,
@@ -2010,6 +2043,7 @@ function createRouter(
             objective: z.string().optional(),
             owner: z.string().optional(),
             pullRequestUrl: z.string().nullable().optional(),
+            pullRequestRequired: z.boolean().optional(),
             priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
             projectId: z.string().min(1),
             requestKey: requestKeySchema.optional(),
@@ -2051,6 +2085,199 @@ function createRouter(
       })
         .input(z.object({ taskId: z.string().min(1) }))
         .query(({ input }) => application.getTaskStatus(input.taskId)),
+      history: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
+        .input(
+          z.object({
+            cursor: z.string().trim().min(1).optional(),
+            direction: z.enum(["forward", "backward"]).default("forward"),
+            limit: z.number().int().min(1).max(100).default(100),
+            since: z.string().datetime().optional(),
+            taskId: z.string().min(1),
+          }),
+        )
+        .query(({ input }) => {
+          const page = paginateHistory(
+            application.getTaskActivityHistory(input.taskId),
+            {
+              cursor: input.cursor,
+              direction: input.direction,
+              limit: input.limit,
+              ...(input.since ? { since: input.since } : {}),
+              scope: `task-history:${input.taskId}`,
+            },
+          );
+          return {
+            events: page.items,
+            nextCursor: page.nextCursor,
+            totalCount: page.totalCount,
+            truncated: page.truncated,
+          };
+        }),
+      report: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
+        .input(
+          z.object({
+            ...reportTrackingSchema.shape,
+            expectedRevision: z.number().int().min(1).optional(),
+            reason: z.string().trim().min(1).optional(),
+            reporter: z.string().trim().min(1),
+            requestKey: requestKeySchema.optional(),
+            reportedState: z.enum(["in_progress", "finished", "blocked"]),
+            sessionRef: z
+              .object({
+                externalThreadId: z.string().min(1),
+                provider: z.literal("t3"),
+                sourceId: sourceIdSchema.optional(),
+              })
+              .optional(),
+            summary: z.string().trim().min(1).optional(),
+            taskId: z.string().min(1),
+            workflowEpoch: z.number().int().min(0),
+          }),
+        )
+        .use(serializedMutation)
+        .use(idempotentMutation)
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForTask(input.taskId);
+          const sourceId = resolveSourceForContext(
+            ctx,
+            input.sessionRef?.sourceId,
+            input.sessionRef === undefined
+              ? {}
+              : { requireMachineSource: true },
+          );
+          const report = application.reportTaskStatus({
+            ...input,
+            machineId: ctx.machine?.machineId,
+            ...(input.sessionRef && sourceId
+              ? { sessionRef: { ...input.sessionRef, sourceId } }
+              : {}),
+          });
+          return withContextDashboard(
+            ctx,
+            report,
+            dashboardAfterPublish(application, projectUpdates, projectId),
+          );
+        }),
+      updateFinishRule: humanProcedure(
+        "A human session is required to change a Task finish rule.",
+      )
+        .input(
+          z.object({
+            actor: z.string().trim().min(1).optional(),
+            expectedRevision: z.number().int().min(1),
+            expectedWorkflowEpoch: z.number().int().min(0),
+            finishRule: z.object({
+              kind: z.enum(["pr_merge", "agent_report"]),
+              requireHumanCheck: z.boolean(),
+            }),
+            humanCheckText: z
+              .string()
+              .trim()
+              .min(1)
+              .max(500)
+              .nullable()
+              .optional(),
+            pullRequestRequirements: z.array(
+              z.object({
+                pullRequestUrl: z.string().url(),
+                required: z.boolean(),
+              }),
+            ),
+            taskId: z.string().min(1),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForTask(input.taskId);
+          const task = application.updateTaskFinishRule({
+            ...input,
+            actor: ctx.human!.name,
+          });
+          return withContextDashboard(
+            ctx,
+            task,
+            dashboardAfterPublish(application, projectUpdates, projectId),
+          );
+        }),
+      check: humanProcedure(
+        "A human session is required to record a Task check.",
+      )
+        .input(
+          z.object({
+            expectedRevision: z.number().int().min(1),
+            reason: z.string().trim().min(1).optional(),
+            taskId: z.string().min(1),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForTask(input.taskId);
+          const task = application.checkTask({
+            ...input,
+            checker: ctx.human!.name,
+          });
+          return withContextDashboard(
+            ctx,
+            task,
+            dashboardAfterPublish(application, projectUpdates, projectId),
+          );
+        }),
+      reopen: humanProcedure("A human session is required to reopen a Task.")
+        .input(
+          z.object({
+            actor: z.string().trim().min(1).optional(),
+            expectedRevision: z.number().int().min(1).optional(),
+            reason: z.string().trim().min(1),
+            taskId: z.string().min(1),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForTask(input.taskId);
+          const task = application.reopenTask({
+            ...input,
+            actor: ctx.human!.name,
+          });
+          return withContextDashboard(
+            ctx,
+            task,
+            dashboardAfterPublish(application, projectUpdates, projectId),
+          );
+        }),
+      markDone: humanProcedure(
+        "A human session is required to mark a Task done.",
+      )
+        .input(
+          z.object({
+            actor: z.string().trim().min(1).optional(),
+            expectedRevision: z.number().int().min(1).optional(),
+            reason: z.string().trim().min(1),
+            taskId: z.string().min(1),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ ctx, input }) => {
+          const projectId = application.getProjectIdForTask(input.taskId);
+          const task = application.markTaskDone({
+            ...input,
+            actor: ctx.human!.name,
+          });
+          return withContextDashboard(
+            ctx,
+            task,
+            dashboardAfterPublish(application, projectUpdates, projectId),
+          );
+        }),
       detail: scopedProcedure((input) => {
         const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
         return typeof taskId === "string"
@@ -2104,12 +2331,53 @@ function createRouter(
         .query(({ input }) =>
           githubStatus(application.getTaskDetail(input.taskId).pullRequestUrl),
         ),
+      pullRequestStatus: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
+        .input(
+          z.object({
+            pullRequestUrl: z.string().url(),
+            taskId: z.string().min(1),
+          }),
+        )
+        .query(({ input }) => {
+          const status = application.getTaskStatus(input.taskId);
+          const authorized = status.requiredPullRequests.some(
+            ({ pullRequestUrl }) => pullRequestUrl === input.pullRequestUrl,
+          );
+          if (!authorized) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "The pull request is not linked to this Task.",
+            });
+          }
+          return githubStatus(input.pullRequestUrl);
+        }),
+      pullRequestStatuses: scopedProcedure((input) => {
+        const taskId = (input as { taskId?: unknown } | undefined)?.taskId;
+        return typeof taskId === "string"
+          ? application.getProjectIdForTask(taskId)
+          : undefined;
+      })
+        .input(z.object({ taskId: z.string().min(1) }))
+        .query(async ({ input }) => {
+          const status = application.getTaskStatus(input.taskId);
+          return Promise.all(
+            status.requiredPullRequests.map(async (pullRequest) => ({
+              ...pullRequest,
+              githubStatus: await githubStatus(pullRequest.pullRequestUrl),
+            })),
+          );
+        }),
       reconcileMergedPullRequest: humanProcedure()
         .input(z.object({ taskId: z.string().min(1) }))
         .use(serializedMutation)
         .mutation(async ({ ctx, input }) => {
           const projectId = application.getProjectIdForTask(input.taskId);
-          const result = await reconcileTargetFromGitHub("task", input.taskId);
+          const result = await reconcileTaskFromGitHub(input.taskId);
           return withContextDashboard(
             ctx,
             result,
@@ -2130,6 +2398,7 @@ function createRouter(
             name: z.string().trim().min(1).optional(),
             objective: z.string().nullable().optional(),
             pullRequestUrl: z.string().nullable().optional(),
+            pullRequestRequired: z.boolean().optional(),
             requestKey: requestKeySchema.optional(),
             taskId: z.string().min(1),
           }),
@@ -2137,7 +2406,10 @@ function createRouter(
         .use(serializedMutation)
         .use(idempotentMutation)
         .mutation(({ ctx, input }) => {
-          const task = application.updateTask(input);
+          const task = application.updateTask({
+            ...input,
+            actor: ctx.human?.name ?? ctx.machine?.machineId,
+          });
           return withContextDashboard(
             ctx,
             task,
@@ -2644,6 +2916,44 @@ export function createFactoryServer({
     application,
     sources: effectiveT3Sources,
   });
+  const resolvedGitHubStatusReader =
+    githubStatusReader ?? createGitHubStatusReader({ token: githubToken });
+  const floorGitHubStatusCache = new Map<
+    string,
+    { expiresAt: number; snapshot: GitHubStatusSnapshot }
+  >();
+  const floorGitHubStatusInFlight = new Map<
+    string,
+    Promise<GitHubStatusSnapshot | undefined>
+  >();
+  const readFloorGitHubStatus = (
+    pullRequestUrl: string,
+  ): Promise<GitHubStatusSnapshot | undefined> => {
+    const cached = floorGitHubStatusCache.get(pullRequestUrl);
+    if (cached && cached.expiresAt > Date.now()) {
+      return Promise.resolve(cached.snapshot);
+    }
+    const inFlight = floorGitHubStatusInFlight.get(pullRequestUrl);
+    if (inFlight) return inFlight;
+    const request = resolvedGitHubStatusReader
+      .read(parseGitHubPullRequestUrl(pullRequestUrl))
+      .then((snapshot) => {
+        floorGitHubStatusCache.set(pullRequestUrl, {
+          expiresAt: Date.now() + FLOOR_GITHUB_STATUS_CACHE_MS,
+          snapshot,
+        });
+        if (floorGitHubStatusCache.size > FLOOR_GITHUB_STATUS_CACHE_LIMIT) {
+          const firstKey = floorGitHubStatusCache.keys().next().value;
+          if (typeof firstKey === "string")
+            floorGitHubStatusCache.delete(firstKey);
+        }
+        return snapshot;
+      })
+      .catch(() => undefined)
+      .finally(() => floorGitHubStatusInFlight.delete(pullRequestUrl));
+    floorGitHubStatusInFlight.set(pullRequestUrl, request);
+    return request;
+  };
   const loadFloorSnapshot = async ({
     projectIds,
     sourceId,
@@ -2667,8 +2977,58 @@ export function createFactoryServer({
         projectId: project.id,
       })),
     );
+    const requiredPullRequestUrls = new Set<string>();
+    for (const project of projects) {
+      for (const task of application.getProjectHierarchy(project.id).tasks) {
+        if (task.archiveState !== undefined) continue;
+        const status = application.getTaskStatus(task.id);
+        if (
+          status.taskCompleted ||
+          status.taskState === "released" ||
+          status.finishRule.kind !== "pr_merge" ||
+          status.latestTaskReport?.reportedState !== "finished"
+        ) {
+          continue;
+        }
+        for (const pullRequest of status.requiredPullRequests) {
+          if (
+            pullRequest.required &&
+            !(
+              pullRequest.merge?.workflowEpoch === status.workflowEpoch &&
+              pullRequest.merge.reachedDefaultBranch === true
+            )
+          ) {
+            requiredPullRequestUrls.add(pullRequest.pullRequestUrl);
+          }
+        }
+      }
+    }
+    const urls = [...requiredPullRequestUrls];
+    const githubStatusEntries: Array<
+      readonly [string, GitHubStatusSnapshot | undefined]
+    > = [];
+    let nextGithubUrl = 0;
+    await Promise.all(
+      Array.from(
+        {
+          length: Math.min(FLOOR_GITHUB_STATUS_CONCURRENCY, urls.length),
+        },
+        async () => {
+          while (nextGithubUrl < urls.length) {
+            const index = nextGithubUrl++;
+            const pullRequestUrl = urls[index]!;
+            githubStatusEntries.push([
+              pullRequestUrl,
+              await readFloorGitHubStatus(pullRequestUrl),
+            ]);
+          }
+        },
+      ),
+    );
+    const githubStatuses = Object.fromEntries(githubStatusEntries);
     return application.getFloorSnapshot({
       activities,
+      githubStatuses,
       projectIds: projects.map((project) => project.id),
       timezone,
     });
@@ -2679,8 +3039,6 @@ export function createFactoryServer({
     refresh: () => loadFloorSnapshot({}),
   });
   projectUpdates.onPublish(floorUpdates.invalidate);
-  const resolvedGitHubStatusReader =
-    githubStatusReader ?? createGitHubStatusReader({ token: githubToken });
   const router = createRouter(
     application,
     machineCredentials,
@@ -2770,33 +3128,34 @@ export function createFactoryServer({
         string,
         Array<{
           projectId: string;
-          targetId: string;
-          targetType: ReviewerAssignmentTarget;
+          taskId: string;
+          workflowEpoch: number;
         }>
       >();
       for (const project of application.listProjects()) {
         const hierarchy = application.getProjectHierarchy(project.id);
         for (const task of hierarchy.tasks) {
           if (task.archiveState !== undefined) continue;
-          if (task.pullRequestUrl) {
-            const targets = targetsByUrl.get(task.pullRequestUrl) ?? [];
-            targets.push({
-              projectId: project.id,
-              targetId: task.id,
-              targetType: "task",
-            });
-            targetsByUrl.set(task.pullRequestUrl, targets);
-          }
-          for (const subtask of task.subtasks) {
-            if (subtask.archiveState !== undefined || !subtask.pullRequestUrl)
+          const status = application.getTaskStatus(task.id);
+          if (status.taskCompleted || status.taskState === "released") continue;
+          for (const pullRequest of status.requiredPullRequests) {
+            if (!pullRequest.required) continue;
+            if (
+              pullRequest.merge?.workflowEpoch === status.workflowEpoch &&
+              pullRequest.merge.reachedDefaultBranch === true
+            ) {
               continue;
-            const targets = targetsByUrl.get(subtask.pullRequestUrl) ?? [];
+            }
+            const url = parseGitHubPullRequestUrl(
+              pullRequest.pullRequestUrl,
+            ).url;
+            const targets = targetsByUrl.get(url) ?? [];
             targets.push({
               projectId: project.id,
-              targetId: subtask.id,
-              targetType: "subtask",
+              taskId: task.id,
+              workflowEpoch: status.workflowEpoch,
             });
-            targetsByUrl.set(subtask.pullRequestUrl, targets);
+            targetsByUrl.set(url, targets);
           }
         }
       }
@@ -2815,35 +3174,43 @@ export function createFactoryServer({
       mergeReconciliationCursor = (start + batch.length) % urls.length;
       for (const url of batch) {
         if (shuttingDown) return;
-        let evidence: { mergeSha?: string; mergedAt?: string } | undefined;
+        let evidence;
         try {
-          evidence = await resolvedGitHubStatusReader.readMergeEvidence(
-            parseGitHubPullRequestUrl(url),
+          evidence = await readMergedPullRequestEvidence(
+            resolvedGitHubStatusReader,
+            url,
           );
         } catch {
           continue;
         }
-        if (!evidence?.mergeSha || !evidence.mergedAt) continue;
-        const mergedAt = new Date(evidence.mergedAt);
-        if (!Number.isFinite(mergedAt.getTime())) continue;
+        if (!evidence) continue;
         for (const target of targetsByUrl.get(url) ?? []) {
           try {
             await mutationMutex.run(() => {
-              const result = application.reconcileMergedPullRequest({
-                evidence: {
-                  pullRequestUrl: parseGitHubPullRequestUrl(url).url,
-                  mergeSha: evidence!.mergeSha!,
-                  mergedAt,
-                },
-                targetId: target.targetId,
-                targetType: target.targetType,
+              const latest = application.getTaskStatus(target.taskId);
+              if (latest.workflowEpoch !== target.workflowEpoch) return;
+              const required = latest.requiredPullRequests.find(
+                (candidate) =>
+                  candidate.required && candidate.pullRequestUrl === url,
+              );
+              if (
+                !required ||
+                (required.merge?.workflowEpoch === latest.workflowEpoch &&
+                  required.merge.reachedDefaultBranch === true)
+              ) {
+                return;
+              }
+              application.recordTaskPullRequestMerge({
+                ...evidence,
+                taskId: target.taskId,
+                workflowEpoch: target.workflowEpoch,
               });
-              if (result.reconciled) projectUpdates.publish(target.projectId);
+              projectUpdates.publish(target.projectId);
             });
           } catch (error) {
             if (!shuttingDown) {
               console.error(
-                `Factory PR merge reconciliation failed for ${target.targetType} ${target.targetId}: ${error instanceof Error ? error.message : String(error)}`,
+                `Factory PR merge observation failed for Task ${target.taskId}: ${error instanceof Error ? error.message : String(error)}`,
               );
             }
           }

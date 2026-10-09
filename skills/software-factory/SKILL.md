@@ -54,8 +54,8 @@ command; passing both is an ambiguity error, and the CLI never falls back to a l
 Run `bun run src/cli.ts doctor --json` first: it reports the mode, API compatibility, and the
 machine identity with its Project scope, and exits non-zero when reporting cannot work. Reads
 and reports are limited to the coding credential's Projects; coding credentials cannot
-verify or accept work. Kevin may explicitly assign a separate reviewer such as Bitsy to
-review work across Projects. Reviewer access and acceptance are separate from coding access. `subtask report` may add `--session-thread-id` with the current T3 thread so the
+perform human checks or mark-done overrides. Historical reviewer access remains separate
+from coding access. Task and Step reports may add `--session-thread-id` with the current T3 thread so the
 report carries its session reference. With multiple T3 sources, add `--session-source-id`
 when the source is known; the server validates it against the machine credential. Never print
 or paste the machine token.
@@ -72,7 +72,10 @@ bytes are required. Remote retries must reuse the same stable `--request-key` fo
 upload; a changed file or metadata uses a new key. The supported syntax and local/remote
 examples are in [references/cli-and-maintenance.md](references/cli-and-maintenance.md).
 
-Tasks and Subtasks accept `T-<number>` / `ST-<number>` as well as UUIDs. Prefer simple IDs in communication. Reports are append-only claims: `blocked` and `complete` require `--reason` naming the blocker or concrete human check. A human, an explicitly assigned reviewer, or server-verified PR merge reconciliation can accept the report and make the work completed. Coding credentials cannot accept their own work.
+Tasks and Subtasks accept `T-<number>` / `ST-<number>` as well as UUIDs. Prefer simple IDs in communication. Reports are append-only observations. Blocked reports name the blocker. Steps finish directly
+without a reason or approval. Task-level finished reports satisfy the agent-report finish
+rule; code Tasks wait for confirmed required merges reaching the default branch. An explicit
+human check remains human-only and opt-in. Deployment is separate from Task completion.
 
 ## Agent operating loop
 
@@ -196,33 +199,44 @@ observes only sessions available through its API; a Codex or Claude session outs
 no match. Never claim it was linked, invent its identity, or let that failure suppress the work
 report.
 
-When work starts, submit `in_progress`. Submit `blocked` with the blocker in `--evidence`, or
-submit `complete` only when the evidence is ready for Kevin to review. Reports are observations,
-not approval; never attempt to verify from a coding-agent process. After reporting, read the Task
-status again and include the returned `report.id` in any handoff or summary.
+Read `task status --json` at work start and retain its `workflowEpoch` for every report
+from that work. Do not fetch a newer epoch to bypass a reopen conflict. When work starts,
+submit a Task-level `in_progress` report. Report `blocked` with the
+blocker, or `finished` with concrete evidence when the outcome is delivered. A Task can
+report and finish without Steps; create Steps only when a checklist helps execution.
 
-For an authorized Task with no Subtasks, use `task state --state active` at work start and
-create a concrete reportable Subtask for the outcome before submitting a status report. There
-is no Task-level `report` command. Do not create artificial progress for a read-only inspection.
+```sh
+bun run src/cli.ts task report --task-id TASK_ID --workflow-epoch WORKFLOW_EPOCH --state in_progress \
+  --reporter "$FACTORY_REPORTER" --evidence "Work started" --json
+bun run src/cli.ts task report --task-id TASK_ID --workflow-epoch WORKFLOW_EPOCH --state finished \
+  --reporter "$FACTORY_REPORTER" --evidence "What changed and what was checked" --json
+```
 
-Before appending, read the latest report. Append when the state, evidence, blocker, or concrete
-human check changed; an unchanged observation is a no-op. Include the observed revision or PR,
-checks actually run, and remaining checks. Distinguish implementation, merge, deployment, and
-human acceptance. Historical evidence is not a fresh deployment or production check. On a
-metadata-only correction, use `subtask update` rather than manufacturing a new progress report.
+Use the configured remote environment and omit `--database` in remote mode. Local host
+maintenance supplies the explicit database. Reuse the same request key for an unchanged
+remote retry. Read the latest report first: unchanged observations are no-ops. Include the
+observed revision or PR, checks actually run, and remaining work. Read Task status after
+reporting and retain the returned report ID in the handoff.
 
-After child reports, inspect the parent. Automatic rollup uses all in-scope, non-archived
-Subtasks: any blocker makes it blocked; all complete reports awaiting acceptance or already
-accepted make it awaiting verification; partially delivered work remains active. Only current
-accepted complete reports can yield completed. Acceptance records whether Kevin, Bitsy, or PR Merge accepted the work. Adding, removing, archiving, or restoring
-scope recomputes automatic parents and their display order; manual holds remain deliberate.
+The finish rule chooses confirmed required PR merges or an agent finished report. Steps
+never finish or reopen their Task. A code Task can finish with open Steps; those remain
+visible as left open when the Task finished. Every required canonical linked PR must have
+fresh, server-confirmed merge evidence proving its code reached the repository's default
+branch. A stacked merge waits for that reachability; it needs no bookkeeping decision.
+Missing or unavailable GitHub evidence never counts as a merge. Reopening invalidates old
+reports, checks, and merge proof for the new work.
 
-Avoid redundant `task state` writes: they create a manual hold. When an obsolete hold prevents
-the parent from reflecting its Subtasks, use `task resume-rollup --task-id ... --json` (the UI
-calls this **Use subtask status**) and inspect the returned status. This releases the hold without
-creating reports or accepting anything. Preserve a hold that represents an unresolved decision
-or blocker. Never archive unfinished work to make a parent look ready, reopen an accepted
-Subtask merely to refresh its timestamp, or manufacture a report to release a parent hold.
+An opt-in human check requires the human after the other finish conditions are met.
+Agents and reviewer credentials cannot self-check or record human mark-done overrides.
+Historical reports, verifications, and deliberately requested holds retain their original
+meaning; do not invent approval records or convert routine old claims into a decision queue.
+Implementation, PR review, completion, merge, deployment, and human acceptance are distinct
+observations. A session ending never proves an outcome.
+
+The compatibility `subtask` commands still address Steps. Use direct Step reports for
+To do (`not_started`), Doing (`in_progress`), Done (`complete`), or Blocked (`blocked`).
+No separate verification is required. Keep optional checklist scope aligned with the Task;
+do not create report-only children just to satisfy a reporting lifecycle.
 
 Keep titles, descriptions, PR links, and remaining Subtasks aligned with the authorized scope.
 Do not temporarily reset a started Task to `planned` to bypass the acceptance-criteria guard;
@@ -259,24 +273,16 @@ Archive States remain visible in the project and history, disappear from Attenti
 restored without deleting Status Reports or Verifications. Archiving a Subtask does not archive
 its parent Task.
 
-## Delegated review and PR merge acceptance
+## Review and authority
 
-This operating loop is for coding agents. Keep using the coding credential and submit progress
-and completion reports; never borrow Bitsy's reviewer credential or Kevin's human session.
-Bitsy has a separate revocable reviewer identity, can read all Projects, and may review only
-work explicitly assigned by Kevin. Reviewer permissions do not grant planning, implementation,
-credential administration, or T3 messaging authority.
+Keep using the coding credential for progress reports. Never borrow a reviewer credential
+or a human session to approve work. Reviewers retain their separate, revocable identity and
+legacy history permissions; they cannot perform an explicit human check or mark-done override.
 
-A review records what was tested, its decision, and optional screenshot evidence. Factory shows
-`accepted by Bitsy`, `accepted by Kevin`, or `accepted by PR Merge`. Accepting a parent Task
-accepts its Subtasks together; Kevin need not approve each child separately. Hardware checks
-and judgment calls that the reviewer cannot resolve return to Kevin. Coding follow-up is not
-automatically dispatched by this initial reviewer workflow.
-
-Acceptance means the work has been reviewed and is ready for Kevin's PR review. Kevin still
-reviews every PR; acceptance does not authorize merging, releasing, or production deployment.
-The server can reconcile a linked PR's confirmed merge with eligible completion reports and
-record the PR and merge commit as evidence. Ordinary GitHub status reads remain read-only.
-An old merged PR cannot accept later work, and reconciliation does not replace an existing
-review decision or complete unfinished reports. See
-[reviewer acceptance](references/reviewer-acceptance.md) for the permission and review contracts.
+Review ordinary code work through its linked PR. Confirmed required merges reaching the
+default branch finish the Task by its rule; no duplicate Step approval or parent acceptance
+is needed. Hardware checks and judgment calls can use an opt-in human check. Existing
+accepted, rejected, and deferred records remain historical evidence with their attribution.
+See [historical reviewer acceptance](references/reviewer-acceptance.md) for compatibility
+permissions. PR publication, merge, release, and deployment still need the user's applicable
+authorization; Factory completion does not grant it.

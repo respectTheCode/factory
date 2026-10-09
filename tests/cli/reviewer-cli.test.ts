@@ -157,7 +157,8 @@ describe("reviewer CLI", () => {
       afterTaskReview.close();
       expect(current.subtasks[0]).toHaveProperty("revision");
       expect(current).toMatchObject({
-        taskCompleted: true,
+        taskCompleted: false,
+        taskState: "planned",
         subtasks: [expect.objectContaining({ verificationState: "accepted" })],
       });
 

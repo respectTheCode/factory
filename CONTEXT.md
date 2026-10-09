@@ -1,7 +1,7 @@
 # Software Factory Context
 
-Software Factory is a standalone project-operations tool. Its v1 coordinates Projects, Tasks,
-Subtasks, Tracker Links, and human verification without becoming a life OS or replacing the
+Software Factory is a standalone project-operations tool. It coordinates Projects, Tasks,
+optional Steps, Tracker Links, reports, and explicit human checks without becoming a life OS or replacing the
 systems that own their own data. Herdr-managed coding sessions are a later integration.
 
 ## Planning and tracking
@@ -14,24 +14,27 @@ _Avoid_: workspace, account
 
 **Task**:
 A planned, independently trackable outcome within a Project. A Task can carry Factory-native
-planning data, Subtasks, and Tracker Links. A Task may have an Archive State of `released` or
+planning data, optional Steps, and Tracker Links. A Task may have an Archive State of `released` or
 `wont_do`; archived Tasks remain addressable and historical but are omitted from Attention. A
 Task may store a branch name for associating coding work with it; a branch name may contain an
 external tracker identifier without changing that tracker.
 _Avoid_: ticket, issue, work item
 
-**Subtask**:
-A small, independently reportable part of a Task. A Subtask has an agent-reported status and a
-separate human verification state. A Subtask may have an Archive State of `released` or
-`wont_do`; this changes only the Subtask's disposition and does not archive its parent Task.
-_Avoid_: checklist item, to-do
+**Step** (stored as Subtask for compatibility):
+An optional checklist item within a Task, with direct To do, Doing, Done, or Blocked status.
+Steps retain their author order and report history. Finishing a Step needs no approval and
+never completes or reopens its Task. Archive disposition applies only to that Step.
 
 **Work State**:
-A Task or Subtask's explicit workflow placement: `backlog`, `planned`, `active`,
-`awaiting_verification`, `blocked`, or `completed`. A Task's Work State remains directly
-editable even when Subtask transitions can advance it; completion follows its own all-active-
-Subtasks rule.
-_Avoid_: derived status, progress percentage
+A Task's workflow placement: `backlog`, `planned`, `active`, `awaiting_verification`
+(displayed as In review), `blocked`, or `completed` (displayed as Done). Task completion
+follows its finish rule, independently of Step counts.
+
+**Finish Rule**:
+Code Tasks finish when every required linked PR's merge commit reaches the repository's
+default branch. Non-code Tasks can finish from an agent's Task-level finished report.
+Either rule may explicitly require a human check. A human can mark a Task done with a
+reason. Completion records its proof; deployment and release remain separate evidence.
 
 **Archive State**:
 A durable terminal disposition for a Task or Subtask: `released` means the work shipped, and
@@ -50,13 +53,15 @@ stable identifier, and canonical URL without copying or updating its record.
 _Avoid_: mirror, replica
 
 **Status Report**:
-An agent's claim about a Subtask's current state, with its reporter, time, and optional
-evidence. It is not human verification and cannot itself complete a Task.
-_Avoid_: completion, verification
+An append-only agent observation about a Task or Step, with attribution, time, and evidence.
+Task reports work without Steps. A finished Task report satisfies an agent-report finish
+rule, or leaves a code Task In review until its required merges and optional check occur.
 
-**Verification**:
-A human's acceptance, rejection, or deferral of a reported Subtask state.
-_Avoid_: agent approval
+**Human Check**:
+An opt-in human confirmation after the Task's other finish conditions are met. An agent
+or reviewer credential cannot perform it. Sending work back reopens the Task and invalidates
+old completion evidence for the new work. Historical verifications retain their original
+acceptance, rejection, deferral, and attribution; no new Step approvals are required.
 
 ## Execution and evidence
 

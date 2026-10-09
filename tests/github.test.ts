@@ -6,52 +6,183 @@ import {
 } from "../src/github";
 
 describe("GitHub pull request status adapter", () => {
-  test("merge evidence requires a closed merged PR, merge timestamp, SHA, and credentials", async () => {
+  test("merge evidence confirms current default-branch reachability and freshness", async () => {
     const reference = parseGitHubPullRequestUrl(
       "https://github.com/acme/repo/pull/1",
     );
-    const mergedPayload = {
-      merge_commit_sha: "0123456789abcdef0123456789abcdef01234567",
-      merged_at: "2026-10-04T10:00:00Z",
-      state: "closed",
-    };
-    const read = async (
-      status: number,
-      payload: Record<string, unknown>,
-      token = "server-token",
-    ) =>
-      createGitHubStatusReader({
-        fetcher: async () => new Response(JSON.stringify(payload), { status }),
-        token,
-      }).readMergeEvidence!(reference);
-
-    expect(await read(200, mergedPayload)).toEqual({
-      mergeSha: mergedPayload.merge_commit_sha,
-      mergedAt: mergedPayload.merged_at,
+    const mergeSha = "0123456789abcdef0123456789abcdef01234567";
+    const now = "2026-10-09T12:00:00.000Z";
+    const requests: string[] = [];
+    const reader = createGitHubStatusReader({
+      fetcher: async (input, init) => {
+        const url = String(input);
+        requests.push(url);
+        if (url.endsWith("/pulls/1")) {
+          expect(new Headers(init?.headers).get("Cache-Control")).toBe(
+            "no-cache",
+          );
+          return new Response(
+            JSON.stringify({
+              base: { repo: { full_name: "acme/repo" } },
+              html_url: reference.url,
+              merge_commit_sha: mergeSha,
+              merged_at: "2026-10-08T10:00:00Z",
+              number: 1,
+              state: "closed",
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.endsWith("/repos/acme/repo")) {
+          return new Response(
+            JSON.stringify({
+              default_branch: "main",
+              full_name: "acme/repo",
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            merge_base_commit: { sha: mergeSha },
+            status: "ahead",
+          }),
+          { status: 200 },
+        );
+      },
+      now: () => new Date(now),
+      token: "server-token",
     });
-    expect(
-      await read(200, {
-        ...mergedPayload,
-        merge_commit_sha: null,
-      }),
-    ).toBeUndefined();
-    expect(
-      await read(200, {
-        ...mergedPayload,
-        state: "open",
-      }),
-    ).toBeUndefined();
-    expect(await read(403, mergedPayload)).toBeUndefined();
+
+    expect(await reader.readMergeEvidence!(reference)).toEqual({
+      defaultBranch: "main",
+      mergeSha,
+      mergedAt: "2026-10-08T10:00:00Z",
+      observedAt: now,
+      reachedDefaultBranch: true,
+    });
+    expect(requests).toEqual([
+      "https://api.github.com/repos/acme/repo/pulls/1",
+      "https://api.github.com/repos/acme/repo",
+      `https://api.github.com/repos/acme/repo/compare/${mergeSha}...main`,
+    ]);
 
     let unauthenticatedCalls = 0;
     const unconfigured = createGitHubStatusReader({
       fetcher: async () => {
         unauthenticatedCalls += 1;
-        return new Response(JSON.stringify(mergedPayload), { status: 200 });
+        return new Response("{}", { status: 200 });
       },
     });
     expect(await unconfigured.readMergeEvidence!(reference)).toBeUndefined();
     expect(unauthenticatedCalls).toBe(0);
+  });
+
+  test("fails closed for stacked, unreachable, unavailable, and wrong-repository evidence", async () => {
+    const reference = parseGitHubPullRequestUrl(
+      "https://github.com/acme/repo/pull/1",
+    );
+    const mergeSha = "0123456789abcdef0123456789abcdef01234567";
+    const mergedPayload = {
+      base: { repo: { full_name: "acme/repo" } },
+      html_url: reference.url,
+      merge_commit_sha: mergeSha,
+      merged_at: "2026-10-04T10:00:00Z",
+      number: 1,
+      state: "closed",
+    };
+    const read = async (
+      options: {
+        compare?: Record<string, unknown>;
+        compareStatus?: number;
+        pr?: Record<string, unknown>;
+        repo?: Record<string, unknown>;
+        repoStatus?: number;
+      } = {},
+    ) => {
+      const requests: string[] = [];
+      const result = await createGitHubStatusReader({
+        fetcher: async (input) => {
+          const url = String(input);
+          requests.push(url);
+          if (url.endsWith("/pulls/1")) {
+            return new Response(JSON.stringify(options.pr ?? mergedPayload), {
+              status: 200,
+            });
+          }
+          if (url.endsWith("/repos/acme/repo")) {
+            return new Response(
+              JSON.stringify(
+                options.repo ?? {
+                  default_branch: "main",
+                  full_name: "acme/repo",
+                },
+              ),
+              { status: options.repoStatus ?? 200 },
+            );
+          }
+          return new Response(
+            JSON.stringify(
+              options.compare ?? {
+                merge_base_commit: { sha: mergeSha },
+                status: "ahead",
+              },
+            ),
+            { status: options.compareStatus ?? 200 },
+          );
+        },
+        token: "server-token",
+      }).readMergeEvidence!(reference);
+      return { requests, result };
+    };
+
+    expect(
+      (
+        await read({
+          compare: {
+            merge_base_commit: {
+              sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            },
+            status: "ahead",
+          },
+        })
+      ).result,
+    ).toBeUndefined();
+    expect(
+      (
+        await read({
+          compare: {
+            merge_base_commit: { sha: mergeSha },
+            status: "behind",
+          },
+        })
+      ).result,
+    ).toBeUndefined();
+    expect((await read({ compareStatus: 503 })).result).toBeUndefined();
+    expect((await read({ repoStatus: 403 })).result).toBeUndefined();
+    expect(
+      (
+        await read({
+          pr: {
+            ...mergedPayload,
+            base: { repo: { full_name: "other/repo" } },
+          },
+        })
+      ).result,
+    ).toBeUndefined();
+    expect(
+      (
+        await read({
+          repo: { default_branch: "main", full_name: "renamed/repo" },
+        })
+      ).result,
+    ).toBeUndefined();
+    expect(
+      (await read({ pr: { ...mergedPayload, state: "open" } })).result,
+    ).toBeUndefined();
+    expect(
+      (await read({ pr: { ...mergedPayload, merge_commit_sha: null } })).result,
+    ).toBeUndefined();
   });
 
   test("normalizes a pull request URL and reads Actions for the exact head SHA", async () => {

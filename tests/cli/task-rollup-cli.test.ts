@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 import { createFactoryApplication } from "../../src/application";
 
-test("CLI resumes durable child status without verifying agent reports", async () => {
+test("CLI resumes Step status without treating it as a Task finish report", async () => {
   const directory = mkdtempSync(join(tmpdir(), "factory-resume-rollup-"));
   try {
     const databasePath = join(directory, "factory.sqlite");
@@ -46,12 +46,15 @@ test("CLI resumes durable child status without verifying agent reports", async (
     expect(exit).toBe(0);
     expect(JSON.parse(stdout)).toMatchObject({
       schemaVersion: 1,
-      status: { taskState: "awaiting_verification", taskCompleted: false },
+      status: { taskState: "active", taskCompleted: false },
     });
     const reopened = createFactoryApplication({ databasePath });
     expect(reopened.getTaskStatus(task.id)).toMatchObject({
-      taskState: "awaiting_verification",
+      taskState: "active",
       taskCompleted: false,
+      subtasks: [
+        { effectiveState: "completed", verificationState: "not_required" },
+      ],
     });
     expect(reopened.getSubtaskReportHistory(child.id)).toEqual([report]);
   } finally {

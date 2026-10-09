@@ -28,6 +28,112 @@ const PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAABAAAAAQBPJcTWAAAADElEQVR4nGP8x8AAAAMCAQBFsWYPAAAAAElFTkSuQmCC";
 
 describe("Factory online backup snapshots", () => {
+  test("verifies schema-v1 manifests that omit additive Task workflow collections", () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "factory-backup-v1-manifest-"),
+    );
+    const databasePath = join(directory, "factory.sqlite");
+    const snapshotPath = join(directory, "snapshot.sqlite");
+    const manifestPath = `${snapshotPath}.manifest.json`;
+    const application = createFactoryApplication({ databasePath });
+
+    try {
+      const project = application.createProject({ name: "Legacy manifest" });
+      application.createTask({ name: "Old Task shape", projectId: project.id });
+      backupFactorySnapshot({ databasePath, outputPath: snapshotPath });
+
+      const snapshotDatabase = new Database(snapshotPath);
+      const stateRow = snapshotDatabase
+        .query("SELECT state FROM factory_state WHERE id = 1")
+        .get() as { state: string };
+      const state = JSON.parse(stateRow.state) as {
+        [key: string]: unknown;
+        tasks: Array<Record<string, unknown>>;
+      };
+      for (const task of state.tasks) {
+        delete task.finishRule;
+        delete task.humanCheckText;
+        delete task.workflowEpoch;
+        delete task.workflowStartedAt;
+        delete task.finishMetadata;
+        delete task.pullRequestRequired;
+      }
+      delete state.taskStatusReports;
+      delete state.taskPullRequestMerges;
+      delete state.taskWorkflowEvents;
+      snapshotDatabase
+        .query("UPDATE factory_state SET state = $state WHERE id = 1")
+        .run({ $state: JSON.stringify(state) });
+      snapshotDatabase.close();
+
+      const canonicalize = (value: unknown): unknown => {
+        if (Array.isArray(value)) return value.map(canonicalize);
+        if (!value || typeof value !== "object") return value;
+        const record = value as Record<string, unknown>;
+        return Object.fromEntries(
+          Object.keys(record)
+            .sort()
+            .map((key) => [key, canonicalize(record[key])]),
+        );
+      };
+      const digestCanonical = (value: unknown): string =>
+        createHash("sha256")
+          .update(JSON.stringify(canonicalize(value)))
+          .digest("hex");
+      const summarize = (records: Array<Record<string, unknown>>) => {
+        const ids = records.map((record) => record.id as string).sort();
+        return {
+          contentDigest: digestCanonical(records),
+          count: records.length,
+          ids,
+          idsDigest: digestCanonical(ids),
+        };
+      };
+
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+        snapshot: { sha256: string; sizeBytes: number };
+        state: {
+          contentDigest: string;
+          durableIdsDigest: string;
+          collections: Record<string, { ids: string[] }>;
+          history: Record<string, unknown>;
+        };
+      };
+      delete manifest.state.collections.taskStatusReports;
+      delete manifest.state.collections.taskPullRequestMerges;
+      delete manifest.state.collections.taskWorkflowEvents;
+      delete manifest.state.history.taskStatusReports;
+      delete manifest.state.history.taskPullRequestMerges;
+      delete manifest.state.history.taskWorkflowEvents;
+      manifest.state.collections.tasks = summarize(state.tasks);
+      manifest.state.contentDigest = digestCanonical(state);
+      manifest.state.durableIdsDigest = digestCanonical(
+        Object.fromEntries(
+          Object.entries(manifest.state.collections).map(
+            ([name, collection]) => [name, collection.ids],
+          ),
+        ),
+      );
+      const snapshotBytes = readFileSync(snapshotPath);
+      manifest.snapshot.sha256 = createHash("sha256")
+        .update(snapshotBytes)
+        .digest("hex");
+      manifest.snapshot.sizeBytes = snapshotBytes.byteLength;
+      writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+        mode: 0o600,
+      });
+      chmodSync(manifestPath, 0o600);
+
+      expect(
+        verifyFactorySnapshot({ databasePath: snapshotPath, manifestPath })
+          .verified,
+      ).toBe(true);
+    } finally {
+      application.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   test("preserves durable IDs and full report/verification history without manifest secrets", () => {
     const directory = mkdtempSync(join(tmpdir(), "factory-backup-snapshot-"));
     const databasePath = join(directory, "factory.sqlite");

@@ -396,7 +396,7 @@ describe("task contributor and handoff tracking", () => {
         {
           connection: {
             state: "connected",
-            observedAt: "2026-10-06T11:54:59.000Z",
+            observedAt: "2026-10-06T11:44:59.000Z",
           },
           counts: {
             ambiguous: 0,
@@ -783,7 +783,7 @@ describe("exact-head review packet evidence", () => {
   test("marks old and too-far-future GitHub snapshots stale", () => {
     expect(
       evaluateCheckState(
-        snapshot({ fetchedAt: "2026-10-06T11:54:59.000Z" }),
+        snapshot({ fetchedAt: "2026-10-06T11:44:59.000Z" }),
         headOne,
         now,
       ),
@@ -808,7 +808,7 @@ describe("exact-head review packet evidence", () => {
         review,
         headOne,
         headOne,
-        snapshot({ fetchedAt: "2026-10-06T11:54:59.000Z", review }),
+        snapshot({ fetchedAt: "2026-10-06T11:44:59.000Z", review }),
         now,
       ),
     ).toBe("stale");
