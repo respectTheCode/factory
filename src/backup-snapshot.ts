@@ -26,6 +26,9 @@ const STATE_COLLECTIONS = [
   "tasks",
   "subtasks",
   "statusReports",
+  "taskStatusReports",
+  "taskPullRequestMerges",
+  "taskWorkflowEvents",
   "verifications",
   "reviewerAssignments",
   "trackerLinks",
@@ -38,7 +41,19 @@ const STATE_COLLECTIONS = [
   "reconciliationFindings",
 ] as const;
 
-const HISTORY_COLLECTIONS = ["statusReports", "verifications"] as const;
+const HISTORY_COLLECTIONS = [
+  "statusReports",
+  "taskStatusReports",
+  "taskPullRequestMerges",
+  "taskWorkflowEvents",
+  "verifications",
+] as const;
+
+const ADDITIVE_HISTORY_COLLECTIONS = new Set<string>([
+  "taskStatusReports",
+  "taskPullRequestMerges",
+  "taskWorkflowEvents",
+]);
 
 const REQUIRED_STATE_COLLECTIONS = [
   "projects",
@@ -495,8 +510,54 @@ function compareInspection(
     canonicalJson(comparableSchema(inspection.schema))
   )
     differences.push("schema");
-  if (canonicalJson(manifest.state) !== canonicalJson(inspection.state))
-    differences.push("state");
+  if (manifest.state.contentDigest !== inspection.state.contentDigest) {
+    differences.push("state.contentDigest");
+  }
+  const manifestCollectionNames = Object.keys(manifest.state.collections);
+  for (const name of manifestCollectionNames) {
+    if (
+      canonicalJson(manifest.state.collections[name as StateCollectionName]) !==
+      canonicalJson(inspection.state.collections[name as StateCollectionName])
+    ) {
+      differences.push(`state.collections.${name}`);
+    }
+  }
+  for (const name of STATE_COLLECTIONS) {
+    if (
+      !manifestCollectionNames.includes(name) &&
+      (!ADDITIVE_HISTORY_COLLECTIONS.has(name) ||
+        inspection.state.collections[name].count !== 0)
+    ) {
+      differences.push(`state.collections.${name}`);
+    }
+  }
+  const manifestHistoryNames = Object.keys(manifest.state.history);
+  for (const name of manifestHistoryNames) {
+    if (
+      canonicalJson(manifest.state.history[name as HistoryCollectionName]) !==
+      canonicalJson(inspection.state.history[name as HistoryCollectionName])
+    ) {
+      differences.push(`state.history.${name}`);
+    }
+  }
+  for (const name of HISTORY_COLLECTIONS) {
+    if (
+      !manifestHistoryNames.includes(name) &&
+      (!ADDITIVE_HISTORY_COLLECTIONS.has(name) ||
+        inspection.state.history[name].count !== 0)
+    ) {
+      differences.push(`state.history.${name}`);
+    }
+  }
+  const manifestDurableIds = Object.fromEntries(
+    manifestCollectionNames.map((name) => [
+      name,
+      inspection.state.collections[name as StateCollectionName].ids,
+    ]),
+  );
+  if (digestCanonical(manifestDurableIds) !== manifest.state.durableIdsDigest) {
+    differences.push("state.durableIdsDigest");
+  }
   if (
     canonicalJson(manifest.protectedTables) !==
     canonicalJson(inspection.protectedTables)
@@ -599,12 +660,24 @@ function validateInspectionShape(value: {
     throw new Error("Manifest state metadata is invalid.");
   }
   for (const name of STATE_COLLECTIONS) {
+    if (
+      state.collections[name] === undefined &&
+      ADDITIVE_HISTORY_COLLECTIONS.has(name)
+    ) {
+      continue;
+    }
     validateCollectionSummary(
       state.collections[name],
       `state.collections.${name}`,
     );
   }
   for (const name of HISTORY_COLLECTIONS) {
+    if (
+      state.history[name] === undefined &&
+      ADDITIVE_HISTORY_COLLECTIONS.has(name)
+    ) {
+      continue;
+    }
     validateCollectionSummary(state.history[name], `state.history.${name}`);
   }
   for (const name of PROTECTED_TABLES) {

@@ -417,7 +417,7 @@ describe("Factory planning WebSocket transport", () => {
     }
   });
 
-  test("reports a complete subtask and observes task verification status", async () => {
+  test("reports a Step Done without creating a Task approval state", async () => {
     const temporaryDirectory = mkdtempSync(
       join(tmpdir(), "software-factory-status-transport-"),
     );
@@ -509,10 +509,12 @@ describe("Factory planning WebSocket transport", () => {
           type: "data",
           data: {
             taskCompleted: false,
+            taskState: "planned",
             subtasks: [
               {
+                effectiveState: "completed",
                 reportedState: "complete",
-                verificationState: "awaiting_verification",
+                verificationState: "not_required",
               },
             ],
           },
@@ -525,7 +527,7 @@ describe("Factory planning WebSocket transport", () => {
     }
   });
 
-  test("accepts a reported subtask and observes completed task status", async () => {
+  test("reports a Task finished and observes its finish rule without Step approval", async () => {
     const temporaryDirectory = mkdtempSync(
       join(tmpdir(), "software-factory-verification-transport-"),
     );
@@ -599,24 +601,37 @@ describe("Factory planning WebSocket transport", () => {
           path: "subtasks.report",
         },
       });
-      const report = responseData(reportResponse);
+      expect(reportResponse.result?.type).toBe("data");
 
-      const verifyResponse = await sendRawTRPCRequest(socket, {
-        id: 25,
+      const beforeFinish = responseData(
+        await sendRawTRPCRequest(socket, {
+          id: 25,
+          method: "query",
+          params: {
+            input: { taskId: task.id },
+            path: "tasks.status",
+          },
+        }),
+      );
+      const finishResponse = await sendRawTRPCRequest(socket, {
+        id: 26,
         method: "mutation",
         params: {
           input: {
-            decision: "accepted",
-            reportId: report.id,
+            reportedState: "finished",
+            reporter: "codex",
+            summary: "The Task is finished under its agent-report rule.",
+            taskId: task.id,
+            workflowEpoch: beforeFinish.workflowEpoch,
           },
-          path: "subtasks.verify",
+          path: "tasks.report",
         },
       });
 
-      expect(verifyResponse.result?.type).toBe("data");
+      expect(finishResponse.result?.type).toBe("data");
 
       const statusResponse = await sendRawTRPCRequest(socket, {
-        id: 26,
+        id: 27,
         method: "query",
         params: {
           input: { taskId: task.id },
@@ -625,15 +640,17 @@ describe("Factory planning WebSocket transport", () => {
       });
 
       expect(statusResponse).toMatchObject({
-        id: 26,
+        id: 27,
         result: {
           type: "data",
           data: {
             taskCompleted: true,
+            taskState: "completed",
             subtasks: [
               {
+                effectiveState: "completed",
                 reportedState: "complete",
-                verificationState: "accepted",
+                verificationState: "not_required",
               },
             ],
           },

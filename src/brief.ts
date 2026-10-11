@@ -12,8 +12,7 @@ export type BriefSubtask = {
   name: string;
   description?: string;
   effectiveState: string;
-  accepted: boolean;
-  awaitingVerification: boolean;
+  reportedState?: string;
   latestReport?: {
     state: string;
     reporter: string;
@@ -30,12 +29,20 @@ export type BriefTask = {
   pullRequestUrl?: string;
   acceptanceCriteria: string[];
   dependencies: string[];
+  workflowEpoch: number;
+  finishRule: { kind: "pr_merge" | "agent_report"; requireHumanCheck: boolean };
+  humanCheckText?: string;
+  latestTaskReport?: {
+    state: string;
+    reporter: string;
+    createdAt: string;
+  };
   workState: string;
   stateReason?: string;
   manualHold: boolean;
   trackerLinks: BriefTrackerLink[];
-  subtasks: BriefSubtask[];
-  reportSubtaskId?: string;
+  steps: BriefSubtask[];
+  reportStepId?: string;
 };
 
 export type BriefOpenTask = {
@@ -115,6 +122,14 @@ function renderTaskSection(task: BriefTask): string[] {
       `Dependencies: ${task.dependencies.map((dependency) => oneLine(dependency)).join(", ")}`,
     );
   }
+  lines.push(
+    `Finish rule: ${
+      task.finishRule.kind === "pr_merge"
+        ? "required PRs merged to the default branch"
+        : "agent report"
+    }${task.finishRule.requireHumanCheck ? ` · human check: ${task.humanCheckText ?? "required"}` : ""}`,
+    `Workflow epoch: ${task.workflowEpoch}`,
+  );
   lines.push(...renderTrackerLinks(task.trackerLinks));
   return lines;
 }
@@ -149,20 +164,25 @@ function clip(value: string, max: number): string {
 }
 
 function renderSubtasksSection(task: BriefTask): string[] {
-  const lines = ["## Subtasks"];
-  if (task.subtasks.length === 0) {
+  const lines = ["## Steps"];
+  if (task.steps.length === 0) {
     lines.push("- None");
     return lines;
   }
-  for (const subtask of task.subtasks) {
-    const detail = subtask.accepted
-      ? "accepted"
-      : subtask.awaitingVerification
-        ? "awaiting verification"
-        : subtask.description
-          ? clip(oneLine(subtask.description), SUBTASK_DESCRIPTION_MAX)
-          : "(none)";
-    lines.push(`- ${subtask.simpleId} — ${oneLine(subtask.name)}: ${detail}`);
+  for (const step of task.steps) {
+    const state =
+      step.reportedState === "complete" || step.effectiveState === "completed"
+        ? "Done"
+        : step.reportedState === "blocked" || step.effectiveState === "blocked"
+          ? "Blocked"
+          : step.reportedState === "in_progress" ||
+              step.effectiveState === "active"
+            ? "Doing"
+            : "To do";
+    const detail = step.description
+      ? ` · ${clip(oneLine(step.description), SUBTASK_DESCRIPTION_MAX)}`
+      : "";
+    lines.push(`- ${step.simpleId} — ${oneLine(step.name)}: ${state}${detail}`);
   }
   return lines;
 }
@@ -170,8 +190,9 @@ function renderSubtasksSection(task: BriefTask): string[] {
 function renderHowToWork(): string[] {
   return [
     "## How to work",
-    "- Before starting a Subtask, report in_progress with --evidence. At handoff, report complete with --reason naming the human check, or blocked with the blocker.",
-    "- Never verify or complete; a human does that in the dashboard. Reports are append-only claims.",
+    "- Report Task progress with the current --workflow-epoch. At handoff, report finished with a summary; Factory applies the finish rule.",
+    "- Steps are optional progress labels. Report their progress directly; do not request a Step review.",
+    "- Human checks and marking a Task done are human-only. Reports are append-only claims.",
     "- Set FACTORY_REPORTER=claude or codex. Full rules: skills/software-factory/SKILL.md",
   ];
 }
@@ -206,10 +227,18 @@ function renderCommands(input: BriefInput, cli: string): string[] {
   ];
 
   if (input.task) {
-    if (input.task.reportSubtaskId) {
+    lines.push(
+      command(
+        `task report --json --task-id ${input.task.simpleId} --state in_progress --workflow-epoch ${input.task.workflowEpoch} --reporter "$FACTORY_REPORTER" --summary "..."`,
+      ),
+      command(
+        `task report --json --task-id ${input.task.simpleId} --state finished --workflow-epoch ${input.task.workflowEpoch} --reporter "$FACTORY_REPORTER" --summary "..."`,
+      ),
+    );
+    if (input.task.reportStepId) {
       lines.push(
         command(
-          `subtask report --json --subtask-id ${input.task.reportSubtaskId} --state in_progress --reporter "$FACTORY_REPORTER" --evidence "..."`,
+          `step report --json --step-id ${input.task.reportStepId} --state in_progress --reporter "$FACTORY_REPORTER" --evidence "..."`,
         ),
       );
     }
@@ -220,19 +249,20 @@ function renderCommands(input: BriefInput, cli: string): string[] {
         ),
       );
     }
-    if (input.task.reportSubtaskId) {
+    if (input.task.reportStepId) {
       lines.push(
-        command(
-          `subtask history --subtask-id ${input.task.reportSubtaskId} --json`,
-        ),
+        command(`step history --step-id ${input.task.reportStepId} --json`),
       );
     }
-    lines.push(command(`task detail --task-id ${input.task.simpleId} --json`));
+    lines.push(
+      command(`task history --task-id ${input.task.simpleId} --json`),
+      command(`task detail --task-id ${input.task.simpleId} --json`),
+    );
   } else {
     lines.push(
       command("task detail --task-id TASK_ID --json"),
       command(
-        'subtask report --json --subtask-id SUBTASK_ID --state in_progress --reporter "$FACTORY_REPORTER" --evidence "..."',
+        'task report --json --task-id TASK_ID --state in_progress --workflow-epoch EPOCH --reporter "$FACTORY_REPORTER" --summary "..."',
       ),
     );
   }
@@ -245,13 +275,24 @@ function renderCurrentStatus(task: BriefTask): string[] {
   const lines = ["## Current status"];
   const hold = task.manualHold ? ", manual hold" : "";
   const reason = task.stateReason ? ` — ${oneLine(task.stateReason)}` : "";
-  lines.push(`- Task: ${task.workState}${hold}${reason}`);
-  for (const subtask of task.subtasks) {
-    const report = subtask.latestReport;
+  lines.push(
+    `- Task: ${task.workState} · workflow epoch ${task.workflowEpoch}${hold}${reason}`,
+  );
+  const report = task.latestTaskReport;
+  lines.push(
+    report
+      ? `- Last Task report: ${report.state} by ${report.reporter} ${report.createdAt.slice(0, 10)}`
+      : "- No Task report in this workflow epoch",
+  );
+  if (task.humanCheckText) {
+    lines.push(`- Human check: ${oneLine(task.humanCheckText)}`);
+  }
+  for (const step of task.steps) {
+    const stepReport = step.latestReport;
     lines.push(
-      report
-        ? `- ${subtask.simpleId} ${subtask.effectiveState}; last report ${report.state} by ${report.reporter} ${report.createdAt.slice(0, 10)}`
-        : `- ${subtask.simpleId} ${subtask.effectiveState}; no report`,
+      stepReport
+        ? `- ${step.simpleId} ${step.effectiveState}; last report ${stepReport.state} by ${stepReport.reporter} ${stepReport.createdAt.slice(0, 10)}`
+        : `- ${step.simpleId} ${step.effectiveState}; no report`,
     );
   }
   return lines;

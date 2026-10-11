@@ -20,6 +20,7 @@ export type VerificationStatus =
   | "awaiting_verification"
   | "deferred"
   | "rejected"
+  | "not_required"
   | "unreported";
 
 export type StatusDefinition = {
@@ -29,15 +30,15 @@ export type StatusDefinition = {
 };
 
 export const liveWorkStatusOrder = [
-  "completed",
-  "blocked",
   "awaiting_verification",
+  "blocked",
   "active",
   "planned",
   "backlog",
+  "completed",
 ] as const satisfies ReadonlyArray<Exclude<WorkStatus, "released" | "wont_do">>;
 
-/** States a human can assign directly to a Task; completion is verification-driven. */
+/** States a human can assign directly to a Task; completion follows its finish rule or an explicit reasoned override. */
 export const taskStatusOrder = [
   "blocked",
   "awaiting_verification",
@@ -51,12 +52,12 @@ export const taskStatusOrder = [
 export const archiveStatusOrder = ["released", "wont_do"] as const;
 
 export const statusDefinitions: Record<WorkStatus, StatusDefinition> = {
-  completed: { color: "#2FBE6B", dial: "completed", label: "Completed" },
+  completed: { color: "#2FBE6B", dial: "completed", label: "Done" },
   blocked: { color: "#E5484D", dial: "blocked", label: "Blocked" },
   awaiting_verification: {
     color: "#F0B429",
     dial: "awaiting_verification",
-    label: "Awaiting verification",
+    label: "In review",
   },
   active: { color: "#4AA3E0", dial: "active", label: "Active" },
   planned: { color: "#A2988A", dial: "planned", label: "Planned" },
@@ -68,22 +69,6 @@ export const statusDefinitions: Record<WorkStatus, StatusDefinition> = {
 export function requiresStateReason(state: WorkStatus): boolean {
   return state === "blocked" || state === "awaiting_verification";
 }
-
-export const reportStatusOptions: Array<{
-  label: string;
-  reportedState: ReportedStatus;
-  workStatus: WorkStatus;
-}> = [
-  { label: "Backlog", reportedState: "backlog", workStatus: "backlog" },
-  { label: "Planned", reportedState: "not_started", workStatus: "planned" },
-  { label: "Active", reportedState: "in_progress", workStatus: "active" },
-  { label: "Blocked", reportedState: "blocked", workStatus: "blocked" },
-  {
-    label: "Complete for verification",
-    reportedState: "complete",
-    workStatus: "awaiting_verification",
-  },
-];
 
 export const dispositionStatusOptions = [
   { label: "Released", workStatus: "released" },

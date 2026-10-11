@@ -19,7 +19,8 @@ import type { ObservedActivityViewModel } from "./observed-activity";
 import "./task-tracking.css";
 
 export type TrackingReportInput = {
-  subtaskId: string;
+  subtaskId?: string;
+  taskId?: string;
   reportedState: ReportedStatus;
   reporter: string;
   reason: string;
@@ -56,11 +57,10 @@ type ArtifactDraft = {
   testedRevision: string;
 };
 const reportStates: Array<{ label: string; value: ReportedStatus }> = [
-  { label: "Backlog", value: "backlog" },
-  { label: "Not started", value: "not_started" },
-  { label: "In progress", value: "in_progress" },
+  { label: "To do", value: "not_started" },
+  { label: "Doing", value: "in_progress" },
   { label: "Blocked", value: "blocked" },
-  { label: "Complete for verification", value: "complete" },
+  { label: "Done", value: "complete" },
 ];
 
 function displayState(value: string | undefined): string {
@@ -130,9 +130,7 @@ export function TaskTracking({
   onRefreshPullRequests,
 }: Props) {
   const [tab, setTab] = useState<Tab>("contributors");
-  const [selectedSubtaskId, setSelectedSubtaskId] = useState(
-    task.subtasks[0]?.id ?? "",
-  );
+  const [selectedStepId, setSelectedStepId] = useState(task.id);
   const [reportedState, setReportedState] = useState<ReportedStatus>(() => {
     const current = status?.subtasks.find(
       (entry) => entry.subtaskId === task.subtasks[0]?.id,
@@ -166,8 +164,8 @@ export function TaskTracking({
   );
   const prefix = `task-tracking-${task.id}`;
 
-  const changeSubtask = (subtaskId: string) => {
-    setSelectedSubtaskId(subtaskId);
+  const changeStep = (subtaskId: string) => {
+    setSelectedStepId(subtaskId);
     const current = status?.subtasks.find(
       (entry) => entry.subtaskId === subtaskId,
     )?.reportedState;
@@ -179,7 +177,7 @@ export function TaskTracking({
     setFormError(null);
     setSuccess(false);
     const cleanReason = reason.trim();
-    if (!selectedSubtaskId || !operatorName?.trim() || !onReport) return;
+    if (!selectedStepId || !operatorName?.trim() || !onReport) return;
     if (!cleanReason) {
       setFormError("Add a reason for this report.");
       return;
@@ -274,7 +272,9 @@ export function TaskTracking({
         }
       : undefined;
     const input: TrackingReportInput = {
-      subtaskId: selectedSubtaskId,
+      ...(selectedStepId === task.id
+        ? { taskId: task.id }
+        : { subtaskId: selectedStepId }),
       reportedState,
       reporter: operatorName.trim(),
       reason: cleanReason,
@@ -315,8 +315,8 @@ export function TaskTracking({
     >
       <div className="task-tracking-heading">
         <div>
-          <p className="task-tracking-eyebrow">Task execution record</p>
-          <h4>Contributors, handoff, and review packet</h4>
+          <p className="task-tracking-eyebrow">Evidence</p>
+          <h4>Sessions, handoffs, and PR packet</h4>
         </div>
         <span className="task-tracking-task-id">{task.simpleId}</span>
       </div>
@@ -371,9 +371,7 @@ export function TaskTracking({
           </div>
         </div>
         <div className="task-tracking-claims">
-          <p className="task-tracking-eyebrow">
-            Current report claims and Factory acceptance
-          </p>
+          <p className="task-tracking-eyebrow">Current reports</p>
           {task.subtasks.map((subtask) => {
             const current = status?.subtasks.find(
               (entry) => entry.subtaskId === subtask.id,
@@ -386,7 +384,10 @@ export function TaskTracking({
                 </strong>
                 <span>Claim · {displayState(current.reportedState)}</span>
                 <span>
-                  Acceptance · {displayState(current.verificationState)}
+                  {current.reportedState === "complete"
+                    ? "Done"
+                    : displayState(current.reportedState)}{" "}
+                  · reported by {current.reporter || "unknown"}
                 </span>
               </div>
             );
@@ -594,7 +595,7 @@ export function TaskTracking({
             <div className="task-tracking-form-heading">
               <div>
                 <p className="task-tracking-eyebrow">Current Factory report</p>
-                <h5>Record the current state and next step</h5>
+                <h5>Record the current state and next subtask</h5>
               </div>
               {operatorName?.trim() ? (
                 <span>Reporter · {operatorName}</span>
@@ -604,13 +605,14 @@ export function TaskTracking({
             </div>
             <div className="task-tracking-form-grid">
               <label>
-                <span>Subtask</span>
+                <span>Report target</span>
                 <select
                   disabled={!reportEnabled}
-                  onChange={(event) => changeSubtask(event.target.value)}
+                  onChange={(event) => changeStep(event.target.value)}
                   required
-                  value={selectedSubtaskId}
+                  value={selectedStepId}
                 >
+                  <option value={task.id}>This task</option>
                   {task.subtasks.map((subtask) => (
                     <option key={subtask.id} value={subtask.id}>
                       {subtask.simpleId} · {subtask.name}
@@ -627,7 +629,14 @@ export function TaskTracking({
                   }
                   value={reportedState}
                 >
-                  {reportStates.map((item) => (
+                  {(selectedStepId === task.id
+                    ? [
+                        { label: "Active", value: "in_progress" as const },
+                        { label: "Blocked", value: "blocked" as const },
+                        { label: "Finished", value: "complete" as const },
+                      ]
+                    : reportStates
+                  ).map((item) => (
                     <option key={item.value} value={item.value}>
                       {item.label}
                     </option>
@@ -854,7 +863,7 @@ export function TaskTracking({
                 className="task-tracking-success"
                 role="status"
               >
-                Report added. Factory acceptance remains separate.
+                Update added.
               </p>
             ) : null}
             {!connected ? (
@@ -868,7 +877,7 @@ export function TaskTracking({
             ) : null}
             <button
               className="task-tracking-submit"
-              disabled={!reportEnabled || task.subtasks.length === 0}
+              disabled={!reportEnabled}
               type="submit"
             >
               {submitting ? "Saving report…" : "Add report"}
@@ -1040,14 +1049,6 @@ export function TaskTracking({
                             : "No review snapshot supplied."}
                       </small>
                     </div>
-                    <div>
-                      <span>Factory acceptance</span>
-                      <span
-                        className={`task-tracking-tag task-tracking-tag-${acceptance === "accepted" ? "ok" : acceptance === "rejected" ? "down" : "warn"}`}
-                      >
-                        {displayState(acceptance)}
-                      </span>
-                    </div>
                   </div>
                   {shownChecks.length > 0 ? (
                     <ul className="task-tracking-check-list">
@@ -1169,9 +1170,9 @@ export function TaskTracking({
         {task.acceptanceCriteria?.length ? (
           <section
             className="task-tracking-criteria"
-            aria-label="Factory acceptance criteria"
+            aria-label="Task requirements"
           >
-            <p className="task-tracking-eyebrow">Factory acceptance criteria</p>
+            <p className="task-tracking-eyebrow">Task requirements</p>
             {task.acceptanceCriteria.map((criterion, index) => (
               <p className="task-tracking-criteria-item" key={index}>
                 <span aria-hidden="true" />
@@ -1182,8 +1183,7 @@ export function TaskTracking({
         ) : null}
         <p className="task-tracking-note">
           Reports, CI, review, screenshots, and artifact links are separate
-          evidence. Factory acceptance remains a separate recorded decision in
-          the reviewer controls below.
+          evidence. Task completion follows its finish rule.
         </p>
       </div>
     </section>

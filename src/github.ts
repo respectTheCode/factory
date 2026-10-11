@@ -71,13 +71,23 @@ export type GitHubStatusReader = {
   read: (
     reference: GitHubPullRequestReference,
   ) => Promise<GitHubStatusSnapshot>;
-  readMergeEvidence?: (
-    reference: GitHubPullRequestReference,
-  ) => Promise<{ mergeSha?: string; mergedAt?: string } | undefined>;
+  readMergeEvidence?: (reference: GitHubPullRequestReference) => Promise<
+    | {
+        mergeSha: string;
+        mergedAt: string;
+        defaultBranch: string;
+        reachedDefaultBranch: true;
+        observedAt: string;
+      }
+    | undefined
+  >;
 };
 
 type GitHubPullRequestPayload = {
-  base?: { ref?: unknown };
+  base?: {
+    ref?: unknown;
+    repo?: { full_name?: unknown };
+  };
   draft?: unknown;
   head?: { ref?: unknown; sha?: unknown };
   html_url?: unknown;
@@ -90,6 +100,16 @@ type GitHubPullRequestPayload = {
   title?: unknown;
   updated_at?: unknown;
   user?: { login?: unknown };
+};
+
+type GitHubRepositoryPayload = {
+  default_branch?: unknown;
+  full_name?: unknown;
+};
+
+type GitHubComparePayload = {
+  merge_base_commit?: { sha?: unknown };
+  status?: unknown;
 };
 
 type GitHubWorkflowRunsPayload = {
@@ -227,27 +247,88 @@ export function createGitHubStatusReader({
       const headers = {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${configuredToken}`,
+        "Cache-Control": "no-cache",
         "X-GitHub-Api-Version": apiVersion,
       };
       const pullRequestPath = `/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repo)}/pulls/${reference.number}`;
-      const response = await request(
-        `${baseUrl}${pullRequestPath}`,
-        headers,
-        fetcher,
-        timeoutMs,
-      );
-      if (!response.ok) return undefined;
-      let payload: GitHubPullRequestPayload;
       try {
-        payload = (await response.json()) as GitHubPullRequestPayload;
+        const response = await request(
+          `${baseUrl}${pullRequestPath}`,
+          headers,
+          fetcher,
+          timeoutMs,
+        );
+        if (!response.ok) return undefined;
+        const payload = (await response.json()) as GitHubPullRequestPayload;
+        const expectedRepository = `${reference.owner}/${reference.repo}`;
+        if (
+          stringValue(payload.base?.repo?.full_name)?.toLowerCase() !==
+            expectedRepository.toLowerCase() ||
+          numberValue(payload.number) !== reference.number
+        ) {
+          return undefined;
+        }
+        if (stringValue(payload.state) !== "closed") return undefined;
+        const mergedAt = stringValue(payload.merged_at);
+        const mergeSha = stringValue(payload.merge_commit_sha);
+        const mergedAtDate = mergedAt ? new Date(mergedAt) : undefined;
+        if (
+          !mergedAt ||
+          !mergedAtDate ||
+          !Number.isFinite(mergedAtDate.getTime()) ||
+          !mergeSha ||
+          !/^[a-f0-9]{40,64}$/i.test(mergeSha)
+        ) {
+          return undefined;
+        }
+
+        const repositoryResponse = await request(
+          `${baseUrl}/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repo)}`,
+          headers,
+          fetcher,
+          timeoutMs,
+        );
+        if (!repositoryResponse.ok) return undefined;
+        const repository =
+          (await repositoryResponse.json()) as GitHubRepositoryPayload;
+        const defaultBranch = stringValue(repository.default_branch);
+        if (
+          stringValue(repository.full_name)?.toLowerCase() !==
+            expectedRepository.toLowerCase() ||
+          !defaultBranch
+        ) {
+          return undefined;
+        }
+
+        const comparisonResponse = await request(
+          `${baseUrl}/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.repo)}/compare/${encodeURIComponent(mergeSha)}...${encodeURIComponent(defaultBranch)}`,
+          headers,
+          fetcher,
+          timeoutMs,
+        );
+        if (!comparisonResponse.ok) return undefined;
+        const comparison =
+          (await comparisonResponse.json()) as GitHubComparePayload;
+        const mergeBaseSha = stringValue(comparison.merge_base_commit?.sha);
+        if (
+          mergeBaseSha?.toLowerCase() !== mergeSha.toLowerCase() ||
+          (comparison.status !== "ahead" && comparison.status !== "identical")
+        ) {
+          return undefined;
+        }
+
+        const observedAt = now().toISOString();
+        if (!Number.isFinite(Date.parse(observedAt))) return undefined;
+        return {
+          defaultBranch,
+          mergeSha,
+          mergedAt,
+          observedAt,
+          reachedDefaultBranch: true,
+        };
       } catch {
         return undefined;
       }
-      if (stringValue(payload.state) !== "closed") return undefined;
-      const mergedAt = stringValue(payload.merged_at);
-      const mergeSha = stringValue(payload.merge_commit_sha);
-      if (!mergedAt || !mergeSha) return undefined;
-      return { mergedAt, mergeSha };
     },
     async read(reference) {
       const fetchedAt = now().toISOString();

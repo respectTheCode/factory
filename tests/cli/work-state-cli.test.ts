@@ -29,7 +29,7 @@ function parseOutput(stdout: string): Record<string, any> {
 }
 
 describe("agent CLI work-state contract", () => {
-  test("changes task state, reorders work, and reports a backlog reason", async () => {
+  test("changes task state and preserves Step order when reporting a state", async () => {
     const temporaryDirectory = mkdtempSync(
       join(tmpdir(), "software-factory-work-state-cli-"),
     );
@@ -223,8 +223,8 @@ describe("agent CLI work-state contract", () => {
       ]);
       expect(context.tasks[0]?.subtasks.map((subtask) => subtask.id)).toEqual([
         subtaskIds[2] as string,
-        subtaskIds[1] as string,
         subtaskIds[0] as string,
+        subtaskIds[1] as string,
       ]);
 
       const verifyResult = await runCli([

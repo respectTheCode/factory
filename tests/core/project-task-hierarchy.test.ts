@@ -68,6 +68,11 @@ describe("project planning", () => {
           simpleId: task.simpleId!,
           name: "Prepare the release",
           projectId: project.id,
+          finishRule: {
+            kind: "agent_report",
+            requireHumanCheck: false,
+          },
+          workflowEpoch: 0,
           subtasks: [
             {
               id: subtask.id,

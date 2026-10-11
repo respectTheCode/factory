@@ -145,7 +145,8 @@ type FloorSnapshotData = {
     name: string;
     bench: Array<{ taskName: string }>;
   }>;
-  queue: Array<{ action: string }>;
+  events: Array<{ kind: string; summary: string }>;
+  queue: Array<{ action: string; summary: string }>;
 };
 
 function offlineReader(): T3ActivityReader {
@@ -279,35 +280,15 @@ describe("Floor updates WebSocket subscription", () => {
       );
       const subtask = subtaskResponse.result?.data as { id: string };
 
-      let verifyPhase = false;
-      const verifyFirst = waitForMessage(
-        first,
-        2,
-        (message) =>
-          verifyPhase &&
-          message.result?.type === "data" &&
-          !(message.result.data as FloorSnapshotData).queue.some(
-            (item) => item.action === "stamp",
-          ),
-      );
-      const verifySecond = waitForMessage(
-        second,
-        3,
-        (message) =>
-          verifyPhase &&
-          message.result?.type === "data" &&
-          !(message.result.data as FloorSnapshotData).queue.some(
-            (item) => item.action === "stamp",
-          ),
-      );
-
       const reportFirst = waitForMessage(
         first,
         2,
         (message) =>
           message.result?.type === "data" &&
-          (message.result.data as FloorSnapshotData).queue.some(
-            (item) => item.action === "stamp",
+          (message.result.data as FloorSnapshotData).events.some(
+            (event) =>
+              event.kind === "report" &&
+              event.summary.includes("Floor task / Floor subtask"),
           ),
       );
       const reportSecond = waitForMessage(
@@ -315,10 +296,13 @@ describe("Floor updates WebSocket subscription", () => {
         3,
         (message) =>
           message.result?.type === "data" &&
-          (message.result.data as FloorSnapshotData).queue.some(
-            (item) => item.action === "stamp",
+          (message.result.data as FloorSnapshotData).events.some(
+            (event) =>
+              event.kind === "report" &&
+              event.summary.includes("Floor task / Floor subtask"),
           ),
       );
+
       const reportResponse = await send(
         writer,
         6,
@@ -332,24 +316,17 @@ describe("Floor updates WebSocket subscription", () => {
           subtaskId: subtask.id,
         },
       );
-      const report = reportResponse.result?.data as { id: string };
       expect(reportResponse.error).toBeUndefined();
-      await expect(reportFirst).resolves.toBeTruthy();
-      await expect(reportSecond).resolves.toBeTruthy();
-      verifyPhase = true;
-      const verifyResponse = await send(
-        writer,
-        7,
-        "mutation",
-        "subtasks.verify",
-        {
-          decision: "accepted",
-          reportId: report.id,
-        },
-      );
-      expect(verifyResponse.error).toBeUndefined();
-      await expect(verifyFirst).resolves.toBeTruthy();
-      await expect(verifySecond).resolves.toBeTruthy();
+      const [firstReportUpdate, secondReportUpdate] = await Promise.all([
+        reportFirst,
+        reportSecond,
+      ]);
+      for (const message of [firstReportUpdate, secondReportUpdate]) {
+        const snapshot = message.result?.data as FloorSnapshotData;
+        expect(snapshot.queue.some((item) => item.action === "stamp")).toBe(
+          false,
+        );
+      }
 
       const projectUpdateFirst = waitForMessage(
         first,
@@ -383,7 +360,10 @@ describe("Floor updates WebSocket subscription", () => {
       third = await openSocket(server);
       const reconnect = await subscribeFloor(third, 9);
       expect(reconnect.projects[0]).toEqual(
-        expect.objectContaining({ name: "Floor project", bench: [] }),
+        expect.objectContaining({
+          name: "Floor project",
+          bench: [expect.objectContaining({ taskName: "Floor task" })],
+        }),
       );
 
       const deleteFirst = waitForMessage(
@@ -452,7 +432,9 @@ describe("Floor updates WebSocket subscription", () => {
         (message) =>
           message.result?.type === "data" &&
           (message.result.data as FloorSnapshotData).queue.some(
-            (item) => item.action === "input",
+            (item) =>
+              item.action === "decide" &&
+              item.summary.includes("Floor external input"),
           ),
       );
       await expect(external).resolves.toBeTruthy();

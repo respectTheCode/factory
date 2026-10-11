@@ -38,25 +38,24 @@ async function request(
   };
 }
 
-describe("Factory task acceptance transport", () => {
-  test("requires a human session and accepts the reviewed snapshot", async () => {
+describe("Factory Task check transport", () => {
+  test("requires a human session for an explicit check after the finish rule is ready", async () => {
     const directory = mkdtempSync(join(tmpdir(), "factory-task-acceptance-"));
     const databasePath = join(directory, "factory.sqlite");
     const app = createFactoryApplication({ databasePath });
     const project = app.createProject({ name: "Acceptance authorization" });
     const task = app.createTask({
+      finishRule: { kind: "agent_report", requireHumanCheck: true },
+      humanCheckText: "Compare the release with the approved checklist.",
       name: "Ship the release",
       projectId: project.id,
     });
-    const subtask = app.createSubtask({
-      name: "Verify the build",
-      taskId: task.id,
-    });
-    app.reportSubtaskStatus({
-      reason: "Check the published build.",
+    app.reportTaskStatus({
       reporter: "codex",
-      reportedState: "complete",
-      subtaskId: subtask.id,
+      reportedState: "finished",
+      summary: "The release is ready for its explicit human check.",
+      taskId: task.id,
+      workflowEpoch: app.getTaskStatus(task.id).workflowEpoch,
     });
     const status = app.getTaskStatus(task.id);
     app.close();
@@ -73,29 +72,23 @@ describe("Factory task acceptance transport", () => {
       port: 0,
     });
     const input = {
-      expectedTaskRevision: status.taskRevision,
-      reviewedSubtasks: status.subtasks.map((child) => ({
-        currentReportId: child.reportId ?? null,
-        currentVerificationId: child.verificationId ?? null,
-        revision: child.revision,
-        subtaskId: child.subtaskId,
-      })),
+      expectedRevision: status.taskRevision,
       taskId: task.id,
     };
 
     try {
-      const denied = await request(server, "tasks.accept", input, {
+      const denied = await request(server, "tasks.check", input, {
         token: machine.token,
       });
       expect(denied.body.error?.data?.code).toBe("UNAUTHORIZED");
 
-      const accepted = await request(server, "tasks.accept", input, {
+      const checked = await request(server, "tasks.check", input, {
         cookie: await loginTestOperator(server),
       });
-      expect(accepted.response.status).toBe(200);
-      expect(accepted.body.result?.data).toMatchObject({
-        accepted: true,
-        taskId: task.id,
+      expect(checked.response.status).toBe(200);
+      expect(checked.body.result?.data).toMatchObject({
+        id: task.id,
+        finishMetadata: { kind: "human_check", epoch: status.workflowEpoch },
       });
       const current = await request(
         server,
@@ -109,7 +102,7 @@ describe("Factory task acceptance transport", () => {
       expect(current.body.result?.data).toMatchObject({
         taskCompleted: true,
         taskState: "completed",
-        subtasks: [expect.objectContaining({ verificationState: "accepted" })],
+        subtasks: [],
       });
     } finally {
       await server.stop();

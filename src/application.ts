@@ -4,7 +4,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 
 import { Database } from "bun:sqlite";
 
-import { parseGitHubPullRequestUrl } from "./github";
+import { parseGitHubPullRequestUrl, type GitHubStatusSnapshot } from "./github";
 import {
   backfillSimpleIds,
   matchesSimpleId,
@@ -82,6 +82,25 @@ export type WorkState =
 
 type TaskWorkStateSource = "manual" | "rollup";
 
+export type TaskFinishRule = {
+  kind: "pr_merge" | "agent_report";
+  requireHumanCheck: boolean;
+};
+
+export type TaskFinishMetadata = {
+  kind:
+    | "pr_merge"
+    | "agent_report"
+    | "human_check"
+    | "human_mark_done"
+    | "legacy_completion";
+  epoch: number;
+  actor: string;
+  completedAt: Date;
+  reason?: string;
+  mergeProofs?: TaskPullRequestMergeEvidence[];
+};
+
 export type Task = {
   id: string;
   simpleId?: string;
@@ -98,6 +117,12 @@ export type Task = {
   workState?: WorkState;
   workStateSource?: TaskWorkStateSource;
   stateReason?: string;
+  finishRule?: TaskFinishRule;
+  humanCheckText?: string;
+  workflowEpoch?: number;
+  workflowStartedAt?: Date;
+  finishMetadata?: TaskFinishMetadata;
+  pullRequestRequired?: boolean;
   sortOrder?: number;
   archiveState?: ArchiveState;
   revision: number;
@@ -112,6 +137,7 @@ export type Subtask = {
   description?: string;
   evidence?: string;
   pullRequestUrl?: string;
+  pullRequestRequired?: boolean;
   sortOrder?: number;
   archiveState?: ArchiveState;
   revision: number;
@@ -163,6 +189,109 @@ export type StatusReport = {
   testedRevision?: string;
   artifacts?: ReportArtifact[];
   createdAt: Date;
+};
+
+export type TaskReportedState = "in_progress" | "finished" | "blocked";
+
+export type TaskStatusReport = {
+  id: string;
+  taskId: string;
+  workflowEpoch: number;
+  reportedState: TaskReportedState;
+  reporter: string;
+  summary?: string;
+  reason?: string;
+  machineId?: string;
+  sessionRef?: StatusReport["sessionRef"];
+  handoff?: ReportHandoff;
+  testedRevision?: string;
+  artifacts?: ReportArtifact[];
+  createdAt: Date;
+};
+
+export type TaskPullRequestMergeEvidence = {
+  id: string;
+  taskId: string;
+  pullRequestUrl: string;
+  workflowEpoch: number;
+  mergeSha: string;
+  mergedAt: Date;
+  defaultBranch: string;
+  reachedDefaultBranch: true;
+  observedAt: Date;
+};
+
+export type TaskRequiredPullRequest = {
+  pullRequestUrl: string;
+  required: boolean;
+  sources: Array<{
+    kind: "task" | "step";
+    id: string;
+    simpleId?: string;
+    name: string;
+    required: boolean;
+  }>;
+  merge?: TaskPullRequestMergeEvidence;
+  mergedBeforeReopen?: boolean;
+};
+
+export type TaskPullRequestRequirement = {
+  pullRequestUrl: string;
+  required: boolean;
+};
+
+export type TaskWorkflowEvent = {
+  id: string;
+  taskId: string;
+  workflowEpoch: number;
+  kind:
+    | "finish_rule_changed"
+    | "checked"
+    | "sent_back"
+    | "finished"
+    | "marked_done"
+    | "reopened"
+    | "pull_request_merged";
+  actor: string;
+  reason?: string;
+  pullRequestRequirementChanges?: Array<{
+    pullRequestUrl: string;
+    sourceKind: "task" | "step";
+    sourceId: string;
+    previousRequired: boolean | null;
+    required: boolean | null;
+  }>;
+  pullRequestUrl?: string;
+  mergeSha?: string;
+  createdAt: Date;
+};
+
+export type TaskActivityItem = {
+  id: string;
+  taskId: string;
+  kind:
+    | "task_report"
+    | "step_report"
+    | "finish_rule_changed"
+    | "checked"
+    | "sent_back"
+    | "finished"
+    | "marked_done"
+    | "reopened"
+    | "pull_request_merged"
+    | "verification";
+  actor: string;
+  createdAt: Date;
+  workflowEpoch?: number;
+  summary?: string;
+  reason?: string;
+  pullRequestRequirementChanges?: TaskWorkflowEvent["pullRequestRequirementChanges"];
+  pullRequestUrl?: string;
+  mergeSha?: string;
+  subtaskId?: string;
+  reportedState?: TaskReportedState | ReportedState;
+  verificationDecision?: VerificationDecision;
+  verificationSource?: Verification["source"];
 };
 
 export type VerificationDecision = "accepted" | "rejected" | "deferred";
@@ -343,7 +472,10 @@ export type AttentionItem = {
   taskId: string;
   taskSimpleId: string;
   taskName: string;
-  state: Exclude<ProjectWorkState, "completed" | ArchiveState>;
+  state: Exclude<
+    ProjectWorkState,
+    "completed" | "awaiting_verification" | ArchiveState
+  >;
   priority?: "low" | "medium" | "high" | "urgent";
   owner?: string;
 };
@@ -354,9 +486,17 @@ export type TaskStatus = {
   taskRevision: number;
   taskCompleted: boolean;
   taskState: ProjectWorkState;
+  manualHold: boolean;
   stateReason?: string;
   archiveState?: ArchiveState;
   taskVerification?: TaskStatusVerification;
+  finishRule: TaskFinishRule;
+  humanCheckText?: string;
+  humanCheckReady: boolean;
+  workflowEpoch: number;
+  latestTaskReport?: TaskStatusReport;
+  finishMetadata?: TaskFinishMetadata;
+  requiredPullRequests: TaskRequiredPullRequest[];
   subtasks: Array<{
     reportedState?: ReportedState;
     effectiveState: WorkState;
@@ -367,6 +507,7 @@ export type TaskStatus = {
       | "awaiting_verification"
       | "deferred"
       | "rejected"
+      | "not_required"
       | "unreported";
     id?: string;
     subtaskId: string;
@@ -418,6 +559,9 @@ export type FactoryState = {
   tasks: PersistedTask[];
   subtasks: PersistedSubtask[];
   statusReports: StatusReport[];
+  taskStatusReports?: TaskStatusReport[];
+  taskPullRequestMerges?: TaskPullRequestMergeEvidence[];
+  taskWorkflowEvents?: TaskWorkflowEvent[];
   verifications: Verification[];
   reviewerAssignments?: ReviewerAssignment[];
   trackerLinks?: TrackerLink[];
@@ -552,6 +696,14 @@ function normalizeT3Collections(state: FactoryState): FactoryState {
       );
     }
   }
+  const taskStatusReports = state.taskStatusReports ?? [];
+  for (const report of taskStatusReports) {
+    if (report.sessionRef) {
+      report.sessionRef.sourceId = normalizeT3SourceId(
+        report.sessionRef.sourceId,
+      );
+    }
+  }
   const codeSessions = state.codeSessions ?? [];
   for (const session of codeSessions) {
     session.sourceId = normalizeT3SourceId(session.sourceId);
@@ -598,13 +750,40 @@ type LegacyTargetedRun = Run & {
 
 function normalizeSimpleIdState(state: FactoryState): HydratedFactoryState {
   state = normalizeT3Collections(state);
+  const projectById = new Map(
+    state.projects.map((project) => [project.id, project]),
+  );
+  const legacyTaskIds = new Set(
+    state.tasks
+      .filter(
+        (task) =>
+          task.finishRule === undefined &&
+          task.workState === undefined &&
+          task.workStateSource === undefined,
+      )
+      .map((task) => task.id),
+  );
   const tasks: Task[] = backfillSimpleIds(
     state.tasks,
     TASK_SIMPLE_ID_PREFIX,
-  ).map((task) => ({
-    ...task,
-    revision: normalizeRevision(task.revision),
-  }));
+  ).map((task) => {
+    const finishRule = normalizeTaskFinishRule(
+      task.finishRule ??
+        defaultTaskFinishRule(task, projectById.get(task.projectId)),
+    );
+    const humanCheckText = normalizeHumanCheckText(
+      finishRule,
+      task.humanCheckText,
+    );
+    return {
+      ...task,
+      finishRule,
+      ...(humanCheckText ? { humanCheckText } : {}),
+      workflowEpoch: normalizeWorkflowEpoch(task.workflowEpoch),
+      workflowStartedAt: task.workflowStartedAt ?? task.createdAt,
+      revision: normalizeRevision(task.revision),
+    };
+  });
   const subtasks: Subtask[] = backfillSimpleIds(
     state.subtasks,
     SUBTASK_SIMPLE_ID_PREFIX,
@@ -612,10 +791,20 @@ function normalizeSimpleIdState(state: FactoryState): HydratedFactoryState {
     ...subtask,
     revision: normalizeRevision(subtask.revision),
   }));
+  migrateLegacyTaskCompletions(
+    tasks,
+    subtasks,
+    state.statusReports,
+    state.verifications,
+    legacyTaskIds,
+  );
   return {
     ...state,
     tasks,
     subtasks,
+    taskStatusReports: state.taskStatusReports ?? [],
+    taskPullRequestMerges: state.taskPullRequestMerges ?? [],
+    taskWorkflowEvents: state.taskWorkflowEvents ?? [],
     reviewerAssignments: state.reviewerAssignments ?? [],
     simpleIdCounters: {
       nextSubtask: Math.max(
@@ -628,6 +817,73 @@ function normalizeSimpleIdState(state: FactoryState): HydratedFactoryState {
       ),
     },
   };
+}
+
+function migrateLegacyTaskCompletions(
+  tasks: Task[],
+  subtasks: Subtask[],
+  statusReports: StatusReport[],
+  verifications: Verification[],
+  legacyTaskIds: Set<string>,
+): void {
+  for (const task of tasks) {
+    if (!legacyTaskIds.has(task.id)) continue;
+    const activeSubtasks = subtasks.filter(
+      (subtask) =>
+        subtask.taskId === task.id && subtask.archiveState === undefined,
+    );
+    if (activeSubtasks.length === 0) continue;
+    const acceptedVerifications: Verification[] = [];
+    const allChildrenAccepted = activeSubtasks.every((subtask) => {
+      const report = statusReports.findLast(
+        (candidate) => candidate.subtaskId === subtask.id,
+      );
+      if (!report || report.reportedState !== "complete") return false;
+      const verification = verifications.findLast(
+        (candidate) => candidate.reportId === report.id,
+      );
+      if (verification?.decision !== "accepted") return false;
+      acceptedVerifications.push(verification);
+      return true;
+    });
+    if (!allChildrenAccepted) continue;
+    const latestVerification = acceptedVerifications.reduce((latest, item) =>
+      item.createdAt.getTime() > latest.createdAt.getTime() ? item : latest,
+    );
+    task.workState = "completed";
+    task.workStateSource = "manual";
+    task.finishMetadata = {
+      kind: "legacy_completion",
+      epoch: normalizeWorkflowEpoch(task.workflowEpoch),
+      actor: latestVerification.verifier,
+      completedAt: latestVerification.createdAt,
+      ...(latestVerification.reason
+        ? { reason: latestVerification.reason }
+        : {}),
+    };
+  }
+}
+
+function defaultTaskFinishRule(
+  task: Pick<Task, "branchName" | "pullRequestUrl" | "repositoryLinks">,
+  project: Project | undefined,
+): TaskFinishRule {
+  const hasCodeContext = Boolean(
+    project?.gitOriginUrl?.trim() ||
+    task.branchName?.trim() ||
+    task.pullRequestUrl?.trim() ||
+    task.repositoryLinks?.some((link) => link.trim()),
+  );
+  return {
+    kind: hasCodeContext ? "pr_merge" : "agent_report",
+    requireHumanCheck: false,
+  };
+}
+
+function normalizeWorkflowEpoch(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : 0;
 }
 
 function normalizeRevision(value: unknown): number {
@@ -691,15 +947,6 @@ function normalizeExecutionState(state: FactoryState | undefined): {
   return { associations, codeSessions, runs };
 }
 
-const WORK_STATE_RANK: Record<WorkState, number> = {
-  backlog: 0,
-  planned: 1,
-  active: 2,
-  awaiting_verification: 3,
-  blocked: 4,
-  completed: 5,
-};
-
 const WORK_STATE_DISPLAY_ORDER: Record<WorkState, number> = {
   completed: 0,
   blocked: 1,
@@ -713,6 +960,44 @@ function requireReason(reason: string | undefined, message: string): string {
   const trimmed = reason?.trim();
   if (!trimmed) throw new Error(message);
   return trimmed;
+}
+
+function normalizeTaskFinishRule(rule: TaskFinishRule): TaskFinishRule {
+  if (rule.kind !== "pr_merge" && rule.kind !== "agent_report") {
+    throw new Error("Task finish rule kind must be pr_merge or agent_report.");
+  }
+  if (typeof rule.requireHumanCheck !== "boolean") {
+    throw new Error("Task finish rule requires a human-check flag.");
+  }
+  return { kind: rule.kind, requireHumanCheck: rule.requireHumanCheck };
+}
+
+function normalizeWorkflowActor(actor: string | undefined): string {
+  return actor?.trim() || "CLI";
+}
+
+function normalizeHumanCheckText(
+  rule: TaskFinishRule,
+  value: string | undefined,
+): string | undefined {
+  if (!rule.requireHumanCheck) return value?.trim() || undefined;
+  const text = requireReason(
+    value,
+    "A human check requires a check description.",
+  );
+  if (text.length > 500) {
+    throw new Error(
+      "Human check descriptions must be 500 characters or fewer.",
+    );
+  }
+  return text;
+}
+
+function normalizeEvidenceDate(value: Date, label: string): Date {
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+    throw new Error(`A PR merge requires a valid ${label}.`);
+  }
+  return new Date(value.getTime());
 }
 
 function normalizePullRequestUrl(
@@ -730,10 +1015,6 @@ function githubRepositoryKey(value: string | undefined): string | undefined {
     /^(?:www\.)?github\.com\/([^/]+)\/([^/]+)(?:\/pull\/\d+)?$/i.exec(identity);
   if (!match?.[1] || !match[2]) return undefined;
   return `${match[1].toLowerCase()}/${match[2].replace(/\.git$/i, "").toLowerCase()}`;
-}
-
-function compareWorkStates(left: WorkState, right: WorkState): number {
-  return WORK_STATE_RANK[left] - WORK_STATE_RANK[right];
 }
 
 function normalizeRepositoryIdentity(
@@ -781,6 +1062,11 @@ export type ProjectHierarchy = {
     projectId: string;
     branchName?: string;
     pullRequestUrl?: string;
+    pullRequestRequired?: boolean;
+    finishRule: TaskFinishRule;
+    humanCheckText?: string;
+    workflowEpoch: number;
+    finishMetadata?: TaskFinishMetadata;
     workState?: WorkState;
     stateReason?: string;
     sortOrder?: number;
@@ -794,6 +1080,7 @@ export type ProjectHierarchy = {
       evidence?: string;
       screenshots?: ScreenshotEvidenceSummary[];
       pullRequestUrl?: string;
+      pullRequestRequired?: boolean;
       workState?: WorkState;
       stateReason?: string;
       sortOrder?: number;
@@ -829,6 +1116,12 @@ export type TaskDetail = {
   projectId: string;
   branchName?: string;
   pullRequestUrl?: string;
+  pullRequestRequired?: boolean;
+  finishRule: TaskFinishRule;
+  humanCheckText?: string;
+  workflowEpoch: number;
+  workflowStartedAt?: Date;
+  finishMetadata?: TaskFinishMetadata;
   objective?: string;
   acceptanceCriteria: string[];
   priority?: "low" | "medium" | "high" | "urgent";
@@ -879,6 +1172,9 @@ export class FactoryApplication {
   private readonly tasks: Task[];
   private readonly subtasks: Subtask[];
   private readonly statusReports: StatusReport[];
+  private readonly taskStatusReports: TaskStatusReport[];
+  private readonly taskPullRequestMerges: TaskPullRequestMergeEvidence[];
+  private readonly taskWorkflowEvents: TaskWorkflowEvent[];
   private readonly verifications: Verification[];
   private readonly reviewerAssignments: ReviewerAssignment[];
   private readonly trackerLinks: TrackerLink[];
@@ -913,6 +1209,9 @@ export class FactoryApplication {
     this.tasks = normalizedState?.tasks ?? [];
     this.subtasks = normalizedState?.subtasks ?? [];
     this.statusReports = normalizedState?.statusReports ?? [];
+    this.taskStatusReports = normalizedState?.taskStatusReports ?? [];
+    this.taskPullRequestMerges = normalizedState?.taskPullRequestMerges ?? [];
+    this.taskWorkflowEvents = normalizedState?.taskWorkflowEvents ?? [];
     this.verifications = normalizedState?.verifications ?? [];
     this.reviewerAssignments = normalizedState?.reviewerAssignments ?? [];
     this.trackerLinks = normalizedState?.trackerLinks ?? [];
@@ -1082,6 +1381,15 @@ export class FactoryApplication {
           subtaskIds.has(evidence.subtaskId)),
     );
     removeMatching(this.statusReports, (report) => reportIds.has(report.id));
+    removeMatching(this.taskStatusReports, (report) =>
+      taskIds.has(report.taskId),
+    );
+    removeMatching(this.taskPullRequestMerges, (evidence) =>
+      taskIds.has(evidence.taskId),
+    );
+    removeMatching(this.taskWorkflowEvents, (event) =>
+      taskIds.has(event.taskId),
+    );
     removeMatching(this.verifications, (verification) =>
       reportIds.has(verification.reportId),
     );
@@ -1141,6 +1449,18 @@ export class FactoryApplication {
     removeMatching(this.tasks, (task) => task.id === resolvedTaskId);
     removeMatching(this.subtasks, (subtask) => subtaskIds.has(subtask.id));
     removeMatching(
+      this.taskStatusReports,
+      (report) => report.taskId === resolvedTaskId,
+    );
+    removeMatching(
+      this.taskPullRequestMerges,
+      (evidence) => evidence.taskId === resolvedTaskId,
+    );
+    removeMatching(
+      this.taskWorkflowEvents,
+      (event) => event.taskId === resolvedTaskId,
+    );
+    removeMatching(
       this.screenshotEvidence,
       (evidence) =>
         evidence.taskId === resolvedTaskId ||
@@ -1190,6 +1510,7 @@ export class FactoryApplication {
     const task = this.tasks.find(
       (candidate) => candidate.id === subtask.taskId,
     );
+    if (task) this.assertTaskScopeMutable(task, "removing a Step");
     const previousTaskFingerprint = task
       ? recordRevisionFingerprint(task)
       : undefined;
@@ -1230,15 +1551,19 @@ export class FactoryApplication {
     }
     this.reconcileAutomaticTaskRollup(subtask.taskId);
     if (task && previousTaskFingerprint !== undefined) {
-      bumpRevisionIfChanged(task, previousTaskFingerprint);
+      this.reconcileTaskFinishRule(task, "GitHub");
+      bumpRevisionIfChanged(task, previousTaskFingerprint, true);
     }
     this.save();
   }
 
   createTask({
     branchName,
+    finishRule,
+    humanCheckText,
     name,
     pullRequestUrl,
+    pullRequestRequired,
     projectId,
     objective,
     acceptanceCriteria = [],
@@ -1250,8 +1575,11 @@ export class FactoryApplication {
     workState = "planned",
   }: {
     branchName?: string;
+    finishRule?: TaskFinishRule;
+    humanCheckText?: string;
     name: string;
     pullRequestUrl?: string | null;
+    pullRequestRequired?: boolean;
     projectId: string;
     objective?: string;
     acceptanceCriteria?: string[];
@@ -1269,15 +1597,38 @@ export class FactoryApplication {
 
     if (workState === "completed") {
       throw new Error(
-        "A Task cannot be created completed; complete its active Subtasks first.",
+        "A Task cannot be created Done; use the finish rule or mark it done with a reason.",
+      );
+    }
+    if (workState === "awaiting_verification") {
+      throw new Error(
+        "A Task reaches In review through a Task-level finished report.",
       );
     }
     const normalizedReason =
-      workState === "blocked" || workState === "awaiting_verification"
+      workState === "blocked"
         ? requireReason(stateReason, `Task ${workState} requires a reason.`)
         : undefined;
 
     const normalizedPullRequestUrl = normalizePullRequestUrl(pullRequestUrl);
+    const project = this.projects.find(
+      (candidate) => candidate.id === projectId,
+    );
+    const normalizedFinishRule =
+      finishRule ??
+      defaultTaskFinishRule(
+        {
+          branchName,
+          pullRequestUrl: normalizedPullRequestUrl ?? undefined,
+          repositoryLinks,
+        },
+        project,
+      );
+    const normalizedHumanCheckText = normalizeHumanCheckText(
+      normalizedFinishRule,
+      humanCheckText,
+    );
+    const createdAt = this.clock();
     const task = {
       id: this.idGenerator(),
       simpleId: `${TASK_SIMPLE_ID_PREFIX}${this.nextTaskSimpleId}`,
@@ -1287,6 +1638,7 @@ export class FactoryApplication {
       ...(normalizedPullRequestUrl
         ? { pullRequestUrl: normalizedPullRequestUrl }
         : {}),
+      ...(pullRequestRequired === undefined ? {} : { pullRequestRequired }),
       objective,
       acceptanceCriteria,
       priority,
@@ -1294,10 +1646,16 @@ export class FactoryApplication {
       dependencies,
       repositoryLinks,
       workState,
+      finishRule: normalizedFinishRule,
+      ...(normalizedHumanCheckText
+        ? { humanCheckText: normalizedHumanCheckText }
+        : {}),
+      workflowEpoch: 0,
+      workflowStartedAt: createdAt,
       ...(normalizedReason ? { stateReason: normalizedReason } : {}),
       sortOrder: this.nextTaskSortOrder(projectId, workState),
       revision: 1,
-      createdAt: this.clock(),
+      createdAt,
     };
 
     this.nextTaskSimpleId += 1;
@@ -1307,21 +1665,25 @@ export class FactoryApplication {
   }
 
   updateTask({
+    actor,
     acceptanceCriteria,
     branchName,
     name,
     objective,
     pullRequestUrl,
+    pullRequestRequired,
     stateReason,
     taskId,
     workState,
     expectedRevision,
   }: {
+    actor?: string;
     acceptanceCriteria?: string[];
     branchName?: string | null;
     name?: string;
     objective?: string | null;
     pullRequestUrl?: string | null;
+    pullRequestRequired?: boolean;
     stateReason?: string | null;
     taskId: string;
     workState?: WorkState;
@@ -1329,6 +1691,32 @@ export class FactoryApplication {
   }): Task {
     this.refreshFromPersistence();
     const task = this.requireTask(taskId);
+    if (
+      this.getEffectiveTaskWorkState(task) === "completed" &&
+      (name !== undefined ||
+        objective !== undefined ||
+        acceptanceCriteria !== undefined ||
+        branchName !== undefined ||
+        pullRequestUrl !== undefined ||
+        pullRequestRequired !== undefined)
+    ) {
+      throw new Error(
+        "Reopen the Task before changing its scope or linked PRs.",
+      );
+    }
+    if (
+      task.archiveState &&
+      (name !== undefined ||
+        objective !== undefined ||
+        acceptanceCriteria !== undefined ||
+        branchName !== undefined ||
+        pullRequestUrl !== undefined ||
+        pullRequestRequired !== undefined)
+    ) {
+      throw new Error(
+        "Restore the Task before changing its scope or linked PRs.",
+      );
+    }
     const currentRevision = normalizeRevision(task.revision);
     if (
       expectedRevision !== undefined &&
@@ -1342,6 +1730,8 @@ export class FactoryApplication {
       );
     }
     const previousFingerprint = recordRevisionFingerprint(task);
+    const previousPullRequestSources = this.getTaskPullRequestSources(task);
+    const actorName = normalizeWorkflowActor(actor);
 
     if (name !== undefined) {
       const trimmedName = name.trim();
@@ -1373,15 +1763,30 @@ export class FactoryApplication {
         delete task.pullRequestUrl;
       }
     }
+    if (pullRequestRequired !== undefined) {
+      if (!task.pullRequestUrl) {
+        throw new Error(
+          "A Task PR requirement cannot be set without a linked pull request.",
+        );
+      }
+      task.pullRequestRequired = pullRequestRequired;
+    } else if (pullRequestUrl !== undefined && !task.pullRequestUrl) {
+      delete task.pullRequestRequired;
+    }
 
     if (workState !== undefined) {
-      if (workState === "completed" && !this.taskWouldBeCompleted(task.id)) {
+      if (workState === "completed") {
         throw new Error(
-          "A Task cannot be completed until every non-archived Subtask is complete and accepted.",
+          "Use markTaskDone with a reason or satisfy the Task finish rule to mark it Done.",
+        );
+      }
+      if (workState === "awaiting_verification") {
+        throw new Error(
+          "A Task reaches In review through a Task-level finished report.",
         );
       }
       const normalizedReason =
-        workState === "blocked" || workState === "awaiting_verification"
+        workState === "blocked"
           ? requireReason(
               stateReason !== undefined
                 ? (stateReason ?? undefined)
@@ -1418,6 +1823,18 @@ export class FactoryApplication {
         `Task ${currentState} requires a reason.`,
       );
     }
+    if (pullRequestUrl !== undefined || pullRequestRequired !== undefined) {
+      const requirementChanges = this.getPullRequestRequirementChanges(
+        previousPullRequestSources,
+        this.getTaskPullRequestSources(task),
+      );
+      this.recordPullRequestRequirementChanges(
+        task,
+        actorName,
+        requirementChanges,
+      );
+      this.reconcileTaskFinishRule(task, actorName, true);
+    }
     bumpRevisionIfChanged(task, previousFingerprint);
     this.save();
     return task;
@@ -1442,14 +1859,482 @@ export class FactoryApplication {
     });
   }
 
+  reportTaskStatus({
+    artifacts,
+    expectedRevision,
+    handoff,
+    machineId,
+    reason,
+    reportedState,
+    reporter,
+    sessionRef,
+    summary,
+    taskId,
+    testedRevision,
+    workflowEpoch,
+  }: {
+    artifacts?: ReportArtifact[];
+    expectedRevision?: number;
+    handoff?: ReportHandoff;
+    machineId?: string;
+    reason?: string;
+    reportedState: TaskReportedState;
+    reporter: string;
+    sessionRef?: StatusReport["sessionRef"];
+    summary?: string;
+    taskId: string;
+    testedRevision?: string;
+    workflowEpoch: number;
+  }): TaskStatusReport {
+    this.refreshFromPersistence();
+    const task = this.requireTask(taskId);
+    this.assertTaskRevision(task, expectedRevision);
+    if (task.archiveState) {
+      throw new Error("Restore the Task before reporting its status.");
+    }
+    const currentEpoch = normalizeWorkflowEpoch(task.workflowEpoch);
+    if (workflowEpoch !== currentEpoch) {
+      throw new Error(
+        `Task report epoch ${workflowEpoch} is stale; current epoch is ${currentEpoch}.`,
+      );
+    }
+    if (
+      task.finishMetadata ||
+      this.getEffectiveTaskWorkState(task) === "completed"
+    ) {
+      throw new Error("Reopen the Task before reporting a new status.");
+    }
+
+    const reporterName = requireReason(
+      reporter,
+      "A Task report requires a reporter.",
+    );
+    const normalizedReason =
+      reportedState === "blocked"
+        ? requireReason(reason, "Blocked Task reports require a reason.")
+        : reason?.trim() || undefined;
+    const tracking = reportTrackingSchema.parse({
+      ...(handoff === undefined ? {} : { handoff }),
+      ...(testedRevision === undefined ? {} : { testedRevision }),
+      ...(artifacts === undefined ? {} : { artifacts }),
+    });
+    const normalizedSummary = summary?.trim() || undefined;
+    const report: TaskStatusReport = {
+      id: this.idGenerator(),
+      taskId: task.id,
+      workflowEpoch: currentEpoch,
+      reportedState,
+      reporter: reporterName,
+      ...(normalizedSummary ? { summary: normalizedSummary } : {}),
+      ...(normalizedReason ? { reason: normalizedReason } : {}),
+      ...(machineId?.trim() ? { machineId: machineId.trim() } : {}),
+      ...(sessionRef
+        ? {
+            sessionRef: {
+              ...sessionRef,
+              sourceId: normalizeT3SourceId(sessionRef.sourceId),
+            },
+          }
+        : {}),
+      ...(tracking.handoff ? { handoff: tracking.handoff } : {}),
+      ...(tracking.testedRevision
+        ? { testedRevision: tracking.testedRevision }
+        : {}),
+      ...(tracking.artifacts ? { artifacts: tracking.artifacts } : {}),
+      createdAt: this.clock(),
+    };
+
+    const previousFingerprint = recordRevisionFingerprint(task);
+    this.taskStatusReports.push(report);
+    if (!(task.workStateSource === "manual" && task.workState === "blocked")) {
+      if (reportedState === "blocked") {
+        task.workState = "blocked";
+        task.workStateSource = "rollup";
+        task.stateReason = normalizedReason;
+      } else if (reportedState === "in_progress") {
+        task.workState = "active";
+        task.workStateSource = "rollup";
+        delete task.stateReason;
+      } else if (task.finishRule?.kind === "pr_merge") {
+        task.workState = "awaiting_verification";
+        task.workStateSource = "rollup";
+        task.stateReason = this.taskFinishWaitReason(task);
+      } else if (task.finishRule?.requireHumanCheck) {
+        task.workState = "awaiting_verification";
+        task.workStateSource = "rollup";
+        task.stateReason = this.taskFinishWaitReason(task);
+      } else {
+        this.finishTask(task, {
+          kind: "agent_report",
+          epoch: currentEpoch,
+          actor: reporterName,
+          completedAt: report.createdAt,
+          ...(normalizedReason ? { reason: normalizedReason } : {}),
+        });
+      }
+      this.reconcileTaskFinishRule(task, reporterName);
+    }
+    bumpRevisionIfChanged(task, previousFingerprint, true);
+    this.save();
+    return report;
+  }
+
+  updateTaskFinishRule({
+    actor,
+    expectedRevision,
+    expectedWorkflowEpoch,
+    finishRule,
+    humanCheckText,
+    pullRequestRequirements,
+    taskId,
+  }: {
+    actor?: string;
+    expectedRevision?: number;
+    expectedWorkflowEpoch?: number;
+    finishRule: TaskFinishRule;
+    humanCheckText?: string | null;
+    pullRequestRequirements?: TaskPullRequestRequirement[];
+    taskId: string;
+  }): Task {
+    this.refreshFromPersistence();
+    const task = this.requireTask(taskId);
+    this.assertTaskRevision(task, expectedRevision);
+    this.assertTaskWorkflowEpoch(task, expectedWorkflowEpoch);
+    if (task.archiveState) {
+      throw new Error("Restore the Task before changing its finish rule.");
+    }
+    if (
+      task.finishMetadata ||
+      this.getEffectiveTaskWorkState(task) === "completed"
+    ) {
+      throw new Error("Reopen the Task before changing its finish rule.");
+    }
+    const normalizedRule = normalizeTaskFinishRule(finishRule);
+    const nextCheckText = normalizeHumanCheckText(
+      normalizedRule,
+      humanCheckText === undefined
+        ? task.humanCheckText
+        : (humanCheckText ?? undefined),
+    );
+    const canonicalRequirementChanges =
+      pullRequestRequirements === undefined
+        ? []
+        : this.validatePullRequestRequirements(task, pullRequestRequirements);
+    const previousFingerprint = recordRevisionFingerprint(task);
+    const actorName = normalizeWorkflowActor(actor);
+    const previousRule = task.finishRule;
+    const previousCheckText = task.humanCheckText;
+    task.finishRule = normalizedRule;
+    if (nextCheckText) task.humanCheckText = nextCheckText;
+    else delete task.humanCheckText;
+    for (const change of canonicalRequirementChanges) {
+      if (change.changes.length === 0) continue;
+      for (const subtask of this.subtasks) {
+        if (
+          subtask.taskId === task.id &&
+          subtask.archiveState === undefined &&
+          normalizePullRequestUrl(subtask.pullRequestUrl) ===
+            change.pullRequestUrl
+        ) {
+          const previousSourceFingerprint = recordRevisionFingerprint(subtask);
+          subtask.pullRequestRequired = change.required;
+          bumpRevisionIfChanged(subtask, previousSourceFingerprint);
+        }
+      }
+      if (
+        normalizePullRequestUrl(task.pullRequestUrl) === change.pullRequestUrl
+      ) {
+        task.pullRequestRequired = change.required;
+      }
+    }
+    const requirementChanges = canonicalRequirementChanges.flatMap(
+      (row) => row.changes,
+    );
+    const ruleChanged =
+      JSON.stringify(previousRule) !== JSON.stringify(normalizedRule);
+    const checkTextChanged = previousCheckText !== task.humanCheckText;
+    if (ruleChanged || checkTextChanged || requirementChanges.length > 0) {
+      this.addTaskWorkflowEvent(task, {
+        kind: "finish_rule_changed",
+        actor: actorName,
+        reason: this.describeTaskFinishRuleChange(
+          normalizedRule,
+          canonicalRequirementChanges,
+        ),
+        ...(requirementChanges.length > 0
+          ? { pullRequestRequirementChanges: requirementChanges }
+          : {}),
+      });
+      this.reconcileTaskFinishRule(task, actorName, true);
+      bumpRevisionIfChanged(task, previousFingerprint, true);
+    }
+    this.save();
+    return task;
+  }
+
+  checkTask({
+    checker,
+    expectedRevision,
+    reason,
+    taskId,
+  }: {
+    checker: string;
+    expectedRevision: number;
+    reason?: string;
+    taskId: string;
+  }): Task {
+    this.refreshFromPersistence();
+    const task = this.requireTask(taskId);
+    this.assertTaskRevision(task, expectedRevision);
+    if (task.archiveState) {
+      throw new Error("Restore the Task before checking it.");
+    }
+    if (!task.finishRule?.requireHumanCheck) {
+      throw new Error("This Task does not require a human check.");
+    }
+    if (
+      task.finishMetadata ||
+      this.getEffectiveTaskWorkState(task) === "completed"
+    ) {
+      throw new Error("Reopen the Task before recording another human check.");
+    }
+    if (!this.isTaskFinishConditionSatisfied(task)) {
+      throw new Error("The Task finish rule is not ready for a human check.");
+    }
+    if (task.workStateSource === "manual" && task.workState === "blocked") {
+      throw new Error("Clear the manual Task hold before checking it.");
+    }
+    const checkerName = requireReason(
+      checker,
+      "A human check requires a checker.",
+    );
+    const normalizedReason = reason?.trim() || undefined;
+    const previousFingerprint = recordRevisionFingerprint(task);
+    const metadata: TaskFinishMetadata = {
+      kind: "human_check",
+      epoch: normalizeWorkflowEpoch(task.workflowEpoch),
+      actor: checkerName,
+      completedAt: this.clock(),
+      ...(normalizedReason ? { reason: normalizedReason } : {}),
+    };
+    this.finishTask(task, metadata);
+    this.addTaskWorkflowEvent(task, {
+      kind: "checked",
+      actor: checkerName,
+      ...(normalizedReason ? { reason: normalizedReason } : {}),
+    });
+    bumpRevisionIfChanged(task, previousFingerprint, true);
+    this.save();
+    return task;
+  }
+
+  markTaskDone({
+    actor,
+    expectedRevision,
+    reason,
+    taskId,
+  }: {
+    actor: string;
+    expectedRevision?: number;
+    reason: string;
+    taskId: string;
+  }): Task {
+    this.refreshFromPersistence();
+    const task = this.requireTask(taskId);
+    this.assertTaskRevision(task, expectedRevision);
+    if (task.archiveState) {
+      throw new Error("Restore the Task before marking it done.");
+    }
+    const actorName = requireReason(
+      actor,
+      "Marking a Task done requires an actor.",
+    );
+    const normalizedReason = requireReason(
+      reason,
+      "Marking a Task done requires a reason.",
+    );
+    const previousFingerprint = recordRevisionFingerprint(task);
+    this.finishTask(task, {
+      kind: "human_mark_done",
+      epoch: normalizeWorkflowEpoch(task.workflowEpoch),
+      actor: actorName,
+      completedAt: this.clock(),
+      reason: normalizedReason,
+    });
+    this.addTaskWorkflowEvent(task, {
+      kind: "marked_done",
+      actor: actorName,
+      reason: normalizedReason,
+    });
+    bumpRevisionIfChanged(task, previousFingerprint, true);
+    this.save();
+    return task;
+  }
+
+  reopenTask({
+    actor,
+    expectedRevision,
+    reason,
+    taskId,
+  }: {
+    actor: string;
+    expectedRevision?: number;
+    reason: string;
+    taskId: string;
+  }): Task {
+    this.refreshFromPersistence();
+    const task = this.requireTask(taskId);
+    this.assertTaskRevision(task, expectedRevision);
+    if (task.archiveState) {
+      throw new Error("Restore the Task before reopening it.");
+    }
+    const currentState = this.getEffectiveTaskWorkState(task);
+    if (
+      currentState !== "completed" &&
+      currentState !== "awaiting_verification"
+    ) {
+      throw new Error("Only a Done or In review Task can be reopened.");
+    }
+    const actorName = requireReason(
+      actor,
+      "Reopening a Task requires an actor.",
+    );
+    const normalizedReason = requireReason(
+      reason,
+      "Reopening a Task requires a reason.",
+    );
+    const previousFingerprint = recordRevisionFingerprint(task);
+    const priorEpoch = normalizeWorkflowEpoch(task.workflowEpoch);
+    const nextEpoch = priorEpoch + 1;
+    task.workflowEpoch = nextEpoch;
+    task.workflowStartedAt = this.clock();
+    delete task.finishMetadata;
+    task.workState = "active";
+    task.workStateSource = "manual";
+    delete task.stateReason;
+    task.sortOrder = this.nextTaskSortOrder(task.projectId, "active", task.id);
+    this.addTaskWorkflowEvent(task, {
+      kind: currentState === "awaiting_verification" ? "sent_back" : "reopened",
+      actor: actorName,
+      reason: normalizedReason,
+    });
+    bumpRevisionIfChanged(task, previousFingerprint, true);
+    this.save();
+    return task;
+  }
+
+  recordTaskPullRequestMerge({
+    defaultBranch,
+    mergeSha,
+    mergedAt,
+    observedAt,
+    pullRequestUrl,
+    reachedDefaultBranch,
+    taskId,
+    workflowEpoch,
+  }: {
+    taskId: string;
+    pullRequestUrl: string;
+    workflowEpoch: number;
+    mergeSha: string;
+    mergedAt: Date;
+    defaultBranch: string;
+    reachedDefaultBranch: true;
+    observedAt: Date;
+  }): TaskPullRequestMergeEvidence {
+    this.refreshFromPersistence();
+    const task = this.requireTask(taskId);
+    const currentEpoch = normalizeWorkflowEpoch(task.workflowEpoch);
+    if (workflowEpoch !== currentEpoch) {
+      throw new Error(
+        `Task merge epoch ${workflowEpoch} is stale; current epoch is ${currentEpoch}.`,
+      );
+    }
+    if (reachedDefaultBranch !== true) {
+      throw new Error(
+        "A PR merge counts only after its merge SHA reaches the default branch.",
+      );
+    }
+    const normalizedUrl = normalizePullRequestUrl(pullRequestUrl);
+    if (!normalizedUrl) throw new Error("A merged PR URL is required.");
+    if (
+      !this.getTaskPullRequestSources(task).some(
+        (entry) => entry.pullRequestUrl === normalizedUrl,
+      )
+    ) {
+      throw new Error(
+        "The merged PR must be linked to the Task or one of its Steps.",
+      );
+    }
+    const normalizedSha = requireReason(
+      mergeSha,
+      "A PR merge requires a merge SHA.",
+    );
+    const branch = requireReason(
+      defaultBranch,
+      "A PR merge requires the repository default branch.",
+    );
+    const mergedTime = normalizeEvidenceDate(mergedAt, "merge time");
+    const observedTime = normalizeEvidenceDate(observedAt, "observation time");
+    if (observedTime.getTime() < mergedTime.getTime()) {
+      throw new Error("A PR merge cannot be observed before its merge time.");
+    }
+    const existing = this.taskPullRequestMerges.find(
+      (candidate) =>
+        candidate.taskId === task.id &&
+        normalizePullRequestUrl(candidate.pullRequestUrl) === normalizedUrl &&
+        candidate.mergeSha.toLowerCase() === normalizedSha.toLowerCase(),
+    );
+    if (existing) return existing;
+    const conflictingMerge = this.taskPullRequestMerges.find(
+      (candidate) =>
+        candidate.taskId === task.id &&
+        candidate.workflowEpoch === currentEpoch &&
+        normalizePullRequestUrl(candidate.pullRequestUrl) === normalizedUrl,
+    );
+    if (conflictingMerge) {
+      throw new Error(
+        "Conflicting merge evidence already exists for this PR and Task epoch.",
+      );
+    }
+
+    const evidence: TaskPullRequestMergeEvidence = {
+      id: this.idGenerator(),
+      taskId: task.id,
+      pullRequestUrl: normalizedUrl,
+      workflowEpoch: currentEpoch,
+      mergeSha: normalizedSha,
+      mergedAt: mergedTime,
+      defaultBranch: branch,
+      reachedDefaultBranch: true,
+      observedAt: observedTime,
+    };
+    const previousFingerprint = recordRevisionFingerprint(task);
+    this.taskPullRequestMerges.push(evidence);
+    this.addTaskWorkflowEvent(task, {
+      kind: "pull_request_merged",
+      actor: "GitHub",
+      pullRequestUrl: normalizedUrl,
+      mergeSha: normalizedSha,
+      reason: `Merged to ${branch}`,
+    });
+    this.reconcileTaskFinishRule(task, "GitHub");
+    bumpRevisionIfChanged(task, previousFingerprint, true);
+    this.save();
+    return evidence;
+  }
+
   resumeTaskRollup(taskId: string): Task {
     this.refreshFromPersistence();
     const task = this.requireTask(taskId);
     const previousFingerprint = recordRevisionFingerprint(task);
     if (task.archiveState)
       throw new Error("Restore the Task before changing its work state.");
+    if (task.finishMetadata || task.workState === "completed") {
+      throw new Error("Reopen the Task before resuming its automatic state.");
+    }
     const rollup = this.getTaskRollup(task.id);
-    this.setTaskRollupState(task, rollup.state, rollup.reason);
+    this.setTaskRollupState(task, rollup.state);
     bumpRevisionIfChanged(task, previousFingerprint);
     this.save();
     return task;
@@ -1459,19 +2344,27 @@ export class FactoryApplication {
     description,
     name,
     pullRequestUrl,
+    pullRequestRequired,
     taskId,
   }: {
     description?: string;
     name: string;
     pullRequestUrl?: string | null;
+    pullRequestRequired?: boolean;
     taskId: string;
   }): Subtask {
     this.refreshFromPersistence();
     const parentTask = this.requireTask(taskId);
+    this.assertTaskScopeMutable(parentTask, "adding a Step");
     const previousTaskFingerprint = recordRevisionFingerprint(parentTask);
     const resolvedTaskId = parentTask.id;
 
     const normalizedPullRequestUrl = normalizePullRequestUrl(pullRequestUrl);
+    if (pullRequestRequired !== undefined && !normalizedPullRequestUrl) {
+      throw new Error(
+        "A Step PR requirement cannot be set without a linked pull request.",
+      );
+    }
     const subtask = {
       id: this.idGenerator(),
       simpleId: `${SUBTASK_SIMPLE_ID_PREFIX}${this.nextSubtaskSimpleId}`,
@@ -1481,6 +2374,7 @@ export class FactoryApplication {
       ...(normalizedPullRequestUrl
         ? { pullRequestUrl: normalizedPullRequestUrl }
         : {}),
+      ...(pullRequestRequired === undefined ? {} : { pullRequestRequired }),
       sortOrder: this.nextSubtaskSortOrder(resolvedTaskId, "planned"),
       revision: 1,
       createdAt: this.clock(),
@@ -1489,28 +2383,49 @@ export class FactoryApplication {
     this.nextSubtaskSimpleId += 1;
     this.subtasks.push(subtask);
     this.reconcileAutomaticTaskRollup(resolvedTaskId);
-    bumpRevisionIfChanged(parentTask, previousTaskFingerprint);
+    this.reconcileTaskFinishRule(parentTask, "GitHub");
+    bumpRevisionIfChanged(parentTask, previousTaskFingerprint, true);
     this.save();
     return subtask;
   }
 
   updateSubtask({
+    actor,
     description,
     evidence,
     name,
     pullRequestUrl,
+    pullRequestRequired,
     subtaskId,
     expectedRevision,
   }: {
+    actor?: string;
     description?: string | null;
     evidence?: string | null;
     name?: string;
     pullRequestUrl?: string | null;
+    pullRequestRequired?: boolean;
     subtaskId: string;
     expectedRevision?: number;
   }): Subtask {
     this.refreshFromPersistence();
     const subtask = this.requireSubtask(subtaskId);
+    const parentTask = this.tasks.find(
+      (candidate) => candidate.id === subtask.taskId,
+    );
+    if (
+      parentTask &&
+      (parentTask.archiveState !== undefined ||
+        this.getEffectiveTaskWorkState(parentTask) === "completed") &&
+      (name !== undefined ||
+        description !== undefined ||
+        pullRequestUrl !== undefined ||
+        pullRequestRequired !== undefined)
+    ) {
+      throw new Error(
+        "Restore or reopen the Task before changing a Step's scope or linked PR.",
+      );
+    }
     const currentRevision = normalizeRevision(subtask.revision);
     if (
       expectedRevision !== undefined &&
@@ -1524,6 +2439,13 @@ export class FactoryApplication {
       );
     }
     const previousFingerprint = recordRevisionFingerprint(subtask);
+    const previousTaskFingerprint = parentTask
+      ? recordRevisionFingerprint(parentTask)
+      : undefined;
+    const previousPullRequestSources = parentTask
+      ? this.getTaskPullRequestSources(parentTask)
+      : [];
+    const actorName = normalizeWorkflowActor(actor);
 
     if (name !== undefined) {
       const trimmedName = name.trim();
@@ -1550,7 +2472,34 @@ export class FactoryApplication {
         delete subtask.pullRequestUrl;
       }
     }
+    if (pullRequestRequired !== undefined) {
+      if (!subtask.pullRequestUrl) {
+        throw new Error(
+          "A Step PR requirement cannot be set without a linked pull request.",
+        );
+      }
+      subtask.pullRequestRequired = pullRequestRequired;
+    } else if (pullRequestUrl !== undefined && !subtask.pullRequestUrl) {
+      delete subtask.pullRequestRequired;
+    }
+    const childChanged =
+      recordRevisionFingerprint(subtask) !== previousFingerprint;
     bumpRevisionIfChanged(subtask, previousFingerprint);
+    if (parentTask && previousTaskFingerprint !== undefined) {
+      if (pullRequestUrl !== undefined || pullRequestRequired !== undefined) {
+        const requirementChanges = this.getPullRequestRequirementChanges(
+          previousPullRequestSources,
+          this.getTaskPullRequestSources(parentTask),
+        );
+        this.recordPullRequestRequirementChanges(
+          parentTask,
+          actorName,
+          requirementChanges,
+        );
+        this.reconcileTaskFinishRule(parentTask, actorName, true);
+      }
+      bumpRevisionIfChanged(parentTask, previousTaskFingerprint, childChanged);
+    }
     this.save();
     return subtask;
   }
@@ -1801,6 +2750,7 @@ export class FactoryApplication {
         this.promoteParentTask(subtask.taskId, {
           nextState: this.getSubtaskEffectiveWorkState(subtask),
           previousState,
+          subtaskId: subtask.id,
         });
       }
       acceptanceChanged ||= subtaskAcceptanceChanged;
@@ -1811,14 +2761,10 @@ export class FactoryApplication {
       );
     }
 
+    if (source === "human") delete task.archiveState;
     const taskAcceptanceChanged =
       acceptanceChanged ||
-      task.archiveState !== undefined ||
-      task.workStateSource !== "rollup" ||
-      task.workState !== "completed" ||
-      task.stateReason !== undefined;
-    if (source === "human") delete task.archiveState;
-    if (decision === "accepted") this.setTaskRollupState(task, "completed");
+      recordRevisionFingerprint(task) !== previousTaskFingerprint;
     bumpRevisionIfChanged(task, previousTaskFingerprint, taskAcceptanceChanged);
     this.save();
   }
@@ -1841,15 +2787,17 @@ export class FactoryApplication {
     const task = this.tasks.find(
       (candidate) => candidate.id === subtask.taskId,
     );
+    if (task) this.assertTaskNotDone(task, "archiving a Step");
     const previousTaskFingerprint = task
       ? recordRevisionFingerprint(task)
       : undefined;
 
     subtask.archiveState = archiveState;
     this.reconcileAutomaticTaskRollup(subtask.taskId);
+    if (task) this.reconcileTaskFinishRule(task, "GitHub");
     bumpRevisionIfChanged(subtask, previousSubtaskFingerprint);
     if (task && previousTaskFingerprint !== undefined) {
-      bumpRevisionIfChanged(task, previousTaskFingerprint);
+      bumpRevisionIfChanged(task, previousTaskFingerprint, true);
     }
     this.save();
   }
@@ -1861,15 +2809,17 @@ export class FactoryApplication {
     const task = this.tasks.find(
       (candidate) => candidate.id === subtask.taskId,
     );
+    if (task) this.assertTaskNotDone(task, "restoring a Step");
     const previousTaskFingerprint = task
       ? recordRevisionFingerprint(task)
       : undefined;
 
     delete subtask.archiveState;
     this.reconcileAutomaticTaskRollup(subtask.taskId);
+    if (task) this.reconcileTaskFinishRule(task, "GitHub");
     bumpRevisionIfChanged(subtask, previousSubtaskFingerprint);
     if (task && previousTaskFingerprint !== undefined) {
-      bumpRevisionIfChanged(task, previousTaskFingerprint);
+      bumpRevisionIfChanged(task, previousTaskFingerprint, true);
     }
     this.save();
   }
@@ -1908,11 +2858,8 @@ export class FactoryApplication {
       : undefined;
 
     const normalizedReason =
-      reportedState === "blocked" || reportedState === "complete"
-        ? requireReason(
-            reason,
-            `Subtask reports for ${reportedState} require a reason.`,
-          )
+      reportedState === "blocked"
+        ? requireReason(reason, "Blocked Step reports require a reason.")
         : reason?.trim() || undefined;
     const tracking = reportTrackingSchema.parse({
       ...(handoff === undefined ? {} : { handoff }),
@@ -1980,7 +2927,11 @@ export class FactoryApplication {
     this.statusReports.push(report);
     const nextState = this.getSubtaskEffectiveWorkState(subtask);
     this.moveSubtaskToStateIfChanged(subtask, previousState);
-    this.promoteParentTask(subtask.taskId, { nextState, previousState });
+    this.promoteParentTask(subtask.taskId, {
+      nextState,
+      previousState,
+      subtaskId: subtask.id,
+    });
     bumpRevisionIfChanged(
       subtask,
       previousSubtaskFingerprint,
@@ -2111,7 +3062,11 @@ export class FactoryApplication {
     });
     const nextState = this.getSubtaskEffectiveWorkState(subtask);
     this.moveSubtaskToStateIfChanged(subtask, previousState);
-    this.promoteParentTask(subtask.taskId, { nextState, previousState });
+    this.promoteParentTask(subtask.taskId, {
+      nextState,
+      previousState,
+      subtaskId: subtask.id,
+    });
     // Verification history is part of a review snapshot even when the
     // effective Work State stays the same (for example, deferred to rejected).
     bumpRevisionIfChanged(subtask, previousSubtaskFingerprint, true);
@@ -2279,13 +3234,12 @@ export class FactoryApplication {
       this.moveSubtaskToStateIfChanged(child, previousState);
       bumpRevisionIfChanged(child, previousSubtaskFingerprint, true);
     }
-    this.setTaskRollupState(task, "completed");
     bumpRevisionIfChanged(task, previousTaskFingerprint, true);
     this.save();
     return {
       reconciled: true,
       reason:
-        "The linked merged PR accepted every active Subtask with a current complete report.",
+        "The legacy linked-PR verification was recorded as history; Task completion follows its current finish rule.",
       mergeSha: evidence.mergeSha,
       mergedAt,
     };
@@ -2332,6 +3286,7 @@ export class FactoryApplication {
     this.promoteParentTask(subtask.taskId, {
       nextState: this.getSubtaskEffectiveWorkState(subtask),
       previousState,
+      subtaskId: subtask.id,
     });
     bumpRevisionIfChanged(subtask, previousSubtaskFingerprint, true);
     bumpRevisionIfChanged(task, previousTaskFingerprint);
@@ -2436,7 +3391,10 @@ export class FactoryApplication {
           ...(report.artifacts ? { artifacts: report.artifacts } : {}),
           ...(verification ? { verification } : {}),
           verificationState:
-            verification?.decision ?? ("awaiting_verification" as const),
+            verification?.decision ??
+            (report.reportedState === "complete"
+              ? ("not_required" as const)
+              : ("unreported" as const)),
         };
       });
 
@@ -2467,33 +3425,50 @@ export class FactoryApplication {
       (subtask) => subtask.archiveState === undefined,
     );
 
-    const taskCompleted =
-      activeSubtasks.length > 0 &&
-      activeSubtasks.every(
-        (subtask) =>
-          subtask.reportedState === "complete" &&
-          subtask.verificationState === "accepted",
-      );
-
     const taskState = task.archiveState ?? this.getEffectiveTaskWorkState(task);
+    const finishRule =
+      task.finishRule ??
+      defaultTaskFinishRule(
+        task,
+        this.projects.find((project) => project.id === task.projectId),
+      );
+    const requiredPullRequests = this.getTaskRequiredPullRequests(task);
+    const humanCheckReady =
+      finishRule.requireHumanCheck &&
+      task.archiveState === undefined &&
+      !task.finishMetadata &&
+      task.workState !== "completed" &&
+      !(task.workStateSource === "manual" && task.workState === "blocked") &&
+      this.isTaskFinishConditionSatisfied(task);
+    const latestTaskReport = this.getCurrentTaskStatusReport(task.id);
     const stateReason =
       taskState === "blocked" || taskState === "awaiting_verification"
-        ? ((task.workStateSource === "rollup"
-            ? this.getTaskRollup(task.id).reason
-            : task.stateReason) ??
+        ? (task.stateReason ??
           activeSubtasks.find((subtask) => subtask.effectiveState === taskState)
-            ?.reason)
+            ?.reason ??
+          (latestTaskReport?.reportedState === "blocked"
+            ? latestTaskReport.reason
+            : undefined))
         : undefined;
 
     return {
       taskId: task.id,
       taskSimpleId: requiredSimpleId(task, "Task"),
       taskRevision: normalizeRevision(task.revision),
-      taskCompleted,
+      taskCompleted: taskState === "completed",
       ...(task.archiveState ? { archiveState: task.archiveState } : {}),
       taskState,
+      manualHold:
+        task.workStateSource === "manual" && task.workState === "blocked",
       ...(stateReason ? { stateReason } : {}),
       ...(taskVerification ? { taskVerification } : {}),
+      finishRule,
+      ...(task.humanCheckText ? { humanCheckText: task.humanCheckText } : {}),
+      humanCheckReady,
+      workflowEpoch: normalizeWorkflowEpoch(task.workflowEpoch),
+      ...(latestTaskReport ? { latestTaskReport } : {}),
+      ...(task.finishMetadata ? { finishMetadata: task.finishMetadata } : {}),
+      requiredPullRequests,
       subtasks,
     };
   }
@@ -2568,10 +3543,9 @@ export class FactoryApplication {
   private getAttentionProjectionFromCurrentState(): AttentionItem[] {
     const stateOrder: Record<AttentionItem["state"], number> = {
       blocked: 0,
-      awaiting_verification: 1,
-      active: 2,
-      planned: 3,
-      backlog: 4,
+      active: 1,
+      planned: 2,
+      backlog: 3,
     };
 
     return this.tasks
@@ -2579,6 +3553,7 @@ export class FactoryApplication {
         const state = this.getTaskStatusFromCurrentState(task.id).taskState;
         if (
           state === "completed" ||
+          state === "awaiting_verification" ||
           state === "released" ||
           state === "wont_do"
         ) {
@@ -2617,6 +3592,303 @@ export class FactoryApplication {
 
     return this.statusReports.filter(
       (report) => report.subtaskId === resolvedSubtaskId,
+    );
+  }
+
+  getTaskReportHistory(taskId: string): TaskStatusReport[] {
+    this.refreshFromPersistence();
+    const resolvedTaskId = this.requireTask(taskId).id;
+    return this.taskStatusReports.filter(
+      (report) => report.taskId === resolvedTaskId,
+    );
+  }
+
+  getTaskWorkflowHistory(taskId: string): TaskWorkflowEvent[] {
+    this.refreshFromPersistence();
+    const resolvedTaskId = this.requireTask(taskId).id;
+    return this.taskWorkflowEvents
+      .filter((event) => event.taskId === resolvedTaskId)
+      .slice()
+      .sort(
+        (left, right) => right.createdAt.getTime() - left.createdAt.getTime(),
+      );
+  }
+
+  private assertTaskWorkflowEpoch(
+    task: Task,
+    expectedWorkflowEpoch: number | undefined,
+  ): void {
+    if (expectedWorkflowEpoch === undefined) return;
+    const currentEpoch = normalizeWorkflowEpoch(task.workflowEpoch);
+    if (expectedWorkflowEpoch !== currentEpoch) {
+      throw new Error(
+        `Task workflow epoch ${expectedWorkflowEpoch} is stale; current epoch is ${currentEpoch}.`,
+      );
+    }
+  }
+
+  private validatePullRequestRequirements(
+    task: Task,
+    requirements: TaskPullRequestRequirement[],
+  ): Array<{
+    pullRequestUrl: string;
+    required: boolean;
+    changes: NonNullable<TaskWorkflowEvent["pullRequestRequirementChanges"]>;
+  }> {
+    const sources = this.getTaskPullRequestSources(task);
+    const sourcesByUrl = new Map<string, typeof sources>();
+    for (const source of sources) {
+      const current = sourcesByUrl.get(source.pullRequestUrl) ?? [];
+      current.push(source);
+      sourcesByUrl.set(source.pullRequestUrl, current);
+    }
+    const requirementsByUrl = new Map<string, boolean>();
+    for (const requirement of requirements) {
+      const normalizedUrl = normalizePullRequestUrl(requirement.pullRequestUrl);
+      if (!normalizedUrl) {
+        throw new Error("Each PR requirement needs a valid linked PR URL.");
+      }
+      if (requirementsByUrl.has(normalizedUrl)) {
+        throw new Error(`Duplicate PR requirement for ${normalizedUrl}.`);
+      }
+      if (!sourcesByUrl.has(normalizedUrl)) {
+        throw new Error(
+          `PR ${normalizedUrl} is no longer linked to the Task or an active Step. Refresh and try again.`,
+        );
+      }
+      requirementsByUrl.set(normalizedUrl, requirement.required);
+    }
+    if (
+      requirementsByUrl.size !== sourcesByUrl.size ||
+      [...sourcesByUrl.keys()].some((url) => !requirementsByUrl.has(url))
+    ) {
+      throw new Error(
+        "The linked PR list changed while editing. Refresh the Task and try again.",
+      );
+    }
+
+    const effectiveByUrl = new Map(
+      this.getTaskRequiredPullRequests(task).map((row) => [
+        row.pullRequestUrl,
+        row.required,
+      ]),
+    );
+    return [...requirementsByUrl].map(([pullRequestUrl, required]) => {
+      const linkedSources = sourcesByUrl.get(pullRequestUrl)!;
+      const unchanged = effectiveByUrl.get(pullRequestUrl) === required;
+      const changes = unchanged
+        ? []
+        : linkedSources.map((source) => ({
+            pullRequestUrl,
+            sourceKind: source.kind,
+            sourceId: source.id,
+            previousRequired: source.required,
+            required,
+          }));
+      return { pullRequestUrl, required, changes };
+    });
+  }
+
+  private getPullRequestRequirementChanges(
+    before: Array<{
+      pullRequestUrl: string;
+      kind: "task" | "step";
+      id: string;
+      required: boolean;
+    }>,
+    after: Array<{
+      pullRequestUrl: string;
+      kind: "task" | "step";
+      id: string;
+      required: boolean;
+    }>,
+  ): NonNullable<TaskWorkflowEvent["pullRequestRequirementChanges"]> {
+    const key = (source: (typeof before)[number]) =>
+      `${source.pullRequestUrl}\n${source.kind}\n${source.id}`;
+    const beforeByKey = new Map(before.map((source) => [key(source), source]));
+    const afterByKey = new Map(after.map((source) => [key(source), source]));
+    const changes: NonNullable<
+      TaskWorkflowEvent["pullRequestRequirementChanges"]
+    > = [];
+    for (const [sourceKey, source] of beforeByKey) {
+      const next = afterByKey.get(sourceKey);
+      if (!next) {
+        changes.push({
+          pullRequestUrl: source.pullRequestUrl,
+          sourceKind: source.kind,
+          sourceId: source.id,
+          previousRequired: source.required,
+          required: null,
+        });
+      } else if (next.required !== source.required) {
+        changes.push({
+          pullRequestUrl: source.pullRequestUrl,
+          sourceKind: source.kind,
+          sourceId: source.id,
+          previousRequired: source.required,
+          required: next.required,
+        });
+      }
+    }
+    for (const [sourceKey, source] of afterByKey) {
+      if (beforeByKey.has(sourceKey)) continue;
+      changes.push({
+        pullRequestUrl: source.pullRequestUrl,
+        sourceKind: source.kind,
+        sourceId: source.id,
+        previousRequired: null,
+        required: source.required,
+      });
+    }
+    return changes;
+  }
+
+  private recordPullRequestRequirementChanges(
+    task: Task,
+    actor: string,
+    changes: NonNullable<TaskWorkflowEvent["pullRequestRequirementChanges"]>,
+  ): void {
+    if (changes.length === 0) return;
+    const changeSummaryByUrl = new Map<string, string>();
+    for (const change of changes) {
+      const number = change.pullRequestUrl.split("/").pop();
+      const action =
+        change.required === null
+          ? "no longer linked"
+          : change.required
+            ? "required"
+            : "not required";
+      changeSummaryByUrl.set(change.pullRequestUrl, `PR #${number} ${action}`);
+    }
+    const changeSummary = [...changeSummaryByUrl.values()].join("; ");
+    this.addTaskWorkflowEvent(task, {
+      kind: "finish_rule_changed",
+      actor,
+      reason: `Changed PR requirements: ${changeSummary}.`,
+      pullRequestRequirementChanges: changes,
+    });
+  }
+
+  private describeTaskFinishRuleChange(
+    rule: TaskFinishRule,
+    requirements: Array<{
+      pullRequestUrl: string;
+      required: boolean;
+      changes: NonNullable<TaskWorkflowEvent["pullRequestRequirementChanges"]>;
+    }>,
+  ): string {
+    const summary = `${rule.kind}${rule.requireHumanCheck ? " with human check" : ""}`;
+    const requirementChanges = requirements.flatMap((row) => row.changes);
+    if (requirementChanges.length === 0) return summary;
+    const changeSummaryByUrl = new Map<string, string>();
+    for (const change of requirementChanges) {
+      const number = change.pullRequestUrl.split("/").pop();
+      changeSummaryByUrl.set(
+        change.pullRequestUrl,
+        `PR #${number} ${change.required ? "required" : "not required"}`,
+      );
+    }
+    const changeSummary = [...changeSummaryByUrl.values()].join("; ");
+    return `${summary} · ${changeSummary}`;
+  }
+
+  getTaskActivityHistory(taskId: string): TaskActivityItem[] {
+    this.refreshFromPersistence();
+    const task = this.requireTask(taskId);
+    const subtaskById = new Map(
+      this.subtasks
+        .filter((subtask) => subtask.taskId === task.id)
+        .map((subtask) => [subtask.id, subtask]),
+    );
+    const statusReports = this.statusReports.filter((report) =>
+      subtaskById.has(report.subtaskId),
+    );
+    const reportById = new Map(
+      statusReports.map((report) => [report.id, report]),
+    );
+    const taskItems: TaskActivityItem[] = this.taskStatusReports
+      .filter((report) => report.taskId === task.id)
+      .map((report) => ({
+        id: report.id,
+        taskId: task.id,
+        kind: "task_report",
+        actor: report.reporter,
+        createdAt: report.createdAt,
+        workflowEpoch: report.workflowEpoch,
+        ...(report.summary ? { summary: report.summary } : {}),
+        ...(report.reason ? { reason: report.reason } : {}),
+        reportedState: report.reportedState,
+      }));
+    const stepItems: TaskActivityItem[] = statusReports.map((report) => ({
+      id: report.id,
+      taskId: task.id,
+      kind: "step_report",
+      actor: report.reporter,
+      createdAt: report.createdAt,
+      ...(report.evidence ? { summary: report.evidence } : {}),
+      ...(report.reason ? { reason: report.reason } : {}),
+      subtaskId: report.subtaskId,
+      reportedState: report.reportedState,
+    }));
+    const verificationItems: TaskActivityItem[] = this.verifications
+      .filter((verification) => {
+        const report = reportById.get(verification.reportId);
+        return report !== undefined;
+      })
+      .map((verification) => {
+        const report = reportById.get(verification.reportId)!;
+        return {
+          id: verification.id,
+          taskId: task.id,
+          kind: "verification",
+          actor: verification.verifier,
+          createdAt: verification.createdAt,
+          ...(verification.reportText
+            ? { summary: verification.reportText }
+            : {}),
+          ...(verification.reason ? { reason: verification.reason } : {}),
+          ...(verification.pullRequestUrl
+            ? { pullRequestUrl: verification.pullRequestUrl }
+            : {}),
+          ...(verification.mergeSha ? { mergeSha: verification.mergeSha } : {}),
+          subtaskId: report.subtaskId,
+          reportedState: report.reportedState,
+          verificationDecision: verification.decision,
+          ...(verification.source
+            ? { verificationSource: verification.source }
+            : {}),
+        };
+      });
+    const workflowItems: TaskActivityItem[] = this.taskWorkflowEvents
+      .filter((event) => event.taskId === task.id)
+      .map((event) => ({
+        id: event.id,
+        taskId: task.id,
+        kind: event.kind,
+        actor: event.actor,
+        createdAt: event.createdAt,
+        workflowEpoch: event.workflowEpoch,
+        ...(event.reason ? { reason: event.reason } : {}),
+        ...(event.pullRequestRequirementChanges
+          ? {
+              pullRequestRequirementChanges:
+                event.pullRequestRequirementChanges,
+            }
+          : {}),
+        ...(event.pullRequestUrl
+          ? { pullRequestUrl: event.pullRequestUrl }
+          : {}),
+        ...(event.mergeSha ? { mergeSha: event.mergeSha } : {}),
+      }));
+    return [
+      ...taskItems,
+      ...stepItems,
+      ...verificationItems,
+      ...workflowItems,
+    ].sort(
+      (left, right) =>
+        right.createdAt.getTime() - left.createdAt.getTime() ||
+        right.id.localeCompare(left.id),
     );
   }
 
@@ -2851,6 +4123,17 @@ export class FactoryApplication {
             ...(task.pullRequestUrl
               ? { pullRequestUrl: task.pullRequestUrl }
               : {}),
+            ...(task.pullRequestUrl
+              ? { pullRequestRequired: task.pullRequestRequired !== false }
+              : {}),
+            finishRule: task.finishRule!,
+            ...(task.humanCheckText
+              ? { humanCheckText: task.humanCheckText }
+              : {}),
+            workflowEpoch: normalizeWorkflowEpoch(task.workflowEpoch),
+            ...(task.finishMetadata
+              ? { finishMetadata: task.finishMetadata }
+              : {}),
             workState: taskState,
             ...(taskStateReason ? { stateReason: taskStateReason } : {}),
             ...(task.sortOrder !== undefined
@@ -2869,6 +4152,12 @@ export class FactoryApplication {
                   taskId: subtask.taskId,
                   ...(subtask.pullRequestUrl
                     ? { pullRequestUrl: subtask.pullRequestUrl }
+                    : {}),
+                  ...(subtask.pullRequestUrl
+                    ? {
+                        pullRequestRequired:
+                          subtask.pullRequestRequired !== false,
+                      }
                     : {}),
                   workState: this.getSubtaskEffectiveWorkState(subtask),
                   ...(subtaskStateReason
@@ -2947,10 +4236,12 @@ export class FactoryApplication {
 
   getFloorSnapshot({
     activities,
+    githubStatuses,
     projectIds,
     timezone,
   }: {
     activities: FloorProjectActivity[];
+    githubStatuses?: Readonly<Record<string, GitHubStatusSnapshot | undefined>>;
     projectIds?: readonly string[];
     timezone?: string;
   }): FloorSnapshot {
@@ -2976,6 +4267,7 @@ export class FactoryApplication {
       activities: activities.filter(({ projectId }) =>
         allowedProjectIds.has(projectId),
       ),
+      githubStatuses,
       now: this.clock(),
       projects,
       statusReports,
@@ -3949,6 +5241,16 @@ export class FactoryApplication {
       projectId: task.projectId,
       ...(task.branchName ? { branchName: task.branchName } : {}),
       ...(task.pullRequestUrl ? { pullRequestUrl: task.pullRequestUrl } : {}),
+      ...(task.pullRequestUrl
+        ? { pullRequestRequired: task.pullRequestRequired !== false }
+        : {}),
+      finishRule: task.finishRule!,
+      ...(task.humanCheckText ? { humanCheckText: task.humanCheckText } : {}),
+      workflowEpoch: normalizeWorkflowEpoch(task.workflowEpoch),
+      ...(task.workflowStartedAt
+        ? { workflowStartedAt: task.workflowStartedAt }
+        : {}),
+      ...(task.finishMetadata ? { finishMetadata: task.finishMetadata } : {}),
       objective: task.objective,
       acceptanceCriteria: task.acceptanceCriteria,
       priority: task.priority,
@@ -4063,7 +5365,7 @@ export class FactoryApplication {
   }: {
     orderedSubtaskIds: string[];
     taskId: string;
-    workState: WorkState;
+    workState?: WorkState;
   }): Subtask[] {
     this.refreshFromPersistence();
     const resolvedTaskId = this.requireTask(taskId).id;
@@ -4074,13 +5376,15 @@ export class FactoryApplication {
       (subtask) =>
         subtask.taskId === resolvedTaskId &&
         subtask.archiveState === undefined &&
-        this.getSubtaskEffectiveWorkState(subtask) === workState,
+        (workState === undefined ||
+          this.getSubtaskEffectiveWorkState(subtask) === workState),
     );
     const wrongStateSubtask = this.subtasks.find(
       (subtask) =>
         resolvedSubtaskIds.includes(subtask.id) &&
         subtask.taskId === resolvedTaskId &&
         subtask.archiveState === undefined &&
+        workState !== undefined &&
         this.getSubtaskEffectiveWorkState(subtask) !== workState,
     );
     if (wrongStateSubtask) {
@@ -4108,7 +5412,12 @@ export class FactoryApplication {
       }
     }
     this.save();
-    return group.sort((left, right) => this.compareSubtasks(left, right));
+    return group.sort((left, right) =>
+      workState === undefined
+        ? (left.sortOrder ?? this.subtasks.indexOf(left)) -
+          (right.sortOrder ?? this.subtasks.indexOf(right))
+        : this.compareSubtasks(left, right),
+    );
   }
 
   private requireProject(projectId: string): Project {
@@ -4127,6 +5436,21 @@ export class FactoryApplication {
     );
     if (!task) throw new Error(`Task ${taskId} does not exist.`);
     return task;
+  }
+
+  private assertTaskScopeMutable(task: Task, action: string): void {
+    if (task.archiveState !== undefined) {
+      throw new Error(`Restore the Task before ${action}.`);
+    }
+    if (this.getEffectiveTaskWorkState(task) === "completed") {
+      throw new Error(`Reopen the Task before ${action}.`);
+    }
+  }
+
+  private assertTaskNotDone(task: Task, action: string): void {
+    if (this.getEffectiveTaskWorkState(task) === "completed") {
+      throw new Error(`Reopen the Task before ${action}.`);
+    }
   }
 
   private requireSubtask(subtaskId: string): Subtask {
@@ -4481,19 +5805,6 @@ export class FactoryApplication {
     }
   }
 
-  private taskWouldBeCompleted(taskId: string): boolean {
-    const activeSubtasks = this.subtasks.filter(
-      (subtask) =>
-        subtask.taskId === taskId && subtask.archiveState === undefined,
-    );
-    return (
-      activeSubtasks.length > 0 &&
-      activeSubtasks.every(
-        (subtask) => this.getSubtaskEffectiveWorkState(subtask) === "completed",
-      )
-    );
-  }
-
   private getEffectiveTaskWorkState(task: Task): WorkState {
     const activeSubtasks = this.subtasks
       .filter(
@@ -4501,15 +5812,31 @@ export class FactoryApplication {
           subtask.taskId === task.id && subtask.archiveState === undefined,
       )
       .map((subtask) => this.getSubtaskEffectiveWorkState(subtask));
-    if (task.workState && task.workStateSource === "manual") {
+    if (task.finishMetadata || task.workState === "completed") {
+      return "completed";
+    }
+    if (task.workStateSource === "manual" && task.workState === "blocked") {
+      return "blocked";
+    }
+    const taskReport = this.getCurrentTaskStatusReport(task.id);
+    if (taskReport?.reportedState === "blocked") return "blocked";
+    if (taskReport?.reportedState === "in_progress") return "active";
+    if (
+      taskReport?.reportedState === "finished" &&
+      (task.finishRule?.kind === "pr_merge" ||
+        task.finishRule?.requireHumanCheck)
+    ) {
+      return "awaiting_verification";
+    }
+    if (task.workStateSource === "manual" && task.workState) {
       return task.workState;
     }
-    if (task.workStateSource === "rollup")
-      return this.getTaskRollup(task.id).state;
-    if (this.taskWouldBeCompleted(task.id)) return "completed";
+    if (task.workStateSource === "rollup") {
+      const rollupState = this.getTaskRollup(task.id).state;
+      return rollupState;
+    }
     if (task.workState) return task.workState;
-    if (activeSubtasks.length === 0) return "planned";
-    return this.deriveStateFromEffectiveSubtasks(activeSubtasks);
+    return activeSubtasks.includes("active") ? "active" : "planned";
   }
 
   private getSubtaskEffectiveWorkState(subtask: Subtask): WorkState {
@@ -4527,152 +5854,91 @@ export class FactoryApplication {
     if (report.reportedState === "not_started") return "planned";
     if (report.reportedState === "in_progress") return "active";
     if (report.reportedState === "blocked") return "blocked";
-    return verification?.decision === "accepted"
-      ? "completed"
-      : "awaiting_verification";
+    return "completed";
   }
 
-  private deriveStateFromEffectiveSubtasks(states: WorkState[]): WorkState {
-    if (states.length === 0) return "planned";
-    if (states.every((state) => state === "completed")) return "completed";
-    if (states.includes("blocked")) return "blocked";
-    if (
-      states.every(
-        (state) => state === "completed" || state === "awaiting_verification",
-      )
-    ) {
-      return "awaiting_verification";
-    }
-    if (
-      states.some(
-        (state) =>
-          state === "active" ||
-          state === "completed" ||
-          state === "awaiting_verification",
-      )
-    ) {
-      return "active";
-    }
-    return states.includes("planned") ? "planned" : "backlog";
-  }
-
-  private getTaskRollup(taskId: string): { state: WorkState; reason?: string } {
+  private getTaskRollup(taskId: string): { state: WorkState } {
     const children = this.subtasks.filter(
       (subtask) => subtask.taskId === taskId && !subtask.archiveState,
     );
-    const state = this.deriveStateFromEffectiveSubtasks(
-      children.map((child) => this.getSubtaskEffectiveWorkState(child)),
-    );
-    if (state !== "blocked" && state !== "awaiting_verification")
-      return { state };
-    const child = children.find(
-      (candidate) => this.getSubtaskEffectiveWorkState(candidate) === state,
-    );
-    const reason = child && this.getSubtaskStateReason(child);
     const task = this.tasks.find((candidate) => candidate.id === taskId);
     return {
-      state,
-      reason:
-        reason ||
-        (task?.workState === state ? task.stateReason : undefined) ||
-        `Review Subtask ${child?.id}: its historical report has no recorded ${state === "blocked" ? "unblocker" : "verification check"}.`,
+      // Step states never block, finish, or demote a Task. The only automatic
+      // promotion is the first Doing Step; explicit resume preserves Active.
+      state:
+        task?.workState === "active" ||
+        children.some(
+          (child) => this.getSubtaskEffectiveWorkState(child) === "active",
+        )
+          ? "active"
+          : "planned",
     };
   }
 
   private reconcileAutomaticTaskRollup(taskId: string): void {
     const task = this.tasks.find((candidate) => candidate.id === taskId);
-    if (!task || task.archiveState || task.workStateSource !== "rollup") return;
+    if (
+      !task ||
+      task.archiveState ||
+      task.finishMetadata ||
+      task.workState === "completed" ||
+      task.workStateSource === "manual" ||
+      this.getCurrentTaskStatusReport(taskId)
+    ) {
+      return;
+    }
     const rollup = this.getTaskRollup(taskId);
-    this.setTaskRollupState(task, rollup.state, rollup.reason);
+    const currentState = task.workState ?? "planned";
+    if (rollup.state !== "active" || currentState === "active") return;
+    this.setTaskRollupState(task, rollup.state);
   }
 
   private promoteParentTask(
     taskId: string,
-    childTransition: { nextState: WorkState; previousState: WorkState },
+    childTransition: {
+      nextState: WorkState;
+      previousState: WorkState;
+      subtaskId: string;
+    },
   ): void {
     const task = this.tasks.find((candidate) => candidate.id === taskId);
     if (!task || task.archiveState !== undefined) return;
 
-    const activeSubtasks = this.subtasks.filter(
-      (subtask) =>
-        subtask.taskId === taskId && subtask.archiveState === undefined,
-    );
-    if (!activeSubtasks.length) return;
-
-    const taskCompleted = this.taskWouldBeCompleted(taskId);
     const currentState = this.getEffectiveTaskWorkState(task);
-    const isManual = task.workStateSource === "manual";
-    const isRollup = task.workStateSource === "rollup";
-
-    if (taskCompleted) {
-      if (!isManual) {
-        this.setTaskRollupState(task, "completed");
-      } else {
-        this.clearTaskStateReasonUnlessNeeded(task, currentState);
-      }
-      return;
-    }
-
-    const childMovedHigher =
-      childTransition.nextState !== "completed" &&
-      compareWorkStates(
-        childTransition.nextState,
-        childTransition.previousState,
-      ) > 0;
-    if (isManual && !childMovedHigher) {
-      this.clearTaskStateReasonUnlessNeeded(task, currentState);
-      return;
-    }
-
-    const candidateSubtask = this.getTaskRollup(taskId);
-
+    const storedState = task.workState ?? currentState;
     if (
-      !isRollup &&
-      compareWorkStates(candidateSubtask.state, currentState) <= 0
+      task.finishMetadata ||
+      task.workState === "completed" ||
+      this.getCurrentTaskStatusReport(taskId) ||
+      storedState !== "planned" ||
+      childTransition.previousState === "active" ||
+      childTransition.nextState !== "active"
     ) {
-      this.clearTaskStateReasonUnlessNeeded(task, currentState);
       return;
     }
-
-    this.setTaskRollupState(
-      task,
-      candidateSubtask.state,
-      candidateSubtask.reason,
+    const otherDoingStep = this.subtasks.some(
+      (subtask) =>
+        subtask.taskId === taskId &&
+        subtask.id !== childTransition.subtaskId &&
+        subtask.archiveState === undefined &&
+        this.getSubtaskEffectiveWorkState(subtask) === "active",
     );
+    if (otherDoingStep) return;
+    this.setTaskRollupState(task, "active");
   }
 
-  private setTaskRollupState(
-    task: Task,
-    workState: WorkState,
-    reason?: string,
-  ): void {
+  private setTaskRollupState(task: Task, workState: WorkState): void {
     const previousState =
       task.workState ?? this.getEffectiveTaskWorkState(task);
     task.workState = workState;
     task.workStateSource = "rollup";
-    if (workState === "blocked" || workState === "awaiting_verification") {
-      task.stateReason = requireReason(
-        reason,
-        `Task ${workState} requires a reason.`,
-      );
-    } else {
-      delete task.stateReason;
-    }
+    delete task.stateReason;
     if (previousState !== workState) {
       task.sortOrder = this.nextTaskSortOrder(
         task.projectId,
         workState,
         task.id,
       );
-    }
-  }
-
-  private clearTaskStateReasonUnlessNeeded(
-    task: Task,
-    workState: ProjectWorkState,
-  ): void {
-    if (workState !== "blocked" && workState !== "awaiting_verification") {
-      delete task.stateReason;
     }
   }
 
@@ -4696,8 +5962,9 @@ export class FactoryApplication {
     if (workState !== "blocked" && workState !== "awaiting_verification") {
       return undefined;
     }
-    if (task.workStateSource === "rollup")
-      return this.getTaskRollup(task.id).reason;
+    const reportReason = this.getCurrentTaskStatusReport(task.id)?.reason;
+    if (reportReason) return reportReason;
+    if (task.workStateSource === "rollup") return undefined;
     if (task.stateReason) return task.stateReason;
     return this.subtasks
       .filter(
@@ -4715,14 +5982,8 @@ export class FactoryApplication {
     subtask: Subtask,
     previousState: WorkState,
   ): void {
-    const nextState = this.getSubtaskEffectiveWorkState(subtask);
-    if (subtask.archiveState === undefined && previousState !== nextState) {
-      subtask.sortOrder = this.nextSubtaskSortOrder(
-        subtask.taskId,
-        nextState,
-        subtask.id,
-      );
-    }
+    void subtask;
+    void previousState;
   }
 
   private nextTaskSortOrder(
@@ -4747,15 +6008,14 @@ export class FactoryApplication {
 
   private nextSubtaskSortOrder(
     taskId: string,
-    workState: WorkState,
+    _workState: WorkState,
     excludingSubtaskId?: string,
   ): number {
     const subtasks = this.subtasks.filter(
       (subtask) =>
         subtask.taskId === taskId &&
         subtask.id !== excludingSubtaskId &&
-        subtask.archiveState === undefined &&
-        this.getSubtaskEffectiveWorkState(subtask) === workState,
+        subtask.archiveState === undefined,
     );
     return (
       subtasks.reduce(
@@ -4781,16 +6041,9 @@ export class FactoryApplication {
   }
 
   private compareSubtasks(left: Subtask, right: Subtask): number {
-    const leftState = left.archiveState
-      ? 99
-      : WORK_STATE_DISPLAY_ORDER[this.getSubtaskEffectiveWorkState(left)];
-    const rightState = right.archiveState
-      ? 99
-      : WORK_STATE_DISPLAY_ORDER[this.getSubtaskEffectiveWorkState(right)];
     return (
-      leftState - rightState ||
       (left.sortOrder ?? this.subtasks.indexOf(left)) -
-        (right.sortOrder ?? this.subtasks.indexOf(right))
+      (right.sortOrder ?? this.subtasks.indexOf(right))
     );
   }
 
@@ -4811,6 +6064,264 @@ export class FactoryApplication {
     );
   }
 
+  private assertTaskRevision(task: Task, expectedRevision?: number): void {
+    const currentRevision = normalizeRevision(task.revision);
+    if (
+      expectedRevision !== undefined &&
+      expectedRevision !== currentRevision
+    ) {
+      throw new FactoryConflictError(
+        "Task",
+        task.id,
+        currentRevision,
+        expectedRevision,
+      );
+    }
+  }
+
+  private getCurrentTaskStatusReport(
+    taskId: string,
+  ): TaskStatusReport | undefined {
+    const epoch = normalizeWorkflowEpoch(
+      this.tasks.find((candidate) => candidate.id === taskId)?.workflowEpoch,
+    );
+    return this.taskStatusReports.findLast(
+      (report) => report.taskId === taskId && report.workflowEpoch === epoch,
+    );
+  }
+
+  private getTaskPullRequestSources(task: Task): Array<{
+    pullRequestUrl: string;
+    kind: "task" | "step";
+    id: string;
+    simpleId?: string;
+    name: string;
+    required: boolean;
+  }> {
+    const sources: Array<{
+      pullRequestUrl: string;
+      kind: "task" | "step";
+      id: string;
+      simpleId?: string;
+      name: string;
+      required: boolean;
+    }> = [];
+    const taskUrl = normalizePullRequestUrl(task.pullRequestUrl);
+    if (taskUrl) {
+      sources.push({
+        pullRequestUrl: taskUrl,
+        kind: "task",
+        id: task.id,
+        ...(task.simpleId ? { simpleId: task.simpleId } : {}),
+        name: task.name,
+        required: task.pullRequestRequired !== false,
+      });
+    }
+    for (const subtask of this.subtasks) {
+      if (subtask.taskId !== task.id || subtask.archiveState !== undefined)
+        continue;
+      const url = normalizePullRequestUrl(subtask.pullRequestUrl);
+      if (!url) continue;
+      sources.push({
+        pullRequestUrl: url,
+        kind: "step",
+        id: subtask.id,
+        ...(subtask.simpleId ? { simpleId: subtask.simpleId } : {}),
+        name: subtask.name,
+        required: subtask.pullRequestRequired !== false,
+      });
+    }
+    return sources;
+  }
+
+  private getTaskRequiredPullRequests(task: Task): TaskRequiredPullRequest[] {
+    const byUrl = new Map<string, TaskRequiredPullRequest>();
+    for (const source of this.getTaskPullRequestSources(task)) {
+      const existing = byUrl.get(source.pullRequestUrl);
+      const row =
+        existing ??
+        ({
+          pullRequestUrl: source.pullRequestUrl,
+          required: false,
+          sources: [],
+        } satisfies TaskRequiredPullRequest);
+      row.sources.push({
+        kind: source.kind,
+        id: source.id,
+        ...(source.simpleId ? { simpleId: source.simpleId } : {}),
+        name: source.name,
+        required: source.required,
+      });
+      row.required ||= source.required;
+      byUrl.set(source.pullRequestUrl, row);
+    }
+    const currentEpoch = normalizeWorkflowEpoch(task.workflowEpoch);
+    const startedAt = task.workflowStartedAt?.getTime();
+    for (const row of byUrl.values()) {
+      const merge = this.taskPullRequestMerges.findLast(
+        (candidate) =>
+          candidate.taskId === task.id &&
+          normalizePullRequestUrl(candidate.pullRequestUrl) ===
+            row.pullRequestUrl,
+      );
+      if (!merge) continue;
+      row.merge = merge;
+      const mergedBeforeReopen =
+        merge.workflowEpoch !== currentEpoch ||
+        (startedAt !== undefined && merge.mergedAt.getTime() <= startedAt);
+      if (mergedBeforeReopen) {
+        row.mergedBeforeReopen = true;
+        row.required = false;
+      }
+    }
+    return [...byUrl.values()].sort((left, right) =>
+      left.pullRequestUrl.localeCompare(right.pullRequestUrl),
+    );
+  }
+
+  private isTaskFinishConditionSatisfied(task: Task): boolean {
+    const rule = task.finishRule ?? {
+      kind: "agent_report",
+      requireHumanCheck: false,
+    };
+    if (rule.kind === "agent_report") {
+      return (
+        this.getCurrentTaskStatusReport(task.id)?.reportedState === "finished"
+      );
+    }
+    const required = this.getTaskRequiredPullRequests(task).filter(
+      (pullRequest) => pullRequest.required,
+    );
+    if (required.length === 0) return false;
+    const epoch = normalizeWorkflowEpoch(task.workflowEpoch);
+    const startedAt = task.workflowStartedAt?.getTime();
+    return required.every((pullRequest) => {
+      const merge = pullRequest.merge;
+      return Boolean(
+        merge &&
+        merge.workflowEpoch === epoch &&
+        merge.reachedDefaultBranch === true &&
+        (startedAt === undefined || merge.mergedAt.getTime() > startedAt),
+      );
+    });
+  }
+
+  private taskFinishWaitReason(task: Task): string {
+    if (task.finishRule?.requireHumanCheck) {
+      return (
+        task.humanCheckText?.trim() || "Waiting for the required human check."
+      );
+    }
+    if (task.finishRule?.kind === "pr_merge") {
+      const required = this.getTaskRequiredPullRequests(task).filter(
+        (pullRequest) => pullRequest.required,
+      );
+      if (required.length === 0) {
+        return "No required PR is linked. Link a new PR to finish on merge.";
+      }
+      const mergedCount = required.filter((pullRequest) => {
+        const merge = pullRequest.merge;
+        return Boolean(
+          merge &&
+          merge.workflowEpoch === normalizeWorkflowEpoch(task.workflowEpoch) &&
+          merge.reachedDefaultBranch === true &&
+          (!task.workflowStartedAt ||
+            merge.mergedAt.getTime() > task.workflowStartedAt.getTime()),
+        );
+      }).length;
+      return `Waiting for required pull requests to merge (${mergedCount} of ${required.length}).`;
+    }
+    return "Waiting for the agent to report the Task finished.";
+  }
+
+  private reconcileTaskFinishRule(
+    task: Task,
+    actor: string,
+    actorCausedFinish = false,
+  ): void {
+    if (task.archiveState || task.finishMetadata) return;
+    if (task.workStateSource === "manual" && task.workState === "blocked")
+      return;
+    if (task.workState === "completed") return; // legacy completion stays unchanged
+    if (!this.isTaskFinishConditionSatisfied(task)) {
+      if (
+        this.getEffectiveTaskWorkState(task) === "awaiting_verification" &&
+        this.getCurrentTaskStatusReport(task.id)?.reportedState === "finished"
+      ) {
+        task.workState = "awaiting_verification";
+        task.workStateSource = "rollup";
+        task.stateReason = this.taskFinishWaitReason(task);
+      }
+      return;
+    }
+    if (task.finishRule?.requireHumanCheck) {
+      task.workState = "awaiting_verification";
+      task.workStateSource = "rollup";
+      task.stateReason = this.taskFinishWaitReason(task);
+      return;
+    }
+    if (task.finishRule?.kind === "agent_report") {
+      const report = this.getCurrentTaskStatusReport(task.id);
+      if (!report) return;
+      this.finishTask(task, {
+        kind: "agent_report",
+        epoch: normalizeWorkflowEpoch(task.workflowEpoch),
+        actor: report.reporter || actor,
+        completedAt: actorCausedFinish ? this.clock() : report.createdAt,
+        ...(report.reason ? { reason: report.reason } : {}),
+      });
+      return;
+    }
+    const mergeProofs = this.getTaskRequiredPullRequests(task)
+      .filter((pullRequest) => pullRequest.required)
+      .map((pullRequest) => pullRequest.merge)
+      .filter(
+        (merge): merge is TaskPullRequestMergeEvidence => merge !== undefined,
+      );
+    if (mergeProofs.length === 0) return;
+    this.finishTask(task, {
+      kind: "pr_merge",
+      epoch: normalizeWorkflowEpoch(task.workflowEpoch),
+      actor,
+      completedAt: this.clock(),
+      reason: "All required PR merge SHAs reached the default branch.",
+      mergeProofs,
+    });
+  }
+
+  private finishTask(task: Task, metadata: TaskFinishMetadata): void {
+    const previousState = this.getEffectiveTaskWorkState(task);
+    task.finishMetadata = metadata;
+    task.workState = "completed";
+    task.workStateSource = "manual";
+    delete task.stateReason;
+    if (previousState !== "completed") {
+      task.sortOrder = this.nextTaskSortOrder(
+        task.projectId,
+        "completed",
+        task.id,
+      );
+    }
+  }
+
+  private addTaskWorkflowEvent(
+    task: Task,
+    input: Omit<
+      TaskWorkflowEvent,
+      "id" | "taskId" | "workflowEpoch" | "createdAt"
+    >,
+  ): TaskWorkflowEvent {
+    const event: TaskWorkflowEvent = {
+      id: this.idGenerator(),
+      taskId: task.id,
+      workflowEpoch: normalizeWorkflowEpoch(task.workflowEpoch),
+      ...input,
+      createdAt: this.clock(),
+    };
+    this.taskWorkflowEvents.push(event);
+    return event;
+  }
+
   private refreshFromPersistence(): void {
     if (!this.refreshBeforeOperations) return;
     const state = this.refresh?.();
@@ -4824,6 +6335,21 @@ export class FactoryApplication {
       0,
       this.statusReports.length,
       ...normalizedState.statusReports,
+    );
+    this.taskStatusReports.splice(
+      0,
+      this.taskStatusReports.length,
+      ...(normalizedState.taskStatusReports ?? []),
+    );
+    this.taskPullRequestMerges.splice(
+      0,
+      this.taskPullRequestMerges.length,
+      ...(normalizedState.taskPullRequestMerges ?? []),
+    );
+    this.taskWorkflowEvents.splice(
+      0,
+      this.taskWorkflowEvents.length,
+      ...(normalizedState.taskWorkflowEvents ?? []),
     );
     this.verifications.splice(
       0,
@@ -4884,6 +6410,9 @@ export class FactoryApplication {
     this.persist?.({
       projects: this.projects,
       statusReports: this.statusReports,
+      taskStatusReports: this.taskStatusReports,
+      taskPullRequestMerges: this.taskPullRequestMerges,
+      taskWorkflowEvents: this.taskWorkflowEvents,
       subtasks: this.subtasks,
       tasks: this.tasks,
       verifications: this.verifications,
@@ -5131,6 +6660,16 @@ function assertFactoryStateSnapshot(
   const statusReports = record.statusReports as unknown[];
   const verifications = record.verifications as unknown[];
 
+  for (const field of [
+    "taskStatusReports",
+    "taskPullRequestMerges",
+    "taskWorkflowEvents",
+  ]) {
+    if (record[field] !== undefined && !Array.isArray(record[field])) {
+      throw new Error(`snapshot field ${field} must be an array`);
+    }
+  }
+
   const requireRecord = (
     field: string,
     item: unknown,
@@ -5320,6 +6859,21 @@ function hydrateState(state: FactoryState): FactoryState {
       ...report,
       createdAt: new Date(report.createdAt),
     })),
+    taskStatusReports: (state.taskStatusReports ?? []).map((report) => ({
+      ...report,
+      createdAt: new Date(report.createdAt),
+    })),
+    taskPullRequestMerges: (state.taskPullRequestMerges ?? []).map(
+      (evidence) => ({
+        ...evidence,
+        mergedAt: new Date(evidence.mergedAt),
+        observedAt: new Date(evidence.observedAt),
+      }),
+    ),
+    taskWorkflowEvents: (state.taskWorkflowEvents ?? []).map((event) => ({
+      ...event,
+      createdAt: new Date(event.createdAt),
+    })),
     subtasks: state.subtasks.map((subtask) => ({
       ...subtask,
       createdAt: new Date(subtask.createdAt),
@@ -5330,6 +6884,28 @@ function hydrateState(state: FactoryState): FactoryState {
       dependencies: task.dependencies ?? [],
       repositoryLinks: task.repositoryLinks ?? [],
       createdAt: new Date(task.createdAt),
+      ...(task.workflowStartedAt
+        ? { workflowStartedAt: new Date(task.workflowStartedAt) }
+        : {}),
+      ...(task.finishMetadata
+        ? {
+            finishMetadata: {
+              ...task.finishMetadata,
+              completedAt: new Date(task.finishMetadata.completedAt),
+              ...(task.finishMetadata.mergeProofs
+                ? {
+                    mergeProofs: task.finishMetadata.mergeProofs.map(
+                      (evidence) => ({
+                        ...evidence,
+                        mergedAt: new Date(evidence.mergedAt),
+                        observedAt: new Date(evidence.observedAt),
+                      }),
+                    ),
+                  }
+                : {}),
+            },
+          }
+        : {}),
     })),
     verifications: state.verifications.map((verification) => ({
       ...verification,

@@ -961,7 +961,7 @@ button.floor-more:hover {
   }
   .floor-score::before {
     color: var(--ink-dim);
-    content: "Scoreboard · ";
+    content: "Scoreboard";
     font: 500 0.62rem/1 var(--mono);
     position: absolute;
     transform: translateY(-19px);
@@ -994,4 +994,54 @@ button.floor-more:hover {
   .floor-action {
     border-width: 2px;
   }
+}
+.floor-kind-review,
+.floor-kind-check,
+.floor-kind-decide,
+.floor-action-review .floor-kind,
+.floor-action-check .floor-kind,
+.floor-action-decide .floor-kind {
+  color: var(--sig-warn);
+  background: var(--tint-warn);
+  border-color: rgba(240, 180, 41, 0.45);
+}
+.floor-kind-unblock,
+.floor-action-unblock .floor-kind {
+  color: var(--sig-down);
+  background: var(--tint-down);
+  border-color: var(--sig-down);
+}
+.floor-tracking-notes {
+  font-size: 12px;
+  color: var(--ink-dim);
+  padding: 12px 0;
+}
+.floor-tracking-notes button {
+  display: inline-block;
+  min-height: 44px;
+  width: auto;
+}
+@media (max-width: 700px) {
+  .floor-score .floor-tile:last-child {
+    display: flex !important;
+    gap: 8px;
+  }
+  .floor-score {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .floor-score .floor-tile {
+    display: flex !important;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .floor-score .floor-tile:nth-child(1) {
+    display: flex !important;
+  }
+}
+
+.floor-turn-count.empty-count {
+  color: var(--ink-faint);
 }

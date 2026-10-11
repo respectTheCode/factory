@@ -66,12 +66,12 @@ describe("status presentation", () => {
 
   test("keeps live work states in canonical top-to-bottom order", () => {
     expect(liveWorkStatusOrder).toEqual([
-      "completed",
-      "blocked",
       "awaiting_verification",
+      "blocked",
       "active",
       "planned",
       "backlog",
+      "completed",
     ]);
   });
 

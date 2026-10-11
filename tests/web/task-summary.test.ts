@@ -38,7 +38,7 @@ describe("task presentation summaries", () => {
     });
   });
 
-  test("keeps an agent-complete subtask open until human verification", () => {
+  test("counts an agent-complete Step immediately without approval", () => {
     const summary = summarizeTaskProgress(
       { subtasks: [{ id: "pending", name: "Human review" }] },
       {
@@ -52,9 +52,8 @@ describe("task presentation summaries", () => {
     );
 
     expect(summary).toEqual({
-      completedSubtasks: 0,
-      nextSubtaskName: "Human review",
-      openSubtasks: 1,
+      completedSubtasks: 1,
+      openSubtasks: 0,
       totalSubtasks: 1,
     });
   });

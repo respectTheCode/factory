@@ -1,4 +1,18 @@
-# Reviewer acceptance
+# Review and completion
+
+The simplified workflow replaces routine Factory acceptance with PR review and explicit,
+opt-in human checks. Tasks finish from confirmed required merges reaching the default branch,
+or from a Task-level agent finished report when their finish rule allows it. Steps change
+status directly and need no separate approval. Deployment remains separate from completion.
+
+Human checks and reasoned mark-done overrides require a human session. Coding and reviewer
+credentials cannot perform them. Historical report decisions and reviewer assignments remain
+readable with their original attribution. The legacy APIs below exist for compatibility and
+history; they are not the current dashboard workflow or a prerequisite for finishing Steps.
+
+The following documents the earlier acceptance system and its compatibility boundaries.
+
+## Historical reviewer acceptance
 
 Factory tracks execution and review. Notion and Linear retain formal requirements and decisions;
 T3 runs coding work. Kevin reviews every PR. Factory acceptance records that work was tested
@@ -33,18 +47,20 @@ The history attribution is simply `accepted by Bitsy`, `accepted by Kevin`, or
 `accepted by PR Merge`, followed by the review evidence. Screenshots are optional and must
 belong to the reviewed work.
 
-## PR merge acceptance
+## Current PR merge reconciliation
 
-The server reads the GitHub PR explicitly linked to the Task or Subtask and uses confirmed
-merge evidence, including the PR URL, merge time, and merge commit. A closed, unmerged PR,
-missing token, access denial, or unavailable GitHub service never counts as acceptance.
+The server reads required GitHub PRs linked to the Task or its Steps and uses confirmed
+merge evidence, including the PR URL, merge time, merge commit, and proof that the commit
+reached the repository's default branch. A closed, unmerged PR, missing token, access denial,
+or unavailable GitHub service never counts as completion.
 Ordinary GitHub status queries remain read-only.
 
-Reconciliation is idempotent and applies only to eligible current completion reports. It
-preserves existing acceptance, rejection, and deferral decisions, does not restore archived
-work, and does not use an earlier merge to approve later work. A child's different linked PR
-is not covered by its parent's PR. Whole-Task reconciliation uses the parent cascade only
-when its scope is eligible. Nothing in reconciliation writes to GitHub.
+Reconciliation is idempotent and follows the Task's finish rule without requiring an agent
+finished report. It preserves historical acceptance, rejection, and deferral records and
+deliberate manual holds, does not restore archived work, and does not reuse an earlier merge
+after the Task is reopened. A Step's different required PR must also reach the default branch.
+A stacked merge waits for that reachability. Reconciliation records Task merge proof and
+does not create Step approvals or write to GitHub.
 
 ## Provisioning and assigning reviews
 

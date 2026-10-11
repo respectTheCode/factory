@@ -155,20 +155,18 @@ describe("Floor projection", () => {
       timezone: "America/Indiana/Indianapolis",
     });
     const bay = snapshot.projects[0]!;
-    expect(bay.bench.map((item) => item.taskName)).toEqual([]);
+    expect(bay.bench.map((item) => item.taskName)).toEqual([
+      "Planned",
+      "Blocked",
+      "Accepted today",
+    ]);
     expect(bay.stations.map((station) => station.target?.taskName)).toEqual([
       "Active",
-      "Blocked",
     ]);
-    expect(bay.counter).toHaveLength(1);
-    expect(bay.counter[0]).toMatchObject({
-      reportId: claim.id,
-      evidence: "The bounded check passed.",
-    });
-    expect(bay.counter.some((item) => item.taskName === "Archived")).toBe(
-      false,
-    );
-    expect(snapshot.queue.map((item) => item.action)).toContain("stamp");
+    expect(bay.counter).toHaveLength(0);
+    expect(
+      snapshot.queue.every((item) => item.action !== ("stamp" as string)),
+    ).toBe(true);
     expect(snapshot.queue.map((item) => item.action)).toContain("unblock");
     expect(snapshot.scoreboard.reportsToday).toBe(4);
     expect(snapshot.scoreboard.stampedToday).toBe(1);

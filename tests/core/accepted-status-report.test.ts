@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { FactoryApplication } from "../../src/application";
 
 describe("human verification", () => {
-  test("accepting a specific complete report completes its parent task", () => {
+  test("accepting a complete Step report does not complete its parent Task", () => {
     const app = new FactoryApplication({
       clock: () => new Date("2026-08-22T12:00:00.000Z"),
       idGenerator: (() => {
@@ -42,10 +42,12 @@ describe("human verification", () => {
       subtasks: [
         {
           reportedState: "complete",
+          effectiveState: "completed",
           verificationState: "accepted",
         },
       ],
-      taskCompleted: true,
+      taskCompleted: false,
+      taskState: "planned",
     });
   });
 });

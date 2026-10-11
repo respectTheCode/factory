@@ -11,6 +11,7 @@ import type {
 } from "../floor";
 
 import "./floor.css";
+import { relativeAgeLabel } from "./task-tracking";
 
 export type FloorReporter = "claude" | "codex" | "none";
 export type FloorTokenState =
@@ -28,6 +29,7 @@ export type FloorTarget = {
   threadId?: string;
   sourceId?: string;
   findingId?: string;
+  action?: "review" | "check" | "decide" | "unblock";
 };
 export type FloorPaper = FloorTarget & {
   id: string;
@@ -40,6 +42,7 @@ export type FloorPaper = FloorTarget & {
   reason?: string;
   reporter?: string;
   reportId?: string;
+  kind?: FloorAction["kind"];
 };
 export type FloorWork = FloorTarget & {
   id: string;
@@ -53,7 +56,7 @@ export type FloorWork = FloorTarget & {
 };
 export type FloorAction = FloorTarget & {
   id: string;
-  kind: "approve" | "input" | "stamp" | "unblock" | "review" | "reconcile";
+  kind: "review" | "check" | "decide" | "unblock";
   label: string;
   detail?: string;
   ageLabel: string;
@@ -90,15 +93,19 @@ export type FloorSnapshot = {
     unblocks: number;
     inputs: number;
     reviews: number;
+    checks: number;
+    decisions: number;
   };
   shiftLog: FloorLogEntry[];
   scoreboard: {
     stampedToday: number;
+    finishedToday?: number;
     reportsToday: number;
     workingNow: number;
     oldestUnstamped: string;
   };
   stale?: boolean;
+  trackingNotes?: Array<FloorAction>;
 };
 
 export const FLOOR_BAY_STORAGE_KEY = "factory.floor.collapsed-bays.v1";
@@ -293,35 +300,19 @@ function mapQueueTarget(item: FloorQueueItem): FloorTarget {
     findingId: item.target.findingId,
   };
 }
-function queuePaper(
-  item: FloorQueueItem,
-  projects: FloorBay[],
-): FloorPaper | undefined {
-  if (item.action !== "stamp") return undefined;
-  const reportId = item.id.startsWith("stamp:") ? item.id.slice(6) : undefined;
-  return projects
-    .flatMap((project) => project.counter)
-    .find((claim) => claim.reportId === reportId);
-}
 function mapQueueItem(
   item: FloorQueueItem,
   projects: FloorBay[],
   now = Date.now(),
 ): FloorAction {
-  const kind: FloorAction["kind"] =
-    item.action === "approve"
-      ? "approve"
-      : item.action === "stamp"
-        ? "stamp"
-        : "unblock";
   return {
     ...mapQueueTarget(item),
+    action: item.action,
     ageLabel: ageLabel(item.timestamp, now),
     detail: item.reason ?? item.projectName,
     id: item.id,
-    kind,
+    kind: item.action,
     label: item.summary,
-    paper: queuePaper(item, projects),
   };
 }
 
@@ -333,7 +324,26 @@ export function normalizeFloorSnapshot(
   const projects = input.projects.map((project: FloorProject) => ({
     bench: project.bench.map(mapWork),
     blocked: project.counts.blocked,
-    counter: project.counter.map((claim) => mapClaim(claim, now)),
+    counter: input.queue
+      .filter((item) => item.projectId === project.id)
+      .map((item) => {
+        const target = mapQueueTarget(item);
+        return {
+          ...target,
+          action: item.action,
+          id: item.id,
+          simpleId:
+            item.target.kind === "work"
+              ? item.target.target.taskSimpleId
+              : item.target.kind === "thread"
+                ? (item.target.target?.taskSimpleId ?? "T3")
+                : "",
+          name: item.summary,
+          ageLabel: ageLabel(item.timestamp, now),
+          claim: item.reason,
+          kind: item.action,
+        };
+      }),
     id: project.id,
     name: project.name,
     quiet:
@@ -353,6 +363,9 @@ export function normalizeFloorSnapshot(
   const queue = input.queue.map((item) => mapQueueItem(item, projects, now));
   return {
     generatedAt: input.generatedAt,
+    trackingNotes: input.trackingNotes?.map((item) =>
+      mapQueueItem(item, projects, now),
+    ),
     projects,
     scoreboard: {
       oldestUnstamped: input.scoreboard.oldestPendingAt
@@ -360,6 +373,7 @@ export function normalizeFloorSnapshot(
         : "none",
       reportsToday: input.scoreboard.reportsToday,
       stampedToday: input.scoreboard.stampedToday,
+      finishedToday: input.scoreboard.finishedToday,
       workingNow: input.scoreboard.workingNow,
     },
     shiftLog: input.events.map((entry) => ({
@@ -381,16 +395,14 @@ export function normalizeFloorSnapshot(
     })),
     stale: input.connections.some((connection) => !connection.fresh),
     yourTurn: {
-      approvals: input.queue.filter((item) => item.action === "approve").length,
-      inputs: input.queue.filter((item) => item.action === "input").length,
+      approvals: 0,
+      inputs: 0,
+      stamps: 0,
       items: queue,
-      reviews: input.queue.filter(
-        (item) => item.action === "review" || item.action === "reconcile",
-      ).length,
-      stamps: input.queue.filter((item) => item.action === "stamp").length,
-      unblocks: input.queue.filter(
-        (item) => item.action !== "approve" && item.action !== "stamp",
-      ).length,
+      reviews: input.queue.filter((item) => item.action === "review").length,
+      checks: input.queue.filter((item) => item.action === "check").length,
+      decisions: input.queue.filter((item) => item.action === "decide").length,
+      unblocks: input.queue.filter((item) => item.action === "unblock").length,
     },
   };
 }
@@ -441,7 +453,6 @@ export function Floor({
   loading,
   onOpenTarget,
   onCreateProject,
-  onStamp,
   snapshot,
 }: {
   busy?: boolean;
@@ -451,16 +462,10 @@ export function Floor({
   loading: boolean;
   onCreateProject: (name: string) => Promise<void>;
   onOpenTarget: (target: FloorTarget) => void;
-  onStamp: (paper: FloorPaper) => Promise<void>;
   snapshot: FloorSnapshot | null;
 }) {
   const [now, setNow] = useState(() => new Date());
-  const [reviewPaper, setReviewPaper] = useState<FloorPaper | null>(null);
-  const reviewTrigger = useRef<HTMLElement | null>(null);
-  const [reviewError, setReviewError] = useState<string | null>(null);
   const [showAllTurn, setShowAllTurn] = useState(false);
-  const [stamped, setStamped] = useState(false);
-  const [stamping, setStamping] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [projectError, setProjectError] = useState<string | null>(null);
   const [hiddenBayIds, setHiddenBayIds] = useState<Set<string>>(() =>
@@ -512,70 +517,6 @@ export function Floor({
   };
   const toggleBayVisibility = (projectId: string) => {
     setHiddenBayIds((current) => toggleCollapsedBayIds(current, projectId));
-  };
-  const openReview = (paper: FloorPaper, trigger: HTMLElement) => {
-    reviewTrigger.current = trigger;
-    setReviewError(null);
-    setStamped(false);
-    setReviewPaper(paper);
-  };
-  useEffect(() => {
-    if (!reviewPaper) return;
-    const previous = reviewTrigger.current;
-    const frame = window.requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>(".floor-review")?.focus();
-    });
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (!stamping && !stamped) setReviewPaper(null);
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const dialog = document.querySelector<HTMLElement>(".floor-review");
-      if (!dialog) return;
-      const focusable = Array.from(
-        dialog.querySelectorAll<HTMLElement>(
-          "button:not([disabled]), a[href], textarea, input, select",
-        ),
-      );
-      if (!focusable.length) return;
-      const first = focusable[0]!;
-      const last = focusable[focusable.length - 1]!;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      document.removeEventListener("keydown", onKeyDown);
-      previous?.focus();
-    };
-  }, [reviewPaper, stamped, stamping]);
-  const accept = async () => {
-    if (!reviewPaper?.reportId || stamping || stamped || !canMutate) return;
-    setStamping(true);
-    try {
-      await onStamp(reviewPaper);
-      setStamped(true);
-      window.setTimeout(() => {
-        setReviewPaper(null);
-        setStamped(false);
-      }, 120);
-    } catch (error) {
-      setReviewError(
-        error instanceof Error
-          ? error.message
-          : "The report could not be stamped.",
-      );
-    } finally {
-      setStamping(false);
-    }
   };
   const createProject = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -680,15 +621,19 @@ export function Floor({
             aria-labelledby="your-turn-title"
           >
             <p className="eyebrow" id="your-turn-title">
-              Your turn
+              Needs you
             </p>
             <div className="floor-turn-big">
-              <span className="floor-turn-count">{turnCount}</span>
+              <span
+                className={`floor-turn-count ${turnCount === 0 ? "empty-count" : ""}`}
+              >
+                {turnCount}
+              </span>
               <span className="floor-turn-label">
                 things only you can do
                 <small>
                   {snapshot
-                    ? `${snapshot.yourTurn.approvals} approval${snapshot.yourTurn.approvals === 1 ? "" : "s"} · ${snapshot.yourTurn.stamps} stamp${snapshot.yourTurn.stamps === 1 ? "" : "s"} · ${snapshot.yourTurn.unblocks} unblock${snapshot.yourTurn.unblocks === 1 ? "" : "s"}`
+                    ? `${snapshot.yourTurn.reviews} review · ${snapshot.yourTurn.checks} check · ${snapshot.yourTurn.decisions} decide · ${snapshot.yourTurn.unblocks} unblock`
                     : "Waiting for an observed queue"}
                 </small>
               </span>
@@ -699,11 +644,8 @@ export function Floor({
                   <li key={item.id}>
                     <button
                       className={`floor-action floor-action-${item.kind}`}
-                      onClick={(event) =>
-                        item.kind === "stamp" && item.paper
-                          ? openReview(item.paper, event.currentTarget)
-                          : open(item)
-                      }
+                      aria-label={`${item.kind} ${item.label}, ${relativeAgeLabel(item.ageLabel)}`}
+                      onClick={() => open(item)}
                       type="button"
                     >
                       <span className="floor-kind">{item.kind}</span>
@@ -742,6 +684,20 @@ export function Floor({
             ) : (
               <p className="floor-empty">Nothing needs you.</p>
             )}
+            {snapshot?.trackingNotes?.length ? (
+              <div className="floor-tracking-notes">
+                {snapshot.trackingNotes.length} tracking{" "}
+                {snapshot.trackingNotes.length === 1 ? "note" : "notes"} · not
+                counted ·{" "}
+                <button
+                  type="button"
+                  className="floor-more"
+                  onClick={() => open(snapshot.trackingNotes![0]!)}
+                >
+                  Open
+                </button>
+              </div>
+            ) : null}
           </section>
           <section className="floor-log" aria-labelledby="shift-log-title">
             <p className="eyebrow" id="shift-log-title">
@@ -767,13 +723,15 @@ export function Floor({
             )}
           </section>
           <div className="floor-score" aria-label="Floor scoreboard">
-            <div className="floor-tile ok">
-              <strong>{snapshot?.scoreboard.stampedToday ?? "—"}</strong>
-              <span>stamped today</span>
+            <div
+              className={`floor-tile ${(snapshot?.scoreboard.finishedToday ?? 0) > 0 ? "ok" : ""}`}
+            >
+              <strong>{snapshot?.scoreboard.finishedToday ?? "—"}</strong>
+              <span>done today</span>
             </div>
             <div className="floor-tile">
               <strong>{snapshot?.scoreboard.reportsToday ?? "—"}</strong>
-              <span>reports today</span>
+              <span>updates today</span>
             </div>
             <div className="floor-tile">
               <strong>
@@ -783,7 +741,7 @@ export function Floor({
             </div>
             <div className="floor-tile">
               <strong>{snapshot?.scoreboard.oldestUnstamped ?? "—"}</strong>
-              <span>oldest unstamped</span>
+              <span>oldest waiting on you</span>
             </div>
           </div>
         </aside>
@@ -820,7 +778,7 @@ export function Floor({
                           </span>
                           <span>
                             <i className="floor-tally-dot warn" />
-                            {bay.waiting} waiting
+                            {bay.waiting} needs you
                           </span>
                           <span>
                             <i className="floor-tally-dot down" />
@@ -883,18 +841,21 @@ export function Floor({
                     </FloorZone>
                     <FloorZone
                       className={`counter${bay.counter.length ? " hot" : ""}`}
-                      label="Counter · stamp"
+                      label="Counter · Needs you"
                     >
                       {bay.counter.slice(0, 3).map((paper) => (
                         <button
                           className={`floor-paper${ageClass(paper)}`}
                           key={paper.id}
-                          onClick={(event) =>
-                            openReview(paper, event.currentTarget)
-                          }
+                          aria-label={`${paper.kind} ${paper.simpleId} ${paper.name}, ${relativeAgeLabel(paper.ageLabel)}`}
+                          onClick={() => open(paper)}
                           type="button"
                         >
-                          <span className="floor-slot" aria-hidden="true" />
+                          <span
+                            className={`floor-kind floor-kind-${paper.kind}`}
+                          >
+                            {paper.kind}
+                          </span>
                           <span className="floor-paper-name">
                             <span className="floor-ref">{paper.simpleId}</span>
                             {paper.name}
@@ -956,88 +917,6 @@ export function Floor({
         </form>
         {projectError && <p role="alert">{projectError}</p>}
       </details>
-      {reviewPaper && (
-        <div
-          className="floor-review-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !stamping)
-              setReviewPaper(null);
-          }}
-        >
-          <section
-            aria-labelledby="floor-review-title"
-            aria-modal="true"
-            className="floor-review"
-            role="dialog"
-            tabIndex={-1}
-          >
-            <p className="eyebrow">Countersign review</p>
-            <h2 id="floor-review-title">
-              <span className="floor-ref">{reviewPaper.simpleId}</span>{" "}
-              {reviewPaper.name}
-            </h2>
-            <p className="floor-review-age">
-              Reported {agePhrase(reviewPaper.ageLabel)} by{" "}
-              {reviewPaper.reporter || "the observed worker"}.
-            </p>
-            <dl>
-              <div>
-                <dt>Claim</dt>
-                <dd>{reviewPaper.claim || "No claim text was provided."}</dd>
-              </div>
-              <div>
-                <dt>Evidence</dt>
-                <dd>
-                  {reviewPaper.evidence ||
-                    "No evidence was recorded in this projection."}
-                </dd>
-              </div>
-            </dl>
-            <p className="floor-review-note">
-              Review this specific report before accepting it. The Floor stamps
-              this exact report ID.
-            </p>
-            <div className="floor-review-actions">
-              <span
-                aria-label={stamped ? "Stamped accepted" : "Awaiting stamp"}
-                className={`floor-review-stamp-slot${stamped ? " stamped" : ""}`}
-              >
-                {stamped ? "✓" : ""}
-              </span>
-              <button
-                className="verify"
-                disabled={
-                  !canMutate ||
-                  busy ||
-                  stamping ||
-                  !reviewPaper.reportId ||
-                  !reviewPaper.evidence
-                }
-                onClick={() => void accept()}
-                type="button"
-              >
-                {stamping ? "Stamping…" : "Stamp accepted"}
-              </button>
-              <button
-                className="secondary"
-                disabled={stamping || stamped}
-                onClick={() => setReviewPaper(null)}
-                type="button"
-              >
-                Cancel
-              </button>
-            </div>
-            {!reviewPaper.evidence && (
-              <p className="floor-review-error">
-                No evidence was recorded, so this claim must be reviewed from
-                the project page.
-              </p>
-            )}
-            {reviewError && <p className="floor-review-error">{reviewError}</p>}
-          </section>
-        </div>
-      )}
     </section>
   );
 }

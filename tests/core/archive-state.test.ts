@@ -87,7 +87,8 @@ describe("archived task and subtask states", () => {
         reportId: report.id,
         reportedState: "complete",
         archiveState: "released",
-        verificationState: "awaiting_verification",
+        effectiveState: "completed",
+        verificationState: "not_required",
       }),
       expect.objectContaining({
         archiveState: "wont_do",
