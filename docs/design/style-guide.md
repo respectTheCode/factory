@@ -1,13 +1,14 @@
 # Factory Design System — "Ledger"
 
-v0.3 · 2026-09-22 · dark-only · mobile-first · **clean records, dirty room**
+v0.4 · 2026-10-11 · dark-only · mobile-first · **clean records, dirty room**
 
 Factory is the fifth design system in the family, after Beacon, Forge ("Tally
 Console"), Grail, and Watchtower ("The Bridge"). Its language is called
 **Ledger**: Factory is the house's own paperwork — a shop ledger in which
-agent claims are recorded and wait for a human countersign. v0.2 gives the
-ledger its room: a machine shop. The *records* stay clean — disciplined
-layout, hairline rules, tokenized type. The *room* is dirty — warm oil-and-
+agent claims and completion evidence are recorded, with human checks when
+explicitly required. v0.2 gives the
+ledger its room: a machine shop. The _records_ stay clean — disciplined
+layout, hairline rules, tokenized type. The _room_ is dirty — warm oil-and-
 iron neutrals, film grain, hatching, hazard stripes, machined edges. v0.2.1
 turns the lights on: indicators (and only indicators) emit an LED glow, and
 the mark gains a dimensional stamped-metal rendition with a lit chip.
@@ -15,14 +16,14 @@ the mark gains a dimensional stamped-metal rendition with a lit chip.
 Machinery appears as **material, never process**: stamped plates, gauge
 dials, knurled textures, hazard paint. Conveyor belts, gears-as-workflow,
 and pipeline diagrams remain forbidden — the product analysis is explicit
-that Factory is a *run substrate, not a factory pipeline*.
+that Factory is a _run substrate, not a factory pipeline_.
 
-v0.3 puts people on the floor. The home screen becomes **the Floor** (§8):
-a room per project, a token per working agent, a counter where claims
-wait for the stamp. It is built to be left up on a spare display and
-glanced at, so it is the one place where the room is allowed to move.
-The Floor shows *who is where*; it never becomes a diagram of *how work
-flows* — that distinction is what keeps the machinery rule intact.
+v0.4 makes **the Floor** (§8) task-focused: a card per Task, observed
+sessions grouped within it, and an exception-focused Needs you queue.
+It remains useful on a spare display and a phone. Task state, reports,
+confirmed PR merges and opt-in human checks keep their own provenance;
+session activity never implies completion. The Floor never becomes a
+diagram of how work flows.
 
 Reference implementation: `docs/design/previews/factory-system.html`.
 Floor study: `docs/design/previews/factory-floor.html`.
@@ -34,15 +35,15 @@ Mark study: `docs/design/previews/factory-marks.html`.
 
 The family shares DNA at the semantic layer, never the component layer:
 
-| Shared (verbatim) | Factory's own |
-| --- | --- |
-| Signal hexes `#E5484D / #2FBE6B / #F0B429 / #4AA3E0` | Oil-and-iron neutral ramp (§3) |
-| House accent lavender `#9499CB` | Prose face: IBM Plex Sans (§4) |
-| "Prose identifies; mono measures" (IBM Plex Mono) | Shopwear texture layer (§5) |
-| 1px rules instead of shadows; base-4 spacing | Status dials (§6) |
-| No fifth hue; color never the only signal | Signature: the Countersign (§7) |
-| A mark whose one live element reports state | The Floor and worker tokens (§8) |
-| | Mark: the Countersigned F (§11) |
+| Shared (verbatim)                                    | Factory's own                    |
+| ---------------------------------------------------- | -------------------------------- |
+| Signal hexes `#E5484D / #2FBE6B / #F0B429 / #4AA3E0` | Oil-and-iron neutral ramp (§3)   |
+| House accent lavender `#9499CB`                      | Prose face: IBM Plex Sans (§4)   |
+| "Prose identifies; mono measures" (IBM Plex Mono)    | Shopwear texture layer (§5)      |
+| 1px rules instead of shadows; base-4 spacing         | Status dials (§6)                |
+| No fifth hue; color never the only signal            | Signature: the Countersign (§7)  |
+| A mark whose one live element reports state          | The Floor and worker tokens (§8) |
+|                                                      | Mark: the Countersigned F (§11)  |
 
 Beacon, Forge, and Watchtower sit on a cool blue-black canvas ladder.
 **Factory steps off the ladder on purpose.** Grail proved a sibling may
@@ -58,8 +59,9 @@ at a glance — the cool lavender accent actually lands harder on warm ground.
    tokenized; grit lives only in the environment — background grain, panel
    texture, edge treatments — never in the information. If a texture ever
    competes with a value, the texture loses.
-2. **Claims are not facts.** An agent's status report is a claim; only a
-   human verification makes it a fact. The two are never rendered alike.
+2. **Claims preserve provenance.** Agent reports, confirmed PR merges and
+   explicit human checks are separate evidence. Task completion follows its
+   configured finish rule; session activity is never completion evidence.
 3. **Amber means "your turn."** `sig-warn` marks work awaiting a human
    decision — attention, not failure. The dashboard exists to drain the
    amber column.
@@ -67,8 +69,8 @@ at a glance — the cool lavender accent actually lands harder on warm ground.
    Dials, plates, hazard paint, stamps: yes. Gears, conveyors, pipelines,
    flow diagrams: never. Agents may appear on the Floor as **worker
    tokens** — a circle with mono initials and one over-head badge — but
-   never as robots, avatars, or pixel-art figures. A token shows *who is
-   at which station*; it never animates *how the work is done*.
+   never as robots, avatars, or pixel-art figures. A token shows _who is
+   at which station_; it never animates _how the work is done_.
 5. **Color is state, never decoration; never the only signal.** Four signal
    hues with fixed meanings; every dot, dial, and chip carries a mono text
    twin. Greyscale legibility is a release test.
@@ -79,14 +81,14 @@ at a glance — the cool lavender accent actually lands harder on warm ground.
 
 ### Neutrals — oil & iron ramp (dark-only)
 
-| Token | Hex | Use |
-| --- | --- | --- |
-| `--canvas` | `#141210` | page background; `theme-color`; manifest |
-| `--panel` | `#1B1815` | panels, hero, sunken fields |
-| `--raised` | `#24201B` | cards, secondary buttons, menus |
-| `--rule` | `#342E26` | every 1px border and divider |
-| `--ink` | `#EAE6DF` | primary text — warm paper-white |
-| `--ink-dim` | `#A2988A` | secondary text, eyebrows, timestamps |
+| Token         | Hex       | Use                                              |
+| ------------- | --------- | ------------------------------------------------ |
+| `--canvas`    | `#141210` | page background; `theme-color`; manifest         |
+| `--panel`     | `#1B1815` | panels, hero, sunken fields                      |
+| `--raised`    | `#24201B` | cards, secondary buttons, menus                  |
+| `--rule`      | `#342E26` | every 1px border and divider                     |
+| `--ink`       | `#EAE6DF` | primary text — warm paper-white                  |
+| `--ink-dim`   | `#A2988A` | secondary text, eyebrows, timestamps             |
 | `--ink-faint` | `#635A4D` | disabled, decorative only — never a needed value |
 
 The whole ramp is warm: black with soot and oil in it, ink the color of a
@@ -95,12 +97,12 @@ is declared at `:root`.
 
 ### Signals — family-wide hexes, Factory meanings
 
-| Token | Hex | Factory meaning |
-| --- | --- | --- |
-| `--sig-down` | `#E5484D` | blocked; rejected; destructive actions; disconnected |
-| `--sig-ok` | `#2FBE6B` | verified complete; released; accepted; connected |
+| Token        | Hex       | Factory meaning                                              |
+| ------------ | --------- | ------------------------------------------------------------ |
+| `--sig-down` | `#E5484D` | blocked; rejected; destructive actions; disconnected         |
+| `--sig-ok`   | `#2FBE6B` | verified complete; released; accepted; connected             |
 | `--sig-warn` | `#F0B429` | awaiting verification; attention pending; stale/reconnecting |
-| `--sig-info` | `#4AA3E0` | agent actively working; live-update flash |
+| `--sig-info` | `#4AA3E0` | agent actively working; live-update flash                    |
 
 Three forms each: solid, text/border, 16% tint. State borders ≤55% alpha.
 No fifth signal, ever. On the warm ramp, saturation is what separates
@@ -123,16 +125,16 @@ forbidden.
 - **IBM Plex Sans** 400/500/600/700 — prose, chrome, names, headings.
 - **IBM Plex Mono** 400/500/600 — data, always `tabular-nums`.
 
-| Role | Face / spec |
-| --- | --- |
-| `pageTitle` | Plex Sans 600, 20px |
+| Role                     | Face / spec                                          |
+| ------------------------ | ---------------------------------------------------- |
+| `pageTitle`              | Plex Sans 600, 20px                                  |
 | `sectionLabel` (eyebrow) | Plex Sans 700, 10px, `.18em`, uppercase, `--ink-dim` |
-| `itemName` | Plex Sans 600, 13px |
-| `body` | Plex Sans 400, 14px / 1.5 |
-| `bodyDense` | Plex Sans 400, 13px |
-| `data` | Plex Mono 500, 12px |
-| `microData` | Plex Mono 400, 11px |
-| `stateCode` | Plex Mono 600, 10px, `.08em`, uppercase |
+| `itemName`               | Plex Sans 600, 13px                                  |
+| `body`                   | Plex Sans 400, 14px / 1.5                            |
+| `bodyDense`              | Plex Sans 400, 13px                                  |
+| `data`                   | Plex Mono 500, 12px                                  |
+| `microData`              | Plex Mono 400, 11px                                  |
+| `stateCode`              | Plex Mono 600, 10px, `.08em`, uppercase              |
 
 Mono rule: timestamps, counts, durations, branches, git origins, tracker
 IDs, and state codes are mono. (A stencil display face was considered for
@@ -144,12 +146,12 @@ Grit is environmental, layered under or around content, always in the
 neutral family, always subtle enough to survive a squint test. Four
 utilities, in order of ubiquity:
 
-| Utility | Recipe | Where |
-| --- | --- | --- |
-| `--grain` | SVG `feTurbulence` noise overlay, `opacity ≈ .08`, fixed, full-viewport, `pointer-events: none` | the whole app, always on |
-| `--vignette` | radial gradient darkening toward corners, `rgba(0,0,0,.40)` max | canvas only — oil-stained edges |
-| `--hatch` | 45° hairline `repeating-linear-gradient`, `rgba(234,230,223,.065)` 1px / 9px | empty states, placeholder zones, archive panels |
-| `--hazard` | 45° stripes `rgba(229,72,77,.08)` 10px/10px over `--raised`, 50%-alpha `sig-down` border | destructive confirm zones ONLY (delete work, remove project) |
+| Utility      | Recipe                                                                                          | Where                                                        |
+| ------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `--grain`    | SVG `feTurbulence` noise overlay, `opacity ≈ .08`, fixed, full-viewport, `pointer-events: none` | the whole app, always on                                     |
+| `--vignette` | radial gradient darkening toward corners, `rgba(0,0,0,.40)` max                                 | canvas only — oil-stained edges                              |
+| `--hatch`    | 45° hairline `repeating-linear-gradient`, `rgba(234,230,223,.065)` 1px / 9px                    | empty states, placeholder zones, archive panels              |
+| `--hazard`   | 45° stripes `rgba(229,72,77,.08)` 10px/10px over `--raised`, 50%-alpha `sig-down` border        | destructive confirm zones ONLY (delete work, remove project) |
 
 **Machined edge:** cards and raised surfaces carry
 `box-shadow: inset 0 1px 0 rgba(255,255,255,.04)` — a milled top edge
@@ -176,18 +178,18 @@ One circular grammar for all work states — a gauge that reads as positions
 on a single dial, not seven unrelated icons. 16×16, 1.6px ring stroke,
 drawn inline SVG with a text twin (`<title>` + adjacent state code).
 
-| State | Dial | Construction |
-| --- | --- | --- |
-| planned | dashed empty ring | ring `--ink-dim`, `stroke-dasharray 2.5 2.6` |
-| active | ring + quarter pie | ring + wedge fill, both `--sig-info` |
+| State                 | Dial                  | Construction                                            |
+| --------------------- | --------------------- | ------------------------------------------------------- |
+| planned               | dashed empty ring     | ring `--ink-dim`, `stroke-dasharray 2.5 2.6`            |
+| active                | ring + quarter pie    | ring + wedge fill, both `--sig-info`                    |
 | awaiting_verification | **full but unsealed** | dashed ring `--sig-warn` + solid core disc `--sig-warn` |
-| blocked | ring + bar | ring `--sig-down` + horizontal bar (do-not-enter) |
-| completed | solid stamped disc | disc `--sig-ok`, check stroked in `--canvas` |
-| released | open ring + check | ring and check `--sig-ok`, hollow — it left the shop |
-| wont_do | ring + slash | ring and 45° slash `--ink-faint` |
+| blocked               | ring + bar            | ring `--sig-down` + horizontal bar (do-not-enter)       |
+| completed             | solid stamped disc    | disc `--sig-ok`, check stroked in `--canvas`            |
+| released              | open ring + check     | ring and check `--sig-ok`, hollow — it left the shop    |
+| wont_do               | ring + slash          | ring and 45° slash `--ink-faint`                        |
 
-The awaiting dial is the system's hinge: the work is *full* (the claim
-exists) but the ring is *dashed* (unsealed) — the same dashed-equals-
+The awaiting dial is the system's hinge: the work is _full_ (the claim
+exists) but the ring is _dashed_ (unsealed) — the same dashed-equals-
 unverified grammar as the Countersign. The Task finish rule seals the ring.
 
 **Progress dials:** a task-level dial may fill as a pie of
@@ -219,133 +221,108 @@ prose (`Accepted · 14:20`).
 
 ## 8. The Floor
 
-The Floor is the home screen and the ambient display. One glance answers
-three questions in order: **what needs me**, **who is working where**, and
-**what just happened**. It replaces the attention list of v0.2, which
-ranked nothing and never changed in front of you.
+The Floor is the home screen and ambient overview. One glance answers
+**what needs me**, **what is moving or blocked**, and **what just happened**.
+Task records own work state; T3 observations describe sessions independently.
 
 ### 8.1 Layout
 
-Desktop (≥1280px): floor on the left, a fixed 440px **sidecar** on the
-right, masthead above with a live mono clock. The floor is a grid of
-**bays**, one per project, `auto-fit` at a 300px minimum, so six projects
-fill 3×2 on a 1440 display and 2×3 on a portrait one. No scrolling at
-1080p — the Floor is a display, not a document; overflow within a bay
-collapses to `+N more`. Phone (≤540px): bays stack, the sidecar's Your
-Turn section moves to the top, Shift Log to the bottom, and the
-scoreboard becomes one mono line. Project names open the project detail
-for editing and drag-ordering; the retired Ledger route redirects home.
+Desktop: task cards on the left, a 300–440px attention sidecar on the right.
+A compact masthead shows observation freshness. One summary row counts visible
+projects' Active, Blocked and In review Tasks and Done today; observed working
+sessions are explicitly labeled and de-duplicated by source/thread, not card.
+Readable cards may scroll vertically; do not truncate active work to fit 1080p.
 
-### 8.2 Bays
+Phone: Needs you precedes the summary, project controls and one-column cards.
+Recent changes follows the cards. Primary controls have at least 44px tap areas.
+Project headings open project detail for editing; Task titles open existing Task
+detail without triggering an opt-in human check dialog.
 
-A bay is a `--panel` room with a `--raised` **plate** across the top:
-project name (Plex Sans 600, 15px) and a three-dot tally (`sig-info`
-working · `sig-warn` waiting · `sig-down` blocked, each with its mono
-count). Below the plate runs the **track**, three zones stacked top to
-bottom, divided by dashed `--rule` lines:
+### 8.2 Project sections and Task cards
 
-| Zone | Holds | Reads as |
-| --- | --- | --- |
-| **Bench** | planned and backlog work | seats waiting to be filled |
-| **Stations** | active work, blocked work | where the tokens sit |
-| **Counter** | claims awaiting the stamp | papers stacked for you |
+Group cards under project headings. Each card is one Task, keyed by Task ID:
+title and ID, work-state label, recorded reason, optional Step counts, finish
+condition, attributed handoff and a separate observed-session summary. Use an
+article with a heading and a primary button; do not nest interactive controls.
 
-A horizontal project strip below the Floor header controls which bays are
-visible. Each project bubble toggles its entire card; a separate icon opens
-the project page. Hidden cards occupy no grid space. Projects start visible,
-and hidden project IDs persist in local storage on each device through reloads
-and live updates. Existing collapsed-project preferences carry over as hidden
-projects. Your Turn and the scoreboard continue to cover every project.
+Active and In review Tasks remain visible without a running session or a
+Needs you item. Blocked Tasks use a red border and text, never hazard stripes.
+Needs you uses amber with an explicit action label. Planned cards are compact
+and dashed, initially four per project with an explicit reveal control. Backlog
+remains available in project detail, with its count disclosed. Recently Done
+starts collapsed and uses the same local-day rule as Done today, including
+Tasks archived after completion.
 
-The track is the only sequence the Floor draws, and it is chronological,
-not procedural: work enters at the bench, sits at a station, and lands
-on the counter. Nothing flows between bays.
+Step counts exclude won't-do Steps and count released or completed Steps as
+done. Zero-Step cards omit counts. Steps never determine Task completion. A
+Done Task with open Steps says how many remain open without showing unfinished
+Task progress. PR merges count only with evidence of reaching the default branch
+in the current workflow epoch. Agent-finished, In review, opt-in human check,
+Done and deployment remain distinct.
 
-A bay with something on its counter or an over-head badge takes a
-45%-alpha `sig-warn` border. A bay with no activity at all dims to 70%
-opacity, its tally replaced by a `--ink-faint` dot and `lights off`.
-The Counter zone carries the hatch utility (§5); when it holds papers it
-also takes a 5% `sig-warn` wash — the one place amber is allowed to tint
-a surface.
+Cards sort by oldest attention item, Blocked, In review, Active and Planned,
+then recorded priority and order. Session activity never determines ordering.
+No position animation occurs when data updates.
 
-### 8.3 Stations and worker tokens
+### 8.3 Project visibility and observed sessions
 
-A **station** is a 44px-minimum row: token, name, mono sub-line. An
-empty station is a dashed `--rule` outline with `--ink-faint` text — an
-unlit position, the same grammar as the planned dial. Blocked stations
-take the 45% `sig-down` border.
+The project strip toggles card sections and their summary counts. Hidden IDs
+persist with `factory.floor.collapsed-bays.v1` so prior preferences survive.
+Show all restores visibility. Each hidden project's chip retains its attention
+count. Needs you stays global regardless of visibility and says so explicitly.
 
-The **worker token** is the character. 30px circle, `--raised` fill,
-1.5px border, Plex Mono 700 10px initials. Circles remain machine state
-(§7), so the token is a circle; the human's stamps stay square.
+Linked sessions attach to every associated Task, de-duplicated inside the card
+by source/thread. A shared session identifies its related Tasks but contributes
+once to the observed-session count. Sessions linked to Planned Tasks remain
+visible on those cards. Session state never replaces Task state.
 
-| Reporter | Initials | Border |
-| --- | --- | --- |
-| Claude | `CL` | `--accent` |
-| Codex | `CX` | `--ink` |
-| no session observed | `—` | `--ink-dim`, dashed, 45% opacity |
+Unmatched or ambiguous sessions appear under Sessions without a task; they are
+not Tasks and cannot imply associations. Unknown agent identity stays neutral.
+Missing, stale or unavailable source evidence says Session status unavailable,
+rather than falsely saying no session was observed. Working indicators require
+fresh source evidence; connection freshness and Task reports are separate.
 
-Token states, each with a mono text twin in the station sub-line:
+### 8.4 Recorded handoffs
 
-| State | Rendering |
-| --- | --- |
-| working | 2px `sig-info` arc orbiting the token, 1.6s linear, with `--glow-info` |
-| idle / stopped | 45% opacity, dashed border |
-| waiting for approval | over-head badge `?`, `sig-warn` fill, `--glow-warn`, 1.2s two-step blink |
-| waiting for user input | over-head badge `?`, `sig-warn` fill, no blink |
-| blocked / error | over-head badge `!`, `sig-down` fill, `--glow-down` |
-| turn just completed | over-head badge `✓`, `sig-ok` fill, held 10s then removed |
-
-The **over-head badge** is a 16px rounded square pinned to the token's
-top-right. It is the Floor's "icon above the agent": exactly one badge
-per token, and the badge is the only element on a station that may
-glow. A token never has a face, limbs, a desk graphic, or a walk cycle.
-
-### 8.4 Counter and papers
-
-Actionable human requests render as **papers**: `--tint-warn` fill,
-35% `sig-warn` border, request kind, name, and age. Only opt-in human checks
-carry a Countersign slot. A bay shows at most three papers and a `+N more`
-line, oldest first. Confirming a check removes its request on the next render.
+Prefer the current Task report's handoff. Otherwise use the newest handoff from
+an unfinished, non-archived Step, with an additional-handoff count. Show next
+owner, recorded action, reporter and report age. Handoffs are claims, not
+dispatches. Omit the handoff when none was recorded; never infer a next action
+from Step order, file counts, session activity or an estimated plan.
 
 ### 8.5 Sidecar
 
-- **Needs you** — the amber queue of actionable PR reviews, explicit checks,
-  decisions, and human blockers, ordered oldest first. Verb chips read
-  `REVIEW`, `CHECK`, `DECIDE` in `sig-warn`, and `UNBLOCK` in `sig-down`.
-  Routine Step reports and tracking notes do not count. When empty, the panel
-  says `Nothing needs you` and its border drops to `--rule`.
-- **Shift Log** — a live, newest-first list of events: reports, turn
-  completions, sessions clocking in, stamps. Rows are `time · initials ·
-  sentence`; the sentence names the actor first (`Claude reported …`,
-  `You stamped …`). New rows arrive with the report flash (§9) and keep
-  a 2px `sig-info` left border until the next event. Twenty rows, then
-  the log truncates.
-- **Scoreboard** — four tiles in mono 600 22px: stamped today (`sig-ok`),
-  reports today, working now, oldest unstamped. These are the only
-  counters on the Floor; the v0.2 stat tiles (`Total tasks`, `Tasks
-  complete`) are retired because they counted Work State and misread a
-  released project as an unfinished one.
+- **Needs you** is the global queue of actionable PR reviews, opt-in checks,
+  decisions and human blockers, oldest first. REVIEW, CHECK and DECIDE use amber;
+  UNBLOCK uses red. Routine Step reports and agent dependencies do not create
+  requests. Tracking notes remain separate and uncounted. When empty, say
+  Nothing needs you.
+- **Recent changes** uses the latest twenty observed event sentences, newest
+  first. It does not invent transition arrows or imply a complete history.
+  Do not label it since your last visit without a persisted visit baseline.
+- The previous duplicate scoreboard and per-project Counter are retired.
+  Summary labels must distinguish Tasks, sessions and human requests.
 
 ### 8.6 What the Floor never does
 
-No transcript bodies, no file lists, no model names, no worktree paths.
-That is the Ledger's job. The Floor tells you where to look; it does not
-show you the work. It never writes: every control on it is a link into
-the Ledger row except the stamp on a paper, which is the one action a
-glance should be able to finish.
+No transcript bodies, file lists, model names or worktree paths. No milestones
+without an explicit milestone model, estimated percentages, ETA promises,
+automatic timeout decisions, dispatch, approval or completion writes.
+Task cards navigate to the existing detail workflow. Sidebar actions open the
+corresponding review/check/decision context. New project remains a disclosed,
+permission-aware planning control.
 
 ## 9. Motion
 
 Five animations, and no others:
 
-| Animation | Spec | Where |
-| --- | --- | --- |
-| countersign stamp | 120ms ease-out scale 1.6→1 | slot on accept |
-| live report flash | `--tint-info` → transparent, 400ms | Ledger row, Shift Log row |
-| indeterminate spinner | 800ms linear | loading only |
-| working arc | 2px `sig-info` arc, 1.6s linear orbit | worker token, working state |
-| approval blink | 1.2s `steps(2)` opacity 1→.35 | over-head `?` badge only |
+| Animation             | Spec                                  | Where                       |
+| --------------------- | ------------------------------------- | --------------------------- |
+| countersign stamp     | 120ms ease-out scale 1.6→1            | slot on accept              |
+| live report flash     | `--tint-info` → transparent, 400ms    | Ledger row, Shift Log row   |
+| indeterminate spinner | 800ms linear                          | loading only                |
+| working arc           | 2px `sig-info` arc, 1.6s linear orbit | worker token, working state |
+| approval blink        | 1.2s `steps(2)` opacity 1→.35         | over-head `?` badge only    |
 
 The active dial's wedge still does not rotate; the dial is a gauge and
 the token is the thing that moves. Tokens do not travel between zones —
@@ -390,9 +367,9 @@ utility form:**
 - **Dimensional (primary)** — the brand mark, used everywhere ≥32px: app
   icon, mastheads, lockups, marketing, README. The F is stamped raised
   metal: bars fill with a vertical warm-ink gradient (`#F6F2EA →
-  #CEC6B8`) over a dark warm extrusion layer offset +3y in 128-scale
+#CEC6B8`) over a dark warm extrusion layer offset +3y in 128-scale
   (`#8A8172`), with a soft drop shadow onto the plate (`feDropShadow
-  dy 4, stdDeviation 5, opacity .5`). The chip is a **lit LED**: lavender
+dy 4, stdDeviation 5, opacity .5`). The chip is a **lit LED**: lavender
   gradient (`#B4B8E4 → #7F84B8`) with a `#9499CB` glow halo
   (`feDropShadow 0 0, stdDeviation 6, opacity .9`). Filter and offset
   values scale with the render size (at 24-grid: offset +0.75, shadow
@@ -434,25 +411,40 @@ left, 10px gap. Never recolor a letter; never box the mark.
 :root {
   color-scheme: dark;
   /* neutrals — oil & iron */
-  --canvas: #141210; --panel: #1B1815; --raised: #24201B; --rule: #342E26;
-  --ink: #EAE6DF; --ink-dim: #A2988A; --ink-faint: #635A4D;
+  --canvas: #141210;
+  --panel: #1b1815;
+  --raised: #24201b;
+  --rule: #342e26;
+  --ink: #eae6df;
+  --ink-dim: #a2988a;
+  --ink-faint: #635a4d;
   /* signals — family-wide */
-  --sig-down: #E5484D; --sig-ok: #2FBE6B; --sig-warn: #F0B429; --sig-info: #4AA3E0;
-  --tint-down: rgba(229,72,77,.16); --tint-ok: rgba(47,190,107,.16);
-  --tint-warn: rgba(240,180,41,.16); --tint-info: rgba(74,163,224,.16);
+  --sig-down: #e5484d;
+  --sig-ok: #2fbe6b;
+  --sig-warn: #f0b429;
+  --sig-info: #4aa3e0;
+  --tint-down: rgba(229, 72, 77, 0.16);
+  --tint-ok: rgba(47, 190, 107, 0.16);
+  --tint-warn: rgba(240, 180, 41, 0.16);
+  --tint-info: rgba(74, 163, 224, 0.16);
   /* accent — house lavender */
-  --accent: #9499CB; --on-accent: #141210; --tint-accent: rgba(148,153,203,.16);
+  --accent: #9499cb;
+  --on-accent: #141210;
+  --tint-accent: rgba(148, 153, 203, 0.16);
   /* geometry */
-  --u: 4px; --r-card: 10px; --r-field: 8px; --r-chip: 6px;
-  --edge-machined: inset 0 1px 0 rgba(255,255,255,.04);
-  --shadow-overlay: 0 10px 24px rgba(0,0,0,.45);
+  --u: 4px;
+  --r-card: 10px;
+  --r-field: 8px;
+  --r-chip: 6px;
+  --edge-machined: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-overlay: 0 10px 24px rgba(0, 0, 0, 0.45);
   --shell: 1280px;
   /* LED glow — indicators only (dials, connection dot, mark chip) */
-  --glow-down: drop-shadow(0 0 4px rgba(229,72,77,.55));
-  --glow-ok: drop-shadow(0 0 4px rgba(47,190,107,.55));
-  --glow-warn: drop-shadow(0 0 4px rgba(240,180,41,.55));
-  --glow-info: drop-shadow(0 0 4px rgba(74,163,224,.55));
-  --glow-accent: drop-shadow(0 0 4px rgba(148,153,203,.55));
+  --glow-down: drop-shadow(0 0 4px rgba(229, 72, 77, 0.55));
+  --glow-ok: drop-shadow(0 0 4px rgba(47, 190, 107, 0.55));
+  --glow-warn: drop-shadow(0 0 4px rgba(240, 180, 41, 0.55));
+  --glow-info: drop-shadow(0 0 4px rgba(74, 163, 224, 0.55));
+  --glow-accent: drop-shadow(0 0 4px rgba(148, 153, 203, 0.55));
 }
 ```
 
@@ -461,7 +453,7 @@ left, 10px gap. Never recolor a letter; never box the mark.
    WebSocket subscription. Factory mutations invalidate the shared feed
    immediately. While viewers are subscribed, one server refresh loop
    checks T3 observations every five seconds and broadcasts activity,
-   freshness, bays, Your Turn, Shift Log and scoreboard updates together.
+   freshness, Task cards, Needs you, Recent changes and recorded counts together.
    Reconnecting viewers receive a fresh snapshot before actions are enabled.
 
 ### 12.1 Open decisions
@@ -475,12 +467,6 @@ left, 10px gap. Never recolor a letter; never box the mark.
   only if it costs frames.
 - **`button.primary`** — `main.tsx` references `.primary` which CSS never
   defined; define (accent fill) or remove in the token pass.
-- **Floor on phone** — whether a phone ever shows bays at all, or only
-  Your Turn and Shift Log with a per-project tally strip. Decide after
-  the desktop Floor is live.
 - **Legacy threads** — unmatched T3 threads from before Factory (26 in
   the Factory project alone) must not appear as idle tokens; the Floor
   should draw only sessions with a Work Association or a running turn.
-- **Stamp from the Floor** — accepting from a paper needs the reason and
-  evidence flow of the Ledger row; decide whether the Floor stamp opens
-  the row or accepts inline with no reason.

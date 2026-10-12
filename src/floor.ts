@@ -77,6 +77,41 @@ export type FloorStation = {
   relatedTargets?: FloorTarget[];
 };
 
+export type FloorTaskCard = FloorTarget & {
+  state: FloorWorkState | "completed";
+  priority?: "low" | "medium" | "high" | "urgent";
+  sortOrder?: number;
+  owner?: string;
+  stateReason?: string;
+  manualHold: boolean;
+  steps?: { done: number; total: number };
+  finish: {
+    kind: "pr_merge" | "agent_report";
+    requireHumanCheck: boolean;
+    humanCheckReady: boolean;
+    requiredPrCount: number;
+    mergedPrCount: number;
+    agentReportedFinished: boolean;
+  };
+  sessions: FloorStation[];
+  sessionsAvailable: boolean;
+  handoff?: {
+    nextOwner: string;
+    nextOwnerKind: "human" | "agent" | "unknown";
+    nextAction: string;
+    reporter: string;
+    reportedAt: string;
+    additionalCount: number;
+  };
+  needsYou: {
+    count: number;
+    verbs: FloorQueueAction[];
+    oldestAt?: string;
+  };
+  completedAt?: string;
+  finishProvenance?: string;
+};
+
 export type FloorProject = {
   id: string;
   name: string;
@@ -89,6 +124,10 @@ export type FloorProject = {
     waiting: number;
     blocked: number;
   };
+  tasks?: FloorTaskCard[];
+  recentlyDone?: FloorTaskCard[];
+  unmatchedSessions?: FloorStation[];
+  sessionsAvailable?: boolean;
 };
 
 export type FloorQueueAction = "review" | "check" | "decide" | "unblock";
@@ -402,7 +441,14 @@ function sourceIsFresh(
   sourceId: string,
   now: Date,
 ): boolean {
-  return activity.status === "ok" && connectionIsFresh(activity, sourceId, now);
+  const source = activity.sources.find(
+    (candidate) => candidate.sourceId === sourceId,
+  );
+  if (activity.sources.length > 0 && !source) return false;
+  return (
+    (source?.status ?? activity.status) === "ok" &&
+    connectionIsFresh(activity, sourceId, now)
+  );
 }
 
 function hasFreshRunningChildObservation(
@@ -645,6 +691,291 @@ function activityStatus(
   return (
     scoped.length > 0 &&
     scoped.every(({ activity }) => connectionIsFresh(activity, sourceId, now))
+  );
+}
+
+function cardState(status: TaskStatus): FloorTaskCard["state"] | undefined {
+  switch (status.taskState) {
+    case "backlog":
+    case "planned":
+    case "active":
+    case "blocked":
+    case "awaiting_verification":
+    case "completed":
+      return status.taskState;
+    default:
+      return undefined;
+  }
+}
+
+function currentFinishMetadata(
+  status: TaskStatus,
+): TaskStatus["finishMetadata"] {
+  return status.finishMetadata?.epoch === status.workflowEpoch
+    ? status.finishMetadata
+    : undefined;
+}
+
+function taskSteps(input: FloorTaskInput): FloorTaskCard["steps"] {
+  const subtasks = new Map(
+    input.subtasks.map((subtask) => [subtask.id, subtask]),
+  );
+  const rows = input.status.subtasks.flatMap((stepStatus) => {
+    const subtask = subtasks.get(stepStatus.subtaskId);
+    if (
+      !subtask ||
+      subtask.archiveState === "wont_do" ||
+      stepStatus.archiveState === "wont_do"
+    )
+      return [];
+    return [{ stepStatus, subtask }];
+  });
+  if (rows.length === 0) return undefined;
+  return {
+    done: rows.filter(
+      ({ stepStatus, subtask }) =>
+        stepStatus.effectiveState === "completed" ||
+        stepStatus.archiveState === "released" ||
+        subtask.archiveState === "released",
+    ).length,
+    total: rows.length,
+  };
+}
+
+function taskHandoff(
+  input: FloorTaskInput,
+  statusReports: readonly StatusReport[],
+): FloorTaskCard["handoff"] {
+  const taskReport = input.status.latestTaskReport;
+  const taskReportedAt = validIso(taskReport?.createdAt);
+  const taskHandoff = taskReport?.handoff;
+  const stepsById = new Map(
+    input.subtasks.map((subtask) => [subtask.id, subtask]),
+  );
+  const stepHandoffs = input.status.subtasks.flatMap((stepStatus) => {
+    const subtask = stepsById.get(stepStatus.subtaskId);
+    if (
+      !subtask ||
+      !stepStatus.handoff ||
+      subtask.archiveState !== undefined ||
+      stepStatus.archiveState !== undefined ||
+      stepStatus.effectiveState === "completed"
+    )
+      return [];
+    const report =
+      reportById(statusReports, stepStatus.reportId) ??
+      latestReportForSubtask(statusReports, stepStatus.subtaskId);
+    const reportedAt = validIso(
+      stepStatus.reportCreatedAt ?? report?.createdAt,
+    );
+    if (!reportedAt) return [];
+    return [
+      {
+        handoff: stepStatus.handoff,
+        reporter: stepStatus.reporter ?? report?.reporter ?? "Unknown",
+        reportedAt,
+        subtaskId: stepStatus.subtaskId,
+      },
+    ];
+  });
+
+  if (taskHandoff && taskReport && taskReportedAt) {
+    return {
+      nextOwner: taskHandoff.nextOwner,
+      nextOwnerKind: taskHandoff.nextOwnerKind,
+      nextAction: taskHandoff.nextAction,
+      reporter: taskReport.reporter,
+      reportedAt: taskReportedAt,
+      additionalCount: stepHandoffs.length,
+    };
+  }
+
+  const newestStepHandoff = stepHandoffs.sort(
+    (left, right) =>
+      timestamp(right.reportedAt) - timestamp(left.reportedAt) ||
+      left.subtaskId.localeCompare(right.subtaskId),
+  )[0];
+  return newestStepHandoff
+    ? {
+        nextOwner: newestStepHandoff.handoff.nextOwner,
+        nextOwnerKind: newestStepHandoff.handoff.nextOwnerKind,
+        nextAction: newestStepHandoff.handoff.nextAction,
+        reporter: newestStepHandoff.reporter,
+        reportedAt: newestStepHandoff.reportedAt,
+        additionalCount: stepHandoffs.length - 1,
+      }
+    : undefined;
+}
+
+function queueTargetsTask(item: FloorQueueItem, taskId: string): boolean {
+  const directTarget =
+    item.target.kind === "work" || item.target.kind === "thread"
+      ? item.target.target
+      : undefined;
+  return (
+    directTarget?.taskId === taskId ||
+    item.relatedTargets?.some((target) => target.taskId === taskId) === true
+  );
+}
+
+function finishProvenance(status: TaskStatus): string | undefined {
+  const metadata = currentFinishMetadata(status);
+  if (!metadata) return undefined;
+  if (metadata.kind === "pr_merge" && metadata.mergeProofs?.length) {
+    const proofs = metadata.mergeProofs.map((proof) => {
+      const number = proof.pullRequestUrl.match(/\/pull\/(\d+)(?:\/|$)/)?.[1];
+      return `${number ? `PR #${number}` : "Required PR"} merged to ${proof.defaultBranch}`;
+    });
+    return `${proofs.join(" · ")} · by ${metadata.actor}`;
+  }
+  const kind =
+    metadata.kind === "agent_report"
+      ? "Agent report"
+      : metadata.kind === "human_check"
+        ? "Human check"
+        : metadata.kind === "human_mark_done"
+          ? "Marked done"
+          : metadata.kind === "pr_merge"
+            ? "Required PRs merged"
+            : "Legacy completion";
+  return `${kind} by ${metadata.actor}`;
+}
+
+function taskCard(
+  project: Project,
+  input: FloorTaskInput,
+  queue: readonly FloorQueueItem[],
+  statusReports: readonly StatusReport[],
+  sessions: FloorStation[],
+  sessionsAvailable: boolean,
+  stateOverride?: FloorTaskCard["state"],
+): FloorTaskCard | undefined {
+  const state = stateOverride ?? cardState(input.status);
+  if (!state) return undefined;
+  const steps = taskSteps(input);
+  const handoff = taskHandoff(input, statusReports);
+  const provenance = finishProvenance(input.status);
+  const required = input.status.requiredPullRequests.filter(
+    (pullRequest) => pullRequest.required,
+  );
+  const matchingQueue = queue.filter((item) =>
+    queueTargetsTask(item, input.task.id),
+  );
+  const verbs = new Set(matchingQueue.map((item) => item.action));
+  const metadata = currentFinishMetadata(input.status);
+  const completedAt = metadata && validIso(metadata.completedAt);
+  const latestTaskReport = input.status.latestTaskReport;
+  return {
+    ...targetFor(project, input.task),
+    state,
+    ...(input.task.priority ? { priority: input.task.priority } : {}),
+    ...(input.task.sortOrder === undefined
+      ? {}
+      : { sortOrder: input.task.sortOrder }),
+    ...(input.task.owner ? { owner: input.task.owner } : {}),
+    ...((input.status.stateReason ?? input.task.stateReason)
+      ? { stateReason: input.status.stateReason ?? input.task.stateReason }
+      : {}),
+    manualHold: input.status.manualHold,
+    ...(steps ? { steps } : {}),
+    finish: {
+      kind: input.status.finishRule.kind,
+      requireHumanCheck: input.status.finishRule.requireHumanCheck,
+      humanCheckReady: input.status.humanCheckReady,
+      requiredPrCount: required.length,
+      mergedPrCount: required.filter(
+        (pullRequest) =>
+          pullRequest.merge?.workflowEpoch === input.status.workflowEpoch &&
+          pullRequest.merge.reachedDefaultBranch === true,
+      ).length,
+      agentReportedFinished:
+        latestTaskReport?.workflowEpoch === input.status.workflowEpoch &&
+        latestTaskReport.reportedState === "finished",
+    },
+    sessions: sessions.sort(
+      (left, right) =>
+        (left.sourceId ?? "").localeCompare(right.sourceId ?? "") ||
+        (left.threadId ?? "").localeCompare(right.threadId ?? ""),
+    ),
+    sessionsAvailable,
+    ...(handoff ? { handoff } : {}),
+    needsYou: {
+      count: matchingQueue.length,
+      verbs: (["review", "check", "decide", "unblock"] as const).filter(
+        (action) => verbs.has(action),
+      ),
+      ...(matchingQueue.length > 0
+        ? {
+            oldestAt: matchingQueue
+              .map((item) => item.timestamp)
+              .sort((left, right) => timestamp(left) - timestamp(right))[0],
+          }
+        : {}),
+    },
+    ...(completedAt ? { completedAt } : {}),
+    ...(provenance ? { finishProvenance: provenance } : {}),
+  };
+}
+
+function compareTaskCards(left: FloorTaskCard, right: FloorTaskCard): number {
+  const leftNeedsYou = left.needsYou.count > 0;
+  const rightNeedsYou = right.needsYou.count > 0;
+  if (leftNeedsYou !== rightNeedsYou) return leftNeedsYou ? -1 : 1;
+  if (leftNeedsYou && rightNeedsYou) {
+    const attention =
+      timestamp(left.needsYou.oldestAt) - timestamp(right.needsYou.oldestAt);
+    if (attention !== 0) return attention;
+  }
+  const stateOrder: Record<FloorTaskCard["state"], number> = {
+    blocked: 0,
+    awaiting_verification: 1,
+    active: 2,
+    planned: 3,
+    backlog: 4,
+    completed: 5,
+  };
+  const state = stateOrder[left.state] - stateOrder[right.state];
+  if (state !== 0) return state;
+  const priorityOrder = { urgent: 0, high: 1, medium: 2, low: 3 };
+  const priority =
+    (left.priority ? priorityOrder[left.priority] : 4) -
+    (right.priority ? priorityOrder[right.priority] : 4);
+  if (priority !== 0) return priority;
+  const sortOrder =
+    (left.sortOrder ?? Number.POSITIVE_INFINITY) -
+    (right.sortOrder ?? Number.POSITIVE_INFINITY);
+  return sortOrder || left.taskId.localeCompare(right.taskId);
+}
+
+function projectSourceAvailability(
+  activities: readonly FloorProjectActivity[],
+  now: Date,
+): boolean {
+  if (
+    activities.some(({ activity }) => {
+      if (activity.sources.length === 0) return false;
+      const sourceIds = new Set(
+        activity.sources.map((source) => source.sourceId),
+      );
+      return activityThreads([activity]).some(
+        (thread) => !sourceIds.has(thread.sourceId),
+      );
+    })
+  )
+    return false;
+  const sources = activities.flatMap(({ activity }) =>
+    activity.sources.length > 0
+      ? activity.sources.map((source) => ({
+          activity,
+          sourceId: source.sourceId,
+        }))
+      : [{ activity, sourceId: activity.sourceId }],
+  );
+  return (
+    sources.length > 0 &&
+    sources.every(({ activity, sourceId }) =>
+      sourceIsFresh(activity, sourceId, now),
+    )
   );
 }
 
@@ -1077,6 +1408,8 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
     }
   }
 
+  const uniqueQueue = new Map(queue.map((item) => [item.id, item]));
+  const canonicalQueue = [...uniqueQueue.values()];
   const floorProjects: FloorProject[] = input.projects.map((project) => {
     const projectTasks = activeTasks.filter(
       ({ task }) => task.projectId === project.id,
@@ -1112,6 +1445,88 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
       }
     }
     const projectThreads = [...projectThreadMap.values()];
+    const sessionsByTask = new Map<string, FloorStation[]>();
+    for (const { activity, thread } of projectThreads) {
+      if (
+        !sourceIsFresh(activity, thread.sourceId, input.now) ||
+        thread.sourceCurrent === false ||
+        thread.association.state !== "linked"
+      )
+        continue;
+      const relatedTargets = targetsForLinks(
+        projects,
+        activeTasks,
+        project.id,
+        thread.association.links,
+      );
+      for (const taskId of new Set(
+        relatedTargets.map((target) => target.taskId),
+      )) {
+        const station: FloorStation = {
+          association: "linked",
+          id: `thread:${thread.sourceId}:${thread.threadId}:${taskId}`,
+          observedAt: thread.observedAt,
+          sourceId: thread.sourceId,
+          state: threadState(thread),
+          target: relatedTargets.find((target) => target.taskId === taskId),
+          relatedTargets:
+            relatedTargets.length > 1 ? relatedTargets : undefined,
+          threadId: thread.threadId,
+          threadTitle: thread.title,
+          worker: identityFor(thread),
+        };
+        const taskSessions = sessionsByTask.get(taskId) ?? [];
+        taskSessions.push(station);
+        sessionsByTask.set(taskId, taskSessions);
+      }
+    }
+    const sessionsAvailable = projectSourceAvailability(
+      projectActivities,
+      input.now,
+    );
+    const taskCards = projectTasks
+      .flatMap((taskInput) => {
+        const state = cardState(taskInput.status);
+        if (
+          taskInput.status.archiveState !== undefined ||
+          taskInput.status.taskCompleted ||
+          state === undefined ||
+          state === "completed"
+        )
+          return [];
+        const card = taskCard(
+          project,
+          taskInput,
+          canonicalQueue,
+          input.statusReports,
+          sessionsByTask.get(taskInput.task.id) ?? [],
+          sessionsAvailable,
+        );
+        return card ? [card] : [];
+      })
+      .sort(compareTaskCards);
+    const recentlyDone = input.tasks
+      .filter(({ task }) => task.projectId === project.id)
+      .flatMap((taskInput) => {
+        const metadata = currentFinishMetadata(taskInput.status);
+        if (!metadata || !isToday(metadata.completedAt, input.now, timezone))
+          return [];
+        const card = taskCard(
+          project,
+          taskInput,
+          canonicalQueue,
+          input.statusReports,
+          sessionsByTask.get(taskInput.task.id) ?? [],
+          sessionsAvailable,
+          "completed",
+        );
+        return card ? [card] : [];
+      })
+      .sort(
+        (left, right) =>
+          timestamp(right.completedAt) - timestamp(left.completedAt) ||
+          left.taskId.localeCompare(right.taskId),
+      );
     for (const { task, status } of projectTasks) {
       if (status.taskState !== "active" && status.taskState !== "blocked")
         continue;
@@ -1242,6 +1657,15 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
     const waiting = queue.filter(
       (item) => item.projectId === project.id,
     ).length;
+    const currentThreadKeys = new Set(
+      projectThreads
+        .filter(
+          ({ activity, thread }) =>
+            sourceIsFresh(activity, thread.sourceId, input.now) &&
+            thread.sourceCurrent !== false,
+        )
+        .map(({ thread }) => threadKey(thread)),
+    );
     return {
       bench,
       counter,
@@ -1250,11 +1674,19 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
       name: project.name,
       reviewNeeded,
       stations,
+      tasks: taskCards,
+      recentlyDone,
+      unmatchedSessions: stations.filter(
+        (station) =>
+          (station.association === "unmatched" ||
+            station.association === "ambiguous") &&
+          currentThreadKeys.has(`${station.sourceId}:${station.threadId}`),
+      ),
+      sessionsAvailable,
     };
   });
 
-  const uniqueQueue = new Map(queue.map((item) => [item.id, item]));
-  const orderedQueue = [...uniqueQueue.values()].sort(compareOldest);
+  const orderedQueue = canonicalQueue.sort(compareOldest);
   const orderedEvents = [
     ...new Map(events.map((event) => [event.id, event])).values(),
   ]
@@ -1275,6 +1707,7 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
         .filter(
           (thread) =>
             sourceIsFresh(activity, thread.sourceId, input.now) &&
+            thread.sourceCurrent !== false &&
             !(
               project &&
               thread.association.state === "linked" &&
@@ -1298,11 +1731,13 @@ export function buildFloorSnapshot(input: FloorProjectionInput): FloorSnapshot {
           status.latestTaskReport &&
           isToday(status.latestTaskReport.createdAt, input.now, timezone),
       ).length,
-    finishedToday: input.tasks.filter(
-      ({ status }) =>
-        status.finishMetadata &&
-        isToday(status.finishMetadata.completedAt, input.now, timezone),
-    ).length,
+    finishedToday: input.tasks.filter(({ status }) => {
+      const metadata = currentFinishMetadata(status);
+      return (
+        metadata !== undefined &&
+        isToday(metadata.completedAt, input.now, timezone)
+      );
+    }).length,
     stampedToday: input.verifications.filter(
       (verification) =>
         verification.decision === "accepted" &&
