@@ -1,41 +1,120 @@
-# Floor dashboard validation
+# Active task dashboard design QA
 
-- Source visual truth: `docs/design/previews/factory-floor.html`, with the accepted behavior in `docs/design/style-guide.md` section 8.
-- Implementation: the authenticated home route `/`. After reviewing the LAN preview, the user requested removal of the old Ledger dashboard and a full-width shared header on every page. Legacy `/ledger` links redirect to `/`.
-- Source capture: unavailable. The in-app browser was unavailable, and Chrome rejected the local mockup URL under its URL security policy. No alternate route was used to bypass that restriction.
-- Implementation screenshots: `/tmp/factory-floor-artifacts/desktop.png` (1440 × 1080) and `/tmp/factory-floor-artifacts/phone.png` (390 × 844), both at device pixel ratio 1. These use isolated synthetic data, not production records.
-- Full-view and focused-region comparison: blocked because no accepted source screenshot could be captured.
-
-## Required fidelity surfaces
-
-Typography, spacing, color tokens, asset fidelity, and copy cannot be declared visually matched from source inspection alone. Browser checks of the implemented app and automated behavior checks will be recorded separately; neither substitutes for source-versus-implementation visual comparison.
-
-## Implementation checks
-
-- Desktop: six bays render in a three-column, two-row grid. Long project headers wrap without colliding with counts. Quiet bays dim, one running worker appears, and pending approval/input workers do not inflate working-now.
-- Responsive: no horizontal overflow at 1440, 900, or 390 CSS pixels. Your Turn precedes bays on phone widths.
-- Final phone capture confirms queue ages remain visible while long descriptions truncate. A newly accepted synthetic claim adds a Shift Log row with `floor-report-flash`; its stable event ID prevents repeat flashes on polling. Reduced-motion CSS disables animation and retains the info border.
-- Initial navigation check: Floor and the then-present Ledger links worked. Approve navigates to the matching project and expands the exact source/thread details after loading. The later Ledger removal and shared-header revision are tracked below.
-- Human stamp: review shows the specific claim and evidence; accepting a synthetic claim removes its paper, increments stamped-today, and adds the stamp event. Escape closes the dialog and restores focus. Production records were not stamped.
-- Console: one authentication error occurred when the isolated fixture server was restarted, invalidating its prior session. After reauthentication, the tested navigation and Floor render produced no further console errors or warnings.
-- Automated validation: 128 tests passed across 29 relevant web, projection, API authorization, T3 integration, and persistence files. TypeScript and browser production build passed. Focused regression checks cover stale observations, archive filtering, source/project isolation, stable timestamps, and worker counting.
-
-The initial source-versus-implementation comparison was blocked by source capture. The user subsequently reviewed the rendered LAN implementation, approved its appearance, and explicitly requested commit and deployment. That rendered implementation and the requested revisions are the accepted delivery target; this does not claim pixel fidelity to the uncaptured HTML mockup.
-
-## Remaining human check
-
-After deployment, confirm the accepted Floor with production observations on desktop and phone. The user has approved the rendered preview; production report verification remains a separate human action.
+The previous Floor validation is preserved in
+[v0.3 validation history](docs/design/floor-validation-v0.3.md).
 
 final result: passed
 
-## User-requested follow-up
+## Findings and resolutions
 
-The user reviewed the LAN preview positively, then requested removing Ledger and matching the Floor header width across all pages. This is an intentional change from the initial mockup.
+- Resolved [P2]: Small colored task-state text needed stronger contrast on tinted
+  surfaces. Chip foreground now uses ink; measured minimum 8.80:1 across state
+  chips and backgrounds. Semantic border, tint and existing dial remain.
+- Resolved [P1]: Lone cards retain the standard width with `auto-fill`, measured
+  about 280px at the 1920px viewport, including planned, secondary and Done cards.
+- Resolved [P1]: Attention is plain amber text. The title's extended hit area
+  opens Task detail from anywhere on the card without invoking a Check action.
+- Resolved [P1]: Card text now uses at least 10px labels, 11px mono/session data
+  and 13px dense body. Existing shared status dial accompanies each state chip.
+- Opus rendered round 2 confirmed all seven initial blockers are resolved.
+  Its P1/P2 findings are recorded in
+  [full rendered review](docs/design/active-task-dashboard-opus-ui-review-r2.md).
+  Spacing, disclosure, compact planned cards, duplicate finish copy, neutral
+  handoff styling and unavailable-source copy were corrected with the P1s.
 
-- Removed Ledger navigation and rendering; GET/HEAD `/ledger` and `/ledger/` redirect to `/`. Verified the redirect through the LAN address.
-- Preserved project creation in a collapsed Floor control and successfully created a synthetic project through it.
-- Shared header now sits outside the constrained main content. Project detail, project edit, and Backups measured a 1440-pixel header with a 1280-pixel main at a 1440-pixel viewport. Phone header and document both measured 390 pixels, with no horizontal overflow.
-- Browser evidence: `/tmp/factory-floor-artifacts/header-project.png` and `/tmp/factory-floor-artifacts/header-phone.png`.
-- Follow-up checks: 83 web/API tests passed; final shell navigation/Floor tests, typecheck, build, formatting, and diff checks passed. The LAN preview was restarted with the current implementation and still listens on all IPv4 interfaces.
+## Visual truth and comparison
 
-Follow-up implementation validation passed. The original source-capture limitation above remains historical and is not a claim of exact mockup fidelity.
+Source: `/Users/agent/.t3/userdata/attachments/adcf600c-ccff-4f4b-b497-86e3aeb60c0c-0420e523-5f8d-491e-a2bf-179e15bd836e.jpg`.
+
+Implementation: `/Users/agent/.t3/userdata/browser-artifacts/browser-screenshot-127-0-0-1-mv41oaqn-4b0c0360.png`.
+
+Source 2048×1152; implementation CSS viewport 1920×1080, PNG 1280×720.
+Both normalized to 1280×720 in the paired full-view comparison:
+`output/playwright/active-dashboard/reference-comparison.png`.
+Focused card comparison: `output/playwright/active-dashboard/card-comparison.png`.
+Both combined inputs were opened and visually inspected. Phone captures are
+750×1624 PNG for 375×812 CSS; tool density was observed, deviceScaleFactor was
+not exposed. See [validation evidence](docs/design/active-dashboard-validation.md).
+
+State: authenticated Floor, fresh sample observations, all projects visible,
+Done today collapsed. Content differs from the reference: this adapts its grid
+and attention sidebar to existing Factory records and design tokens. The source
+has no equivalent phone or unavailable-source visual, so those are product
+resilience checks rather than pixel comparisons.
+
+## Required fidelity surfaces
+
+- Fonts/typography: preserve existing IBM Plex Sans/Mono. Titles have readable
+  weight and two-line clamps with full accessible names. Metadata is deliberately
+  small but meets the documented scale and contrast. Long titles use an inner
+  two-line clamp, measured 39.09px at 19.55px line height, without overflow.
+- Spacing/layout: grid plus sidebar matches the reference's primary arrangement.
+  Vertical scrolling, per-project sections, separate session evidence and compact
+  planned work are intentional Factory adaptations. Needs you comes first on phone.
+- Colors/tokens: existing warm Ledger palette replaces cool reference palette.
+  State text accompanies color; red blocked and amber attention remain separate.
+  Lavender is keyboard focus. Corrected chip contrast exceeds 4.5:1.
+- Image quality/assets/icons: existing Factory logo retained; Phosphor icons used
+  for project navigation. No new photographic or illustrative assets are needed.
+  The reference's milestone rail is intentionally omitted because Factory has no
+  milestone model.
+- Copy/content: task state, finish rule, recorded handoff provenance and session
+  observations are separately labeled. No invented percentages, ETA, milestones,
+  planning, completion claims or deployment claims. Sample labels belong only to
+  the disposable fixture, not production UI copy.
+
+## Comparison history
+
+1. Initial Opus source/design review: seven design-contract blockers resolved in
+   [brief](docs/design/active-task-dashboard.md) before implementation.
+2. Full and focused source/implementation comparison: intentional adaptations
+   accepted; semantic-chip contrast and Opus P1/P2 corrections requested.
+3. Corrected captures: desktop `mv41oaqn-4b0c0360`, phone top
+   `mv41oi90-92a1a9da`, phone Steps/sessions `mv41oiar-4d3b8d6f`, planned/secondary
+   `mv41oatt-6a707609`, Done `mv41mrpl-3be9c19a`. All use the screenshot filename
+   prefix and browser-artifacts base path documented above. Both paired comparison
+   inputs were regenerated from the corrected desktop image and opened again.
+   The coordinator found no actionable P0/P1/P2 visual issue. Keyboard focus is
+   visible in `mv41mbki-3e0afb67` and `mv41mjt0-2520e544`, with focus/DOM identity
+   retained after a live refresh (`mv41r3y6-252f2ed1`).
+4. A padded title clamp exposed part of a third line. Moving the clamp to an
+   inner span fixed it; the final desktop capture and DOM measurements confirm
+   exactly two lines. Opus round 3 confirmed all prior P1 findings resolved and
+   found one remaining P2: dim provenance text over the green tint (4.34:1).
+   Changed it to ink (9.92:1) and recaptured Done:
+   `browser-screenshot-127-0-0-1-mv4201y5-140c6ee3.png`. The capture was opened
+   and inspected; computed ink RGB234/230/223 over green16% confirms the fix.
+   Focused title remains position static; an off-title card click navigates to
+   detail with zero dialogs. Focus capture:
+   `browser-screenshot-127-0-0-1-mv420228-000fd229.png`.
+
+No actionable P0/P1/P2 finding remains. Opus reviewed three rounds; the final
+one-line contrast correction was then validated by calculation, focused test,
+computed browser styles and post-fix visual inspection by the coordinator.
+
+## Open questions and limits
+
+Live operational data, physical touch devices, forced-colors, and native OS
+motion/contrast preference matching were not verified. Declared media-query
+styles were temporarily applied for screenshots, with matchMedia remaining false.
+No PR, CI, deployment, merge or human acceptance evidence is claimed.
+
+## Follow-up polish
+
+Opus P3 notes remain: phone freshness separators can lead a wrapped line,
+masthead observed time uses 12-hour formatting while the main clock is 24-hour,
+some small legacy labels and duplicate focus outlines could be refined. The
+merge-wait reason suppression currently relies on the exact server formatter;
+a shared structured reason would be a later maintenance improvement.
+These do not block local human review. See
+[Opus round 3](docs/design/active-task-dashboard-opus-ui-review-r3.md).
+
+## Implementation checklist
+
+- Contrast, type, card size, attention affordance and related P2 corrections
+  are complete. Post-fix captures and both paired comparisons were inspected.
+- Final focused checks: 82 tests, 353 assertions; build/typecheck, scoped
+  Prettier and diff checks pass.
+- Opus confirmed all prior P1s resolved; its new provenance P2 is fixed and
+  visually verified. Scoped format and diff checks pass.
+- Retain fresh local preview and report local evidence on T-100.

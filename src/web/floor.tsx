@@ -1,17 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowSquareOut, CaretRight } from "@phosphor-icons/react";
 
 import type {
   FloorClaim,
   FloorProject,
+  FloorQueueAction,
   FloorQueueItem,
   FloorSnapshot as ServerFloorSnapshot,
   FloorStation,
+  FloorTaskCard as ServerFloorTaskCard,
   FloorTarget as ServerFloorTarget,
   FloorWorkItem,
 } from "../floor";
 
 import "./floor.css";
 import { relativeAgeLabel } from "./task-tracking";
+import { statusDefinitions } from "./status-presentation";
+import { StatusIcon } from "./status-icon";
 
 export type FloorReporter = "claude" | "codex" | "none";
 export type FloorTokenState =
@@ -53,7 +58,10 @@ export type FloorWork = FloorTarget & {
   tokenState: FloorTokenState;
   badge?: "approve" | "input" | "error" | "done";
   empty?: boolean;
+  association?: FloorStation["association"];
+  relatedTargets?: ServerFloorTarget[];
 };
+export type FloorTaskCard = ServerFloorTaskCard;
 export type FloorAction = FloorTarget & {
   id: string;
   kind: "review" | "check" | "decide" | "unblock";
@@ -61,6 +69,7 @@ export type FloorAction = FloorTarget & {
   detail?: string;
   ageLabel: string;
   paper?: FloorPaper;
+  relatedTargets?: ServerFloorTarget[];
 };
 export type FloorLogEntry = {
   id: string;
@@ -82,6 +91,11 @@ export type FloorBay = {
   waiting: number;
   blocked: number;
   quiet: boolean;
+  tasks?: ServerFloorTaskCard[];
+  recentlyDone?: ServerFloorTaskCard[];
+  unmatchedSessions?: FloorWork[];
+  sessionsAvailable?: boolean;
+  taskProjectionAvailable: boolean;
 };
 export type FloorSnapshot = {
   generatedAt?: string;
@@ -201,6 +215,13 @@ function ageLabel(value: string | undefined, now = Date.now()): string {
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
+
+function logInitials(actor: string): string {
+  const normalized = actor.trim().toLocaleLowerCase();
+  if (normalized === "codex") return "CX";
+  if (normalized === "claude") return "CL";
+  return actor.slice(0, 2).toLocaleUpperCase();
+}
 function mapTarget(target: ServerFloorTarget): FloorTarget {
   return {
     projectId: target.projectId,
@@ -259,6 +280,8 @@ function mapStation(station: FloorStation, projectId: string): FloorWork {
       station.threadId ??
       station.id,
     tokenState: state,
+    association: station.association,
+    relatedTargets: station.relatedTargets,
     ...(state === "approval"
       ? { badge: "approve" as const }
       : state === "input"
@@ -300,11 +323,7 @@ function mapQueueTarget(item: FloorQueueItem): FloorTarget {
     findingId: item.target.findingId,
   };
 }
-function mapQueueItem(
-  item: FloorQueueItem,
-  projects: FloorBay[],
-  now = Date.now(),
-): FloorAction {
+function mapQueueItem(item: FloorQueueItem, now = Date.now()): FloorAction {
   return {
     ...mapQueueTarget(item),
     action: item.action,
@@ -313,6 +332,7 @@ function mapQueueItem(
     id: item.id,
     kind: item.action,
     label: item.summary,
+    relatedTargets: item.relatedTargets,
   };
 }
 
@@ -321,51 +341,58 @@ export function normalizeFloorSnapshot(
   input: ServerFloorSnapshot,
 ): FloorSnapshot {
   const now = Date.now();
-  const projects = input.projects.map((project: FloorProject) => ({
-    bench: project.bench.map(mapWork),
-    blocked: project.counts.blocked,
-    counter: input.queue
-      .filter((item) => item.projectId === project.id)
-      .map((item) => {
-        const target = mapQueueTarget(item);
-        return {
-          ...target,
-          action: item.action,
-          id: item.id,
-          simpleId:
-            item.target.kind === "work"
-              ? item.target.target.taskSimpleId
-              : item.target.kind === "thread"
-                ? (item.target.target?.taskSimpleId ?? "T3")
-                : "",
-          name: item.summary,
-          ageLabel: ageLabel(item.timestamp, now),
-          claim: item.reason,
-          kind: item.action,
-        };
-      }),
-    id: project.id,
-    name: project.name,
-    quiet:
-      project.bench.length === 0 &&
-      project.stations.length === 0 &&
-      project.counter.length === 0 &&
-      project.reviewNeeded.length === 0 &&
-      project.counts.working === 0 &&
-      project.counts.waiting === 0 &&
-      project.counts.blocked === 0,
-    stations: project.stations.map((station) =>
-      mapStation(station, project.id),
-    ),
-    waiting: project.counts.waiting,
-    working: project.counts.working,
-  }));
-  const queue = input.queue.map((item) => mapQueueItem(item, projects, now));
+  const projects = input.projects.map((project: FloorProject) => {
+    return {
+      bench: project.bench.map(mapWork),
+      blocked: project.counts.blocked,
+      counter: input.queue
+        .filter((item) => item.projectId === project.id)
+        .map((item) => {
+          const target = mapQueueTarget(item);
+          return {
+            ...target,
+            action: item.action,
+            id: item.id,
+            simpleId:
+              item.target.kind === "work"
+                ? item.target.target.taskSimpleId
+                : item.target.kind === "thread"
+                  ? (item.target.target?.taskSimpleId ?? "T3")
+                  : "",
+            name: item.summary,
+            ageLabel: ageLabel(item.timestamp, now),
+            claim: item.reason,
+            kind: item.action,
+          };
+        }),
+      id: project.id,
+      name: project.name,
+      quiet:
+        project.bench.length === 0 &&
+        project.stations.length === 0 &&
+        project.counter.length === 0 &&
+        project.reviewNeeded.length === 0 &&
+        project.counts.working === 0 &&
+        project.counts.waiting === 0 &&
+        project.counts.blocked === 0,
+      stations: project.stations.map((station) =>
+        mapStation(station, project.id),
+      ),
+      waiting: project.counts.waiting,
+      working: project.counts.working,
+      tasks: project.tasks,
+      recentlyDone: project.recentlyDone,
+      unmatchedSessions: project.unmatchedSessions?.map((station) =>
+        mapStation(station, project.id),
+      ),
+      sessionsAvailable: project.sessionsAvailable,
+      taskProjectionAvailable: Array.isArray(project.tasks),
+    };
+  });
+  const queue = input.queue.map((item) => mapQueueItem(item, now));
   return {
     generatedAt: input.generatedAt,
-    trackingNotes: input.trackingNotes?.map((item) =>
-      mapQueueItem(item, projects, now),
-    ),
+    trackingNotes: input.trackingNotes?.map((item) => mapQueueItem(item, now)),
     projects,
     scoreboard: {
       oldestUnstamped: input.scoreboard.oldestPendingAt
@@ -382,15 +409,15 @@ export function normalizeFloorSnapshot(
         ? now - date(entry.timestamp)!.getTime() < 10_000
         : false,
       id: entry.id,
-      initials: entry.actor.slice(0, 2).toUpperCase(),
+      initials: logInitials(entry.actor),
       kind: entry.kind,
       message: entry.summary,
       target: entry.target ? mapTarget(entry.target) : undefined,
       timeLabel:
         date(entry.timestamp)?.toLocaleTimeString([], {
+          hour12: false,
           hour: "2-digit",
           minute: "2-digit",
-          second: "2-digit",
         }) ?? "--:--",
     })),
     stale: input.connections.some((connection) => !connection.fresh),
@@ -410,29 +437,6 @@ export function normalizeFloorSnapshot(
 function initials(reporter: FloorReporter | undefined): string {
   return reporter === "claude" ? "CL" : reporter === "codex" ? "CX" : "—";
 }
-function tokenLabel(item: FloorWork): string {
-  return item.tokenState === "working"
-    ? "working"
-    : item.tokenState === "approval"
-      ? "waiting for approval"
-      : item.tokenState === "input"
-        ? "waiting for user input"
-        : item.tokenState === "blocked"
-          ? "blocked"
-          : item.reporter === "none"
-            ? "no session observed"
-            : "idle";
-}
-function ageClass(paper: FloorPaper): string {
-  return paper.ageMs !== undefined && paper.ageMs > 3 * 24 * 60 * 60 * 1000
-    ? " old"
-    : "";
-}
-
-function agePhrase(label: string): string {
-  return label === "now" ? "just now" : `${label} ago`;
-}
-
 export function floorPaperMatches(
   current: FloorPaper,
   reviewed: FloorPaper,
@@ -442,6 +446,289 @@ export function floorPaperMatches(
     current.reportId === reviewed.reportId &&
     current.claim === reviewed.claim &&
     current.evidence === reviewed.evidence
+  );
+}
+
+export function floorTaskCardTarget(
+  task: Pick<ServerFloorTaskCard, "projectId" | "taskId">,
+): FloorTarget {
+  return { projectId: task.projectId, taskId: task.taskId };
+}
+
+export function needsYouCountForProject(
+  projectId: string,
+  items: readonly FloorAction[],
+): number {
+  return new Set(
+    items
+      .filter(
+        (item) =>
+          item.projectId === projectId ||
+          item.relatedTargets?.some((target) => target.projectId === projectId),
+      )
+      .map((item) => item.id),
+  ).size;
+}
+
+export function floorTaskCounts(projects: readonly FloorBay[]) {
+  const cards = projects.flatMap((project) => project.tasks ?? []);
+  const doneIds = new Set(
+    projects.flatMap((project) =>
+      (project.recentlyDone ?? []).map((task) => task.taskId),
+    ),
+  );
+  return {
+    active: cards.filter((task) => task.state === "active").length,
+    blocked: cards.filter((task) => task.state === "blocked").length,
+    inReview: cards.filter((task) => task.state === "awaiting_verification")
+      .length,
+    doneToday: doneIds.size,
+  };
+}
+
+function projectTaskCards(project: FloorBay): ServerFloorTaskCard[] {
+  return project.tasks ?? [];
+}
+
+function finishRuleText(task: ServerFloorTaskCard): string {
+  const finish = task.finish;
+  const rule =
+    finish.kind === "pr_merge"
+      ? finish.requiredPrCount > 0
+        ? `PR merge · ${finish.mergedPrCount} of ${finish.requiredPrCount} required merged`
+        : "PR merge required"
+      : finish.agentReportedFinished
+        ? "Agent report received"
+        : "Agent report required";
+  if (!finish.requireHumanCheck) return rule;
+  return `${rule} · your check ${finish.humanCheckReady ? "ready" : "required"}`;
+}
+
+function repeatsFinishProgress(task: ServerFloorTaskCard): boolean {
+  return (
+    task.finish.kind === "pr_merge" &&
+    task.finish.requiredPrCount > 0 &&
+    task.stateReason ===
+      `Waiting for required pull requests to merge (${task.finish.mergedPrCount} of ${task.finish.requiredPrCount}).`
+  );
+}
+
+function sessionStateLabel(state: FloorStation["state"]): string {
+  switch (state) {
+    case "working":
+      return "working";
+    case "waiting_approval":
+      return "waiting for approval";
+    case "waiting_input":
+      return "waiting for input";
+    case "error":
+      return "error observed";
+    case "blocked":
+      return "blocked session";
+    case "idle":
+      return "idle";
+  }
+}
+
+function workSessionStateLabel(state: FloorTokenState): string {
+  switch (state) {
+    case "working":
+      return "working";
+    case "approval":
+      return "waiting for approval";
+    case "input":
+      return "waiting for input";
+    case "blocked":
+      return "blocked session";
+    case "done":
+      return "done";
+    case "idle":
+      return "idle";
+  }
+}
+
+function reporterLabel(identity: FloorStation["worker"]): string {
+  if (identity?.identity === "claude") return "Claude";
+  if (identity?.identity === "codex") return "Codex";
+  return "Observed agent";
+}
+
+function FloorTaskCardView({
+  task,
+  planned = false,
+  staleSnapshot,
+  onOpen,
+  now,
+}: {
+  task: ServerFloorTaskCard;
+  planned?: boolean;
+  staleSnapshot: boolean;
+  onOpen: (target: FloorTarget) => void;
+  now: number;
+}) {
+  const state = statusDefinitions[task.state];
+  const isDone = task.state === "completed";
+  const openSteps = task.steps
+    ? Math.max(0, task.steps.total - task.steps.done)
+    : 0;
+  const sessions = task.sessions.map((station) => ({
+    station,
+    view: mapStation(station, task.projectId),
+  }));
+  return (
+    <article
+      className={`floor-task-card state-${task.state}${planned ? " planned" : ""}${task.needsYou.count ? " needs-you" : ""}`}
+      style={{ "--task-state-color": state.color } as React.CSSProperties}
+    >
+      <div className="floor-task-card-heading">
+        <p className="floor-task-reference">
+          <span>{task.taskSimpleId}</span>
+        </p>
+        <span className="floor-task-state">
+          <StatusIcon decorative state={state.dial} size={14} />
+          {state.label}
+        </span>
+      </div>
+      <h3>
+        <button
+          aria-label={`Open ${state.label.toLowerCase()} task ${task.taskSimpleId}: ${task.taskName}`}
+          className="floor-task-title"
+          onClick={() => onOpen(floorTaskCardTarget(task))}
+          type="button"
+        >
+          <span>{task.taskName}</span>
+        </button>
+      </h3>
+      {(task.priority ||
+        task.owner ||
+        (task.steps && task.steps.total > 0 && (!isDone || openSteps > 0))) && (
+        <div className="floor-task-facts">
+          {task.priority && (
+            <span className={`floor-priority priority-${task.priority}`}>
+              {task.priority} priority
+            </span>
+          )}
+          {task.owner && <span>Recorded owner · {task.owner}</span>}
+          {task.steps &&
+            task.steps.total > 0 &&
+            (isDone ? (
+              openSteps > 0 && (
+                <span className="floor-step-count">
+                  Done · {openSteps} Steps left open
+                </span>
+              )
+            ) : (
+              <span className="floor-step-count">
+                Steps · {task.steps.done}/{task.steps.total} done
+              </span>
+            ))}
+        </div>
+      )}
+      {task.manualHold && <p className="floor-task-manual-hold">Manual hold</p>}
+      {(task.stateReason || task.manualHold) &&
+        !repeatsFinishProgress(task) && (
+          <p
+            className={`floor-task-reason${task.state === "blocked" ? " blocked" : ""}`}
+          >
+            {task.stateReason ?? "No reason was recorded for this manual hold."}
+          </p>
+        )}
+      {!planned && !isDone && (
+        <p className="floor-task-finish">
+          <strong>Finish rule</strong>
+          <span>{finishRuleText(task)}</span>
+        </p>
+      )}
+      {task.handoff && (
+        <p className="floor-task-handoff">
+          <strong>
+            Next · {task.handoff.nextOwner}
+            {task.handoff.nextOwnerKind !== "unknown" &&
+              ` (${task.handoff.nextOwnerKind})`}
+          </strong>
+          <span>{task.handoff.nextAction}</span>
+          <small>
+            Reported by {task.handoff.reporter} ·{" "}
+            {relativeAgeLabel(ageLabel(task.handoff.reportedAt, now))}
+            {task.handoff.additionalCount > 0 &&
+              ` · +${task.handoff.additionalCount} more recorded handoffs`}
+          </small>
+        </p>
+      )}
+      {task.needsYou.count > 0 && (
+        <p className="floor-task-needs-you">
+          Needs you · {task.needsYou.count}
+          {task.needsYou.verbs.length
+            ? ` · ${task.needsYou.verbs.map((verb) => `${verb[0]!.toUpperCase()}${verb.slice(1)}`).join(", ")}`
+            : " · open attention items"}
+        </p>
+      )}
+      {isDone && task.finishProvenance && (
+        <p className="floor-task-provenance">
+          Finish evidence · {task.finishProvenance}
+        </p>
+      )}
+      <div className="floor-task-sessions">
+        <p className="floor-task-section-label">
+          Observed sessions
+          {sessions.length > 0 && <span> · {sessions.length}</span>}
+        </p>
+        {sessions.length ? (
+          <ul>
+            {sessions.map(({ station, view }) => {
+              const sessionTitle =
+                station.threadTitle ??
+                (station.threadId
+                  ? `Session ${station.threadId}`
+                  : "Observed session");
+              const sharedTargets = (view.relatedTargets ?? []).filter(
+                (target) => target.taskId !== task.taskId,
+              );
+              const relatedIds = Array.from(
+                new Set(sharedTargets.map((target) => target.taskSimpleId)),
+              );
+              return (
+                <li className="floor-session-row" key={station.id}>
+                  <span className={`floor-session-agent ${view.reporter}`}>
+                    {initials(view.reporter)}
+                  </span>
+                  <span className="floor-session-copy">
+                    <strong>{sessionTitle}</strong>
+                    <small>
+                      {reporterLabel(station.worker)}
+                      {" · "}
+                      {sessionStateLabel(station.state)}
+                      {staleSnapshot
+                        ? " · last observed; snapshot is stale"
+                        : ""}
+                    </small>
+                    {relatedIds.length > 0 && (
+                      <small>Also linked to {relatedIds.join(", ")}</small>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        ) : !task.sessionsAvailable || staleSnapshot ? (
+          <p className="floor-session-empty">
+            Session status unavailable.
+            <small>
+              {staleSnapshot
+                ? "The snapshot is stale, so session observations may be out of date."
+                : "Some observed sources may not provide session data for this project."}
+            </small>
+          </p>
+        ) : (
+          <p className="floor-session-empty">No linked session observed.</p>
+        )}
+        {!task.sessionsAvailable && sessions.length > 0 && (
+          <p className="floor-session-empty">
+            Some session sources are unavailable.
+          </p>
+        )}
+      </div>
+    </article>
   );
 }
 
@@ -466,6 +753,9 @@ export function Floor({
 }) {
   const [now, setNow] = useState(() => new Date());
   const [showAllTurn, setShowAllTurn] = useState(false);
+  const [expandedPlannedIds, setExpandedPlannedIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [newProjectName, setNewProjectName] = useState("");
   const [projectError, setProjectError] = useState<string | null>(null);
   const [hiddenBayIds, setHiddenBayIds] = useState<Set<string>>(() =>
@@ -494,29 +784,40 @@ export function Floor({
     }
     if (newIds.length) setFreshEventIds(new Set(newIds));
   }, [snapshot?.shiftLog]);
-  const turnCount = snapshot?.yourTurn.items.length ?? 0;
-  const visibleTurnItems = showAllTurn
-    ? (snapshot?.yourTurn.items ?? [])
-    : (snapshot?.yourTurn.items.slice(0, 5) ?? []);
-  const visibleProjects =
-    snapshot?.projects.filter((bay) => !hiddenBayIds.has(bay.id)) ?? [];
-  const freshness = useMemo(() => {
-    const observed = date(snapshot?.generatedAt);
-    return observed
-      ? `Observed ${observed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
-      : "Live projection";
-  }, [snapshot?.generatedAt]);
-  const stale = Boolean(
-    snapshot?.stale ||
-    (snapshot?.generatedAt &&
-      date(snapshot.generatedAt) &&
-      now.getTime() - date(snapshot.generatedAt)!.getTime() > 30_000),
+
+  const projects = snapshot?.projects ?? [];
+  const hiddenCount = projects.filter((project) =>
+    hiddenBayIds.has(project.id),
+  ).length;
+  const visibleProjects = projects.filter(
+    (project) => !hiddenBayIds.has(project.id),
   );
+  const projectionAvailable =
+    projects.length > 0 &&
+    projects.every((project) => project.taskProjectionAvailable);
+  const counts = floorTaskCounts(visibleProjects);
+  const turnItems = snapshot?.yourTurn.items ?? [];
+  const turnCount = turnItems.length;
+  const visibleTurnItems = showAllTurn ? turnItems : turnItems.slice(0, 5);
+  const observed = date(snapshot?.generatedAt);
+  const snapshotAged = Boolean(
+    snapshot && (!observed || now.getTime() - observed.getTime() > 30_000),
+  );
+  const staleSnapshot = !connected || snapshotAged;
+  const sourceWarning = Boolean(snapshot?.stale);
+  const freshness = observed
+    ? `Observed ${observed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+    : "Live projection";
   const open = (target: FloorTarget) => {
     if (target.projectId) onOpenTarget(target);
   };
   const toggleBayVisibility = (projectId: string) => {
     setHiddenBayIds((current) => toggleCollapsedBayIds(current, projectId));
+  };
+  const togglePlanned = (projectId: string) => {
+    setExpandedPlannedIds((current) =>
+      toggleCollapsedBayIds(current, projectId),
+    );
   };
   const createProject = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -534,6 +835,7 @@ export function Floor({
       );
     }
   };
+
   return (
     <section className="floor-page" aria-labelledby="floor-title">
       <div className="floor-masthead">
@@ -544,66 +846,36 @@ export function Floor({
         <div className="floor-clock" aria-label="Local time">
           {now.toLocaleTimeString([], { hour12: false })}
         </div>
-        <div className="floor-freshness" role="status">
+        <div className="floor-freshness">
           <span
             className={`floor-led ${connected ? "ok" : "down"}`}
             aria-hidden="true"
           />
-          {connected ? freshness : "Factory connection unavailable"}
-          {stale && <span className="floor-stale"> · stale</span>}
+          <span className="floor-freshness-primary" role="status">
+            {connected ? "Factory connected" : "Factory connection unavailable"}
+          </span>
+          {connected && (
+            <span className="floor-freshness-detail">{freshness}</span>
+          )}
+          {snapshotAged && (
+            <span className="floor-freshness-detail floor-stale">
+              snapshot stale
+            </span>
+          )}
+          {sourceWarning && (
+            <span className="floor-freshness-detail floor-source-warning">
+              one or more sources unavailable
+            </span>
+          )}
+          {snapshot && !sourceWarning && !snapshotAged && connected && (
+            <span className="floor-freshness-detail">
+              {snapshot.scoreboard.workingNow} fresh observed{" "}
+              {snapshot.scoreboard.workingNow === 1 ? "session" : "sessions"}{" "}
+              working · all projects
+            </span>
+          )}
         </div>
       </div>
-      {snapshot?.projects.length ? (
-        <nav className="floor-project-strip" aria-label="Projects">
-          {snapshot.projects.map((bay) => {
-            const hidden = hiddenBayIds.has(bay.id);
-            const toggleLabel = `${hidden ? "Show" : "Hide"} ${bay.name} on the Floor`;
-            return (
-              <div
-                className={`floor-project-chip${hidden ? " hidden" : " visible"}`}
-                key={bay.id}
-              >
-                <button
-                  aria-label={toggleLabel}
-                  aria-pressed={!hidden}
-                  className={`floor-project-toggle${hidden ? " hidden" : " visible"}`}
-                  onClick={() => toggleBayVisibility(bay.id)}
-                  title={toggleLabel}
-                  type="button"
-                >
-                  <span className="floor-project-name">{bay.name}</span>
-                  <span aria-hidden="true" className="floor-project-visibility">
-                    {hidden ? "○" : "✓"}
-                  </span>
-                </button>
-                <button
-                  aria-label={`Open ${bay.name}`}
-                  className="floor-project-open"
-                  onClick={() => open({ projectId: bay.id })}
-                  title={`Open ${bay.name}`}
-                  type="button"
-                >
-                  <svg
-                    aria-hidden="true"
-                    fill="none"
-                    height="16"
-                    viewBox="0 0 16 16"
-                    width="16"
-                  >
-                    <path
-                      d="M9 2h5v5M14 2 7.5 8.5M12 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h4"
-                      stroke="currentColor"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth="1.5"
-                    />
-                  </svg>
-                </button>
-              </div>
-            );
-          })}
-        </nav>
-      ) : null}
       {(error || (!connected && !snapshot)) && (
         <div className="floor-notice floor-notice-error" role="alert">
           {error ?? "Floor data is unavailable until Factory reconnects."}
@@ -615,13 +887,318 @@ export function Floor({
         </div>
       )}
       <div className="floor-layout">
-        <aside className="floor-sidecar" aria-label="Floor sidecar">
+        <section className="floor-primary" aria-label="Task overview">
+          <div className="floor-score" aria-label="Visible project task counts">
+            <div className="floor-tile">
+              <strong>{projectionAvailable ? counts.active : "—"}</strong>
+              <span>Active tasks · visible projects</span>
+            </div>
+            <div className="floor-tile blocked-count">
+              <strong>{projectionAvailable ? counts.blocked : "—"}</strong>
+              <span>Blocked tasks · visible projects</span>
+            </div>
+            <div className="floor-tile review-count">
+              <strong>{projectionAvailable ? counts.inReview : "—"}</strong>
+              <span>In review tasks · visible projects</span>
+            </div>
+            <div className="floor-tile done-count">
+              <strong>{projectionAvailable ? counts.doneToday : "—"}</strong>
+              <span>Done today · visible projects</span>
+            </div>
+          </div>
+          {projects.length > 0 && (
+            <nav className="floor-project-strip" aria-label="Projects">
+              {projects.map((project) => {
+                const hidden = hiddenBayIds.has(project.id);
+                const needsYouCount = needsYouCountForProject(
+                  project.id,
+                  turnItems,
+                );
+                const toggleLabel = `${hidden ? "Show" : "Hide"} ${project.name} on the Floor${hidden && needsYouCount ? `, ${needsYouCount} needs you` : ""}`;
+                return (
+                  <div
+                    className={`floor-project-chip${hidden ? " hidden" : " visible"}${hidden && needsYouCount > 0 ? " needs-you" : ""}`}
+                    key={project.id}
+                  >
+                    <button
+                      aria-label={toggleLabel}
+                      aria-pressed={!hidden}
+                      className={`floor-project-toggle${hidden ? " hidden" : " visible"}`}
+                      onClick={() => toggleBayVisibility(project.id)}
+                      title={toggleLabel}
+                      type="button"
+                    >
+                      <span className="floor-project-name">{project.name}</span>
+                      {hidden && needsYouCount > 0 && (
+                        <span className="floor-hidden-needs-you">
+                          {needsYouCount} needs you
+                        </span>
+                      )}
+                      <span
+                        aria-hidden="true"
+                        className="floor-project-visibility"
+                      >
+                        {hidden ? "○" : "✓"}
+                      </span>
+                    </button>
+                    <button
+                      aria-label={`Open ${project.name}`}
+                      className="floor-project-open"
+                      onClick={() => open({ projectId: project.id })}
+                      title={`Open ${project.name}`}
+                      type="button"
+                    >
+                      <ArrowSquareOut aria-hidden="true" size={16} />
+                    </button>
+                  </div>
+                );
+              })}
+              {hiddenCount > 0 && (
+                <button
+                  className="floor-show-all"
+                  onClick={() => setHiddenBayIds(new Set())}
+                  type="button"
+                >
+                  Show all ({hiddenCount})
+                </button>
+              )}
+            </nav>
+          )}
+          {!snapshot ? (
+            <div className="floor-notice">
+              {loading
+                ? "Loading task overview…"
+                : "Task overview is waiting for Floor data."}
+            </div>
+          ) : projects.length === 0 ? (
+            <div className="floor-notice">
+              {loading ? "Loading projects…" : "No projects are available."}
+            </div>
+          ) : !projectionAvailable ? (
+            <div className="floor-notice floor-notice-error" role="status">
+              Task overview unavailable. Refresh Factory to load the task-card
+              projection.
+            </div>
+          ) : visibleProjects.length === 0 ? (
+            <p className="floor-hidden-empty">
+              All {projects.length} projects are hidden. Use Show all or select
+              a project above.
+            </p>
+          ) : (
+            <div className="floor-task-sections" aria-label="Tasks by project">
+              {visibleProjects.map((project) => {
+                const cards = projectTaskCards(project);
+                const visibleTasks = cards.filter(
+                  (task) =>
+                    task.state !== "backlog" &&
+                    task.state !== "completed" &&
+                    task.state !== "planned",
+                );
+                const plannedTasks = cards.filter(
+                  (task) => task.state === "planned",
+                );
+                const backlogCount = cards.filter(
+                  (task) => task.state === "backlog",
+                ).length;
+                const showAllPlanned = expandedPlannedIds.has(project.id);
+                const plannedVisible = showAllPlanned
+                  ? plannedTasks
+                  : plannedTasks.slice(0, 4);
+                return (
+                  <section className="floor-project-tasks" key={project.id}>
+                    <header className="floor-project-heading">
+                      <div>
+                        <p className="eyebrow">Project</p>
+                        <h2>
+                          <button
+                            aria-label={`Open ${project.name}`}
+                            onClick={() => open({ projectId: project.id })}
+                            type="button"
+                          >
+                            {project.name}
+                          </button>
+                        </h2>
+                      </div>
+                      <div className="floor-project-heading-meta">
+                        <span>
+                          {visibleTasks.length + plannedTasks.length} task cards
+                        </span>
+                        {backlogCount > 0 && (
+                          <button
+                            className="floor-backlog-link"
+                            onClick={() => open({ projectId: project.id })}
+                            type="button"
+                          >
+                            {backlogCount} backlog · open project
+                          </button>
+                        )}
+                      </div>
+                    </header>
+                    {visibleTasks.length > 0 && (
+                      <div className="floor-task-grid">
+                        {visibleTasks.map((task) => (
+                          <FloorTaskCardView
+                            key={task.taskId}
+                            now={now.getTime()}
+                            onOpen={open}
+                            staleSnapshot={staleSnapshot}
+                            task={task}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {plannedTasks.length > 0 && (
+                      <section className="floor-planned-section">
+                        <h3>Planned · {plannedTasks.length}</h3>
+                        <div className="floor-task-grid planned-grid">
+                          {plannedVisible.map((task) => (
+                            <FloorTaskCardView
+                              key={task.taskId}
+                              now={now.getTime()}
+                              onOpen={open}
+                              planned
+                              staleSnapshot={staleSnapshot}
+                              task={task}
+                            />
+                          ))}
+                        </div>
+                        {plannedTasks.length > 4 && (
+                          <button
+                            className="floor-more floor-planned-more"
+                            onClick={() => togglePlanned(project.id)}
+                            type="button"
+                          >
+                            {showAllPlanned
+                              ? "Show fewer planned tasks"
+                              : `Show ${plannedTasks.length - 4} more planned tasks`}
+                          </button>
+                        )}
+                      </section>
+                    )}
+                    {visibleTasks.length === 0 && plannedTasks.length === 0 && (
+                      <p className="floor-project-empty">
+                        No active, blocked, in-review, or planned tasks. Backlog
+                        remains in project detail.
+                      </p>
+                    )}
+                  </section>
+                );
+              })}
+            </div>
+          )}
+          {projectionAvailable && visibleProjects.length > 0 && (
+            <details className="floor-recently-done">
+              <summary className="floor-disclosure-summary">
+                <CaretRight
+                  aria-hidden="true"
+                  className="floor-disclosure-caret"
+                  size={16}
+                />
+                Done today · {counts.doneToday}
+              </summary>
+              {counts.doneToday > 0 ? (
+                <div className="floor-task-grid">
+                  {visibleProjects.flatMap((project) =>
+                    (project.recentlyDone ?? []).map((task) => (
+                      <FloorTaskCardView
+                        key={task.taskId}
+                        now={now.getTime()}
+                        onOpen={open}
+                        staleSnapshot={staleSnapshot}
+                        task={task}
+                      />
+                    )),
+                  )}
+                </div>
+              ) : (
+                <p className="floor-project-empty">
+                  No tasks finished today in visible projects.
+                </p>
+              )}
+            </details>
+          )}
+          {projectionAvailable &&
+            visibleProjects.some(
+              (project) => project.unmatchedSessions?.length,
+            ) && (
+              <section
+                className="floor-unmatched"
+                aria-labelledby="floor-unmatched-title"
+              >
+                <div className="floor-section-heading">
+                  <div>
+                    <p className="eyebrow">Observation only</p>
+                    <h2 id="floor-unmatched-title">Sessions without a task</h2>
+                  </div>
+                  <span>Not counted as tasks</span>
+                </div>
+                <ul className="floor-unmatched-list">
+                  {visibleProjects.flatMap((project) =>
+                    (project.unmatchedSessions ?? []).map((session) => (
+                      <li
+                        className="floor-session-row"
+                        key={`${project.id}:${session.id}`}
+                      >
+                        <span
+                          className={`floor-session-agent ${session.reporter}`}
+                        >
+                          {initials(session.reporter)}
+                        </span>
+                        <span className="floor-session-copy">
+                          <strong>{session.name}</strong>
+                          <small>
+                            {project.name} ·{" "}
+                            {workSessionStateLabel(session.tokenState)}
+                            {staleSnapshot
+                              ? " · last observed; snapshot is stale"
+                              : ""}
+                          </small>
+                        </span>
+                      </li>
+                    )),
+                  )}
+                </ul>
+              </section>
+            )}
+          <details className="floor-create-project">
+            <summary className="floor-disclosure-summary">
+              <CaretRight
+                aria-hidden="true"
+                className="floor-disclosure-caret"
+                size={16}
+              />
+              New project
+            </summary>
+            <form onSubmit={(event) => void createProject(event)}>
+              <label>
+                <span className="visually-hidden">Project name</span>
+                <input
+                  disabled={!canMutate || busy}
+                  onChange={(event) => setNewProjectName(event.target.value)}
+                  placeholder="Project name"
+                  value={newProjectName}
+                />
+              </label>
+              <button
+                disabled={!canMutate || busy || !newProjectName.trim()}
+                type="submit"
+              >
+                Create project
+              </button>
+            </form>
+            {projectError && <p role="alert">{projectError}</p>}
+          </details>
+        </section>
+        <aside
+          className="floor-sidecar"
+          aria-label="Needs you and recent changes"
+        >
           <section
             className={`floor-turn${turnCount ? " attention" : ""}`}
             aria-labelledby="your-turn-title"
           >
             <p className="eyebrow" id="your-turn-title">
-              Needs you
+              Needs you · global queue
             </p>
             <div className="floor-turn-big">
               <span
@@ -630,10 +1207,12 @@ export function Floor({
                 {turnCount}
               </span>
               <span className="floor-turn-label">
-                things only you can do
+                recorded attention items
                 <small>
                   {snapshot
-                    ? `${snapshot.yourTurn.reviews} review · ${snapshot.yourTurn.checks} check · ${snapshot.yourTurn.decisions} decide · ${snapshot.yourTurn.unblocks} unblock`
+                    ? sourceWarning
+                      ? "Some queue sources are unavailable; this breakdown may be incomplete."
+                      : `${snapshot.yourTurn.reviews} review · ${snapshot.yourTurn.checks} check · ${snapshot.yourTurn.decisions} decide · ${snapshot.yourTurn.unblocks} unblock`
                     : "Waiting for an observed queue"}
                 </small>
               </span>
@@ -701,11 +1280,11 @@ export function Floor({
           </section>
           <section className="floor-log" aria-labelledby="shift-log-title">
             <p className="eyebrow" id="shift-log-title">
-              Shift log · live
+              Recent changes · latest 20
             </p>
             {snapshot?.shiftLog.length ? (
               <ul>
-                {snapshot.shiftLog.map((entry) => (
+                {snapshot.shiftLog.slice(0, 20).map((entry) => (
                   <li
                     className={
                       freshEventIds.has(entry.id) ? "fresh" : undefined
@@ -722,269 +1301,8 @@ export function Floor({
               <p className="floor-empty">No observed activity yet.</p>
             )}
           </section>
-          <div className="floor-score" aria-label="Floor scoreboard">
-            <div
-              className={`floor-tile ${(snapshot?.scoreboard.finishedToday ?? 0) > 0 ? "ok" : ""}`}
-            >
-              <strong>{snapshot?.scoreboard.finishedToday ?? "—"}</strong>
-              <span>done today</span>
-            </div>
-            <div className="floor-tile">
-              <strong>{snapshot?.scoreboard.reportsToday ?? "—"}</strong>
-              <span>updates today</span>
-            </div>
-            <div className="floor-tile">
-              <strong>
-                {stale ? "—" : (snapshot?.scoreboard.workingNow ?? "—")}
-              </strong>
-              <span>working now</span>
-            </div>
-            <div className="floor-tile">
-              <strong>{snapshot?.scoreboard.oldestUnstamped ?? "—"}</strong>
-              <span>oldest waiting on you</span>
-            </div>
-          </div>
         </aside>
-        <section className="floor-bays" aria-label="Project bays">
-          {snapshot?.projects.length ? (
-            visibleProjects.length ? (
-              visibleProjects.map((bay) => (
-                <article
-                  className={`floor-bay${bay.quiet ? " quiet" : ""}${bay.counter.length || bay.stations.some((entry) => entry.badge) ? " attention" : ""}`}
-                  key={bay.id}
-                >
-                  <div className="floor-plate">
-                    <button
-                      className="floor-bay-title"
-                      onClick={() => open({ projectId: bay.id })}
-                      type="button"
-                    >
-                      <h2>{bay.name}</h2>
-                    </button>
-                    <div
-                      className="floor-tally"
-                      aria-label={`${bay.name} tally`}
-                    >
-                      {bay.quiet ? (
-                        <span>
-                          <i className="floor-tally-dot faint" />
-                          lights off
-                        </span>
-                      ) : (
-                        <>
-                          <span>
-                            <i className="floor-tally-dot info" />
-                            {bay.working} working
-                          </span>
-                          <span>
-                            <i className="floor-tally-dot warn" />
-                            {bay.waiting} needs you
-                          </span>
-                          <span>
-                            <i className="floor-tally-dot down" />
-                            {bay.blocked} blocked
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <div className="floor-track">
-                    <FloorZone className="bench" label="Bench">
-                      {bay.bench.length ? (
-                        bay.bench
-                          .slice(0, 3)
-                          .map((entry) => (
-                            <FloorWorkRow
-                              entry={entry}
-                              key={entry.id}
-                              onOpen={open}
-                              stale={stale}
-                            />
-                          ))
-                      ) : (
-                        <EmptyRow label="No planned work" />
-                      )}
-                      {bay.bench.length > 3 && (
-                        <button
-                          className="floor-more"
-                          onClick={() => open({ projectId: bay.id })}
-                          type="button"
-                        >
-                          +{bay.bench.length - 3} more planned
-                        </button>
-                      )}
-                    </FloorZone>
-                    <FloorZone className="stations" label="Stations">
-                      {bay.stations.length ? (
-                        bay.stations
-                          .slice(0, 4)
-                          .map((entry) => (
-                            <FloorWorkRow
-                              entry={entry}
-                              key={entry.id}
-                              onOpen={open}
-                              stale={stale}
-                            />
-                          ))
-                      ) : (
-                        <EmptyRow label="Station open" />
-                      )}
-                      {bay.stations.length > 4 && (
-                        <button
-                          className="floor-more"
-                          onClick={() => open({ projectId: bay.id })}
-                          type="button"
-                        >
-                          +{bay.stations.length - 4} more working
-                        </button>
-                      )}
-                    </FloorZone>
-                    <FloorZone
-                      className={`counter${bay.counter.length ? " hot" : ""}`}
-                      label="Counter · Needs you"
-                    >
-                      {bay.counter.slice(0, 3).map((paper) => (
-                        <button
-                          className={`floor-paper${ageClass(paper)}`}
-                          key={paper.id}
-                          aria-label={`${paper.kind} ${paper.simpleId} ${paper.name}, ${relativeAgeLabel(paper.ageLabel)}`}
-                          onClick={() => open(paper)}
-                          type="button"
-                        >
-                          <span
-                            className={`floor-kind floor-kind-${paper.kind}`}
-                          >
-                            {paper.kind}
-                          </span>
-                          <span className="floor-paper-name">
-                            <span className="floor-ref">{paper.simpleId}</span>
-                            {paper.name}
-                          </span>
-                          <span className="floor-paper-age">
-                            {paper.ageLabel}
-                          </span>
-                        </button>
-                      ))}
-                      {bay.counter.length > 3 && (
-                        <button
-                          className="floor-more"
-                          onClick={() => open(bay.counter[3]!)}
-                          type="button"
-                        >
-                          +{bay.counter.length - 3} more waiting
-                        </button>
-                      )}
-                      {!bay.counter.length && (
-                        <p className="floor-more">Nothing waiting</p>
-                      )}
-                    </FloorZone>
-                  </div>
-                </article>
-              ))
-            ) : (
-              <p className="floor-hidden-empty">
-                All {snapshot.projects.length} projects are hidden. Select one
-                above to show its card.
-              </p>
-            )
-          ) : (
-            <div className="floor-notice">
-              {loading
-                ? "Loading observed project bays…"
-                : "No projects are available."}
-            </div>
-          )}
-        </section>
       </div>
-      <details className="floor-create-project">
-        <summary>New project</summary>
-        <form onSubmit={(event) => void createProject(event)}>
-          <label>
-            <span className="visually-hidden">Project name</span>
-            <input
-              disabled={!canMutate || busy}
-              onChange={(event) => setNewProjectName(event.target.value)}
-              placeholder="Project name"
-              value={newProjectName}
-            />
-          </label>
-          <button
-            disabled={!canMutate || busy || !newProjectName.trim()}
-            type="submit"
-          >
-            Create project
-          </button>
-        </form>
-        {projectError && <p role="alert">{projectError}</p>}
-      </details>
     </section>
-  );
-}
-
-function FloorZone({
-  children,
-  className,
-  label,
-}: {
-  children: React.ReactNode;
-  className: string;
-  label: string;
-}) {
-  return (
-    <div className={`floor-zone ${className}`}>
-      <p className="eyebrow">{label}</p>
-      <div className="floor-zone-list">{children}</div>
-    </div>
-  );
-}
-function EmptyRow({ label }: { label: string }) {
-  return (
-    <div className="floor-work empty">
-      <span className="floor-worker none">·</span>
-      <span className="floor-work-copy">
-        <strong>{label}</strong>
-      </span>
-    </div>
-  );
-}
-function FloorWorkRow({
-  entry,
-  onOpen,
-  stale = false,
-}: {
-  entry: FloorWork;
-  onOpen: (target: FloorTarget) => void;
-  stale?: boolean;
-}) {
-  const state =
-    stale && entry.tokenState === "working" ? "idle" : entry.tokenState;
-  const detail = stale
-    ? `${entry.detail || tokenLabel(entry)} · stale observation`
-    : entry.detail || tokenLabel(entry);
-  return (
-    <button
-      className={`floor-work${entry.empty ? " empty" : ""}${state === "blocked" ? " blocked" : ""}`}
-      onClick={() => onOpen(entry)}
-      type="button"
-    >
-      <span
-        aria-label={`${initials(entry.reporter)} ${stale ? "stale observation" : tokenLabel(entry)}`}
-        className={`floor-worker ${entry.reporter} ${state}`}
-      >
-        {initials(entry.reporter)}
-        {entry.badge && (
-          <span className={`floor-badge ${entry.badge}`}>
-            {entry.badge === "error" ? "!" : entry.badge === "done" ? "✓" : "?"}
-          </span>
-        )}
-      </span>
-      <span className="floor-work-copy">
-        <strong>
-          <span className="floor-ref">{entry.simpleId}</span>
-          {entry.name}
-        </strong>
-        <small>{detail}</small>
-      </span>
-    </button>
   );
 }
