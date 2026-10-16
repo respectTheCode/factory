@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type PointerEvent,
 } from "react";
 
 import type {
@@ -18,6 +19,7 @@ import type {
 } from "../issues";
 import type { FactoryRouter } from "../server";
 import { issueNeedsMergedPullRequestsForDone } from "./issue-completion";
+import { groupIssues, ISSUE_STATUSES } from "./issue-board";
 import "./issues.css";
 
 type IssuesClient = ReturnType<typeof createTRPCProxyClient<FactoryRouter>>;
@@ -40,12 +42,6 @@ type EditValues = {
 };
 type MessageDraft = { text: string; requestId?: string };
 
-const ISSUE_STATUSES: IssueStatus[] = [
-  "todo",
-  "in_progress",
-  "needs_attention",
-  "done",
-];
 const STATUS_LABEL: Record<IssueStatus, string> = {
   todo: "To do",
   in_progress: "In progress",
@@ -128,13 +124,8 @@ function messageKey(issueId: string, thread: IssueThread): string {
   return `${issueId}:${thread.sourceId}:${thread.threadId}`;
 }
 
-function groupIssues(issues: Issue[]): Array<[IssueStatus, Issue[]]> {
-  const groups: Array<[IssueStatus, Issue[]]> = [];
-  for (const status of ISSUE_STATUSES) {
-    const items = issues.filter((issue) => issue.status === status);
-    if (items.length > 0) groups.push([status, items]);
-  }
-  return groups;
+function isIssueStatus(value: string | undefined): value is IssueStatus {
+  return ISSUE_STATUSES.includes(value as IssueStatus);
 }
 
 function pullRequestLabel(pullRequest: IssuePullRequest): string {
@@ -196,10 +187,26 @@ export function IssuesPage({
   const [projectName, setProjectName] = useState("");
   const [projectError, setProjectError] = useState<string | null>(null);
   const [projectBusy, setProjectBusy] = useState(false);
+  const [moveError, setMoveError] = useState<string | null>(null);
+  const [movingIssueId, setMovingIssueId] = useState<string | null>(null);
+  const [draggingIssueId, setDraggingIssueId] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState<{
+    status: IssueStatus;
+    beforeId?: string;
+  } | null>(null);
   const listGeneration = useRef(0);
   const detailGeneration = useRef(0);
   const activeIssueIdRef = useRef(activeIssueId);
   const activeSends = useRef(new Set<string>());
+  const moveBusyRef = useRef(false);
+  const issueDrag = useRef<{
+    id: string;
+    startX: number;
+    startY: number;
+    moved: boolean;
+    status?: IssueStatus;
+    beforeId?: string;
+  } | null>(null);
   const activeIssue =
     issues?.find((issue) => issue.id === activeIssueId) ?? null;
   const detailIssue =
@@ -357,6 +364,159 @@ export function IssuesPage({
     () => groupIssues(visibleIssues),
     [visibleIssues],
   );
+
+  const moveIssue = async (
+    id: string,
+    status: IssueStatus,
+    beforeId?: string,
+  ) => {
+    if (!client || !canMutate || moveBusyRef.current) return;
+    const issue = issues?.find((item) => item.id === id);
+    if (!issue) return;
+    if (
+      issue.status !== "done" &&
+      status === "done" &&
+      issueNeedsMergedPullRequestsForDone(
+        issue.pullRequestUrls,
+        issue.pullRequests,
+      )
+    ) {
+      setMoveError(
+        "All linked pull requests must be confirmed merged before this issue can be marked done.",
+      );
+      return;
+    }
+    if (status === issue.status && beforeId === id) return;
+
+    moveBusyRef.current = true;
+    setMovingIssueId(id);
+    setMoveError(null);
+    try {
+      await client.issues.move.mutate({
+        id,
+        status,
+        ...(beforeId ? { beforeId } : {}),
+      });
+      await refreshIssues();
+      if (activeIssueIdRef.current === id) void refreshDetail(id, true);
+    } catch (error) {
+      setMoveError(errorText(error));
+    } finally {
+      moveBusyRef.current = false;
+      setMovingIssueId(null);
+    }
+  };
+
+  const findIssueDropTarget = (
+    clientX: number,
+    clientY: number,
+    draggedId: string,
+  ): { status: IssueStatus; beforeId?: string } | null => {
+    const hovered = document.elementFromPoint(clientX, clientY);
+    const target = hovered?.closest<HTMLElement>("[data-issue-status]");
+    const status = isIssueStatus(target?.dataset.issueStatus)
+      ? target.dataset.issueStatus
+      : null;
+    if (!target || !status) return null;
+
+    const row = hovered?.closest<HTMLElement>("[data-issue-id]");
+    if (!row || !target.contains(row)) return { status };
+    const rect = row.getBoundingClientRect();
+    const after = clientY > rect.top + rect.height / 2;
+    const siblingRows = Array.from(row.parentElement?.children ?? []).filter(
+      (child): child is HTMLElement =>
+        child instanceof HTMLElement && Boolean(child.dataset.issueId),
+    );
+    const rowIndex = siblingRows.indexOf(row);
+    const beforeId = after
+      ? siblingRows[rowIndex + 1]?.dataset.issueId
+      : row.dataset.issueId;
+
+    if (row.dataset.issueId === draggedId && after) {
+      return { status, beforeId: siblingRows[rowIndex + 1]?.dataset.issueId };
+    }
+    return { status, ...(beforeId ? { beforeId } : {}) };
+  };
+
+  const startIssueDrag = (
+    event: PointerEvent<HTMLButtonElement>,
+    issue: Issue,
+  ) => {
+    if (!canMutate || moveBusyRef.current) return;
+    issueDrag.current = {
+      id: issue.id,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const updateIssueDrag = (event: PointerEvent<HTMLButtonElement>) => {
+    const current = issueDrag.current;
+    if (!current) return;
+    if (
+      !current.moved &&
+      Math.hypot(
+        event.clientX - current.startX,
+        event.clientY - current.startY,
+      ) < 6
+    )
+      return;
+    current.moved = true;
+    setDraggingIssueId(current.id);
+    const target = findIssueDropTarget(
+      event.clientX,
+      event.clientY,
+      current.id,
+    );
+    current.status = target?.status;
+    current.beforeId = target?.beforeId;
+    setDragOver(target);
+  };
+
+  const finishIssueDrag = (event: PointerEvent<HTMLButtonElement>) => {
+    const current = issueDrag.current;
+    if (!current) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    issueDrag.current = null;
+    setDraggingIssueId(null);
+    setDragOver(null);
+    if (current.moved && current.status) {
+      void moveIssue(current.id, current.status, current.beforeId);
+    }
+  };
+
+  const cancelIssueDrag = (event: PointerEvent<HTMLButtonElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    issueDrag.current = null;
+    setDraggingIssueId(null);
+    setDragOver(null);
+  };
+
+  const reorderIssue = (
+    status: IssueStatus,
+    id: string,
+    direction: "up" | "down",
+  ) => {
+    const ids = groupedIssues
+      .find(([groupStatus]) => groupStatus === status)?.[1]
+      .map((issue) => issue.id);
+    if (!ids) return;
+    const index = ids.indexOf(id);
+    if (index < 0) return;
+    if (
+      (direction === "up" && index === 0) ||
+      (direction === "down" && index === ids.length - 1)
+    )
+      return;
+    const beforeId = direction === "up" ? ids[index - 1] : ids[index + 2];
+    void moveIssue(id, status, beforeId);
+  };
 
   const replaceIssue = (issue: Issue) => {
     setIssues((current) =>
@@ -550,9 +710,6 @@ export function IssuesPage({
       <div className="issues-topbar">
         <div className="issues-title-block">
           <h1>Issues</h1>
-          <p>
-            Work records, linked branches, pull requests and T3 conversations.
-          </p>
         </div>
         <div className="issues-tools">
           <label className="issues-filter">
@@ -673,8 +830,41 @@ export function IssuesPage({
         </form>
       )}
 
+      {draggingIssueId && (
+        <div aria-hidden="true" className="issue-drag-status-strip">
+          {ISSUE_STATUSES.map((status) => (
+            <div
+              className={`issue-drag-status-target ${statusTone(status)} ${
+                dragOver?.status === status ? "issue-drag-status-over" : ""
+              }`}
+              data-issue-status={status}
+              key={status}
+            >
+              <span aria-hidden="true" className="issue-status-dot" />
+              {STATUS_LABEL[status]}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="issues-layout">
-        <section aria-label="Issue list" className="issue-list-panel">
+        <section
+          aria-label="Issue list"
+          className={`issue-list-panel ${canMutate ? "issue-list-mutable" : ""}`}
+        >
+          {moveError && (
+            <div className="issues-error issue-move-error" role="alert">
+              <span>Issue could not be moved: {moveError}</span>
+              <button
+                aria-label="Dismiss issue move error"
+                className="secondary"
+                onClick={() => setMoveError(null)}
+                type="button"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           {issues === null && listError ? (
             <div className="issue-no-results" role="alert">
               <h2>Issues could not be loaded</h2>
@@ -692,58 +882,64 @@ export function IssuesPage({
               <span className="issue-loading-mark" aria-hidden="true" />
               <p>{client ? "Loading issues…" : "Connecting to Factory…"}</p>
             </div>
-          ) : issues.length === 0 ? (
-            <div className="issue-empty-state" role="status">
-              <div aria-hidden="true" className="issue-empty-mark">
-                +
-              </div>
-              <h2>No issues yet</h2>
-              <p>
-                Create an issue to keep its status, branches, pull requests, and
-                T3 threads together.
-              </p>
-              {canMutate && projects.length > 0 && (
-                <button
-                  className="issues-primary-button"
-                  onClick={startCreate}
-                  type="button"
-                >
-                  Create the first issue
-                </button>
-              )}
-              {projects.length === 0 && (
-                <p className="issue-empty-note">
-                  Create a project before filing an issue.
-                </p>
-              )}
-            </div>
-          ) : visibleIssues.length === 0 ? (
-            <div className="issue-no-results" role="status">
-              <h2>No matching issues</h2>
-              <p>Change the project, label or search to see more.</p>
-              <button
-                className="secondary"
-                onClick={() => {
-                  setSelectedProjectId("all");
-                  setSelectedLabel("all");
-                  setSearch("");
-                }}
-                type="button"
-              >
-                Clear filters
-              </button>
-            </div>
           ) : (
             <div className="issue-groups">
               <div className="issue-list-heading" aria-hidden="true">
                 <span>Issue</span>
                 <span>Pull requests</span>
                 <span>Branches</span>
+                {canMutate && <span>Move</span>}
               </div>
+              {issues.length === 0 ? (
+                <div className="issue-board-notice" role="status">
+                  <div>
+                    <h2>No issues yet</h2>
+                    <p>
+                      Create an issue to keep its status, branches, pull
+                      requests, and T3 threads together.
+                    </p>
+                    {projects.length === 0 && (
+                      <p className="issue-empty-note">
+                        Create a project before filing an issue.
+                      </p>
+                    )}
+                  </div>
+                  {canMutate && projects.length > 0 && (
+                    <button
+                      className="issues-primary-button"
+                      onClick={startCreate}
+                      type="button"
+                    >
+                      Create the first issue
+                    </button>
+                  )}
+                </div>
+              ) : visibleIssues.length === 0 ? (
+                <div className="issue-board-notice" role="status">
+                  <div>
+                    <h2>No matching issues</h2>
+                    <p>Change the project, label or search to see more.</p>
+                  </div>
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      setSelectedProjectId("all");
+                      setSelectedLabel("all");
+                      setSearch("");
+                    }}
+                    type="button"
+                  >
+                    Clear filters
+                  </button>
+                </div>
+              ) : null}
               {groupedIssues.map(([status, items]) => (
                 <section
                   aria-labelledby={`issue-group-${status}`}
-                  className="issue-group"
+                  className={`issue-group ${
+                    dragOver?.status === status ? "issue-group-drag-over" : ""
+                  }`}
+                  data-issue-status={status}
                   key={status}
                 >
                   <h2
@@ -757,9 +953,23 @@ export function IssuesPage({
                     {items.map((issue) => (
                       <IssueRow
                         active={issue.id === activeIssueId}
+                        busy={movingIssueId !== null}
+                        canMutate={canMutate}
+                        dragging={issue.id === draggingIssueId}
+                        dropBefore={dragOver?.beforeId === issue.id}
                         key={issue.id}
                         onSelect={() => selectIssue(issue)}
                         issue={issue}
+                        onMoveToStatus={(nextStatus) =>
+                          void moveIssue(issue.id, nextStatus)
+                        }
+                        onPointerCancel={cancelIssueDrag}
+                        onPointerDown={(event) => startIssueDrag(event, issue)}
+                        onPointerMove={updateIssueDrag}
+                        onPointerUp={finishIssueDrag}
+                        onReorder={(direction) =>
+                          reorderIssue(status, issue.id, direction)
+                        }
                         projectName={
                           projects.find(
                             (project) => project.id === issue.projectId,
@@ -767,6 +977,18 @@ export function IssuesPage({
                         }
                       />
                     ))}
+                    {items.length === 0 && (
+                      <div
+                        aria-label={`${STATUS_LABEL[status]} has no visible issues`}
+                        className={`issue-group-empty ${
+                          dragOver?.status === status
+                            ? "issue-group-empty-drag-over"
+                            : ""
+                        }`}
+                      >
+                        {draggingIssueId ? "Drop issue here" : "No issues here"}
+                      </div>
+                    )}
                   </div>
                 </section>
               ))}
@@ -943,18 +1165,43 @@ export function IssuesPage({
 
 function IssueRow({
   active,
+  busy,
+  canMutate,
+  dragging,
+  dropBefore,
   issue,
+  onMoveToStatus,
+  onPointerCancel,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onReorder,
   onSelect,
   projectName,
 }: {
   active: boolean;
+  busy: boolean;
+  canMutate: boolean;
+  dragging: boolean;
+  dropBefore: boolean;
   issue: Issue;
+  onMoveToStatus: (status: IssueStatus) => void;
+  onPointerCancel: (event: PointerEvent<HTMLButtonElement>) => void;
+  onPointerDown: (event: PointerEvent<HTMLButtonElement>) => void;
+  onPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
+  onReorder: (direction: "up" | "down") => void;
   onSelect: () => void;
   projectName?: string;
 }) {
   const pullRequests = issue.pullRequests;
   return (
-    <div className={`issue-row ${active ? "issue-row-active" : ""}`}>
+    <div
+      className={`issue-row ${active ? "issue-row-active" : ""} ${
+        dragging ? "issue-row-dragging" : ""
+      } ${dropBefore ? "issue-row-drop-before" : ""}`}
+      data-issue-id={issue.id}
+    >
       <div className="issue-row-main">
         <span
           aria-hidden="true"
@@ -1032,6 +1279,54 @@ function IssueRow({
           <span className="issue-row-empty-hint">No branch</span>
         )}
       </div>
+      {canMutate && (
+        <div className="issue-row-actions">
+          <button
+            aria-keyshortcuts="ArrowUp ArrowDown"
+            aria-label={`Reorder ${issue.simpleId}. Use up and down arrow keys.`}
+            className="issue-row-reorder"
+            disabled={busy}
+            draggable={false}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+              event.preventDefault();
+              onReorder(event.key === "ArrowUp" ? "up" : "down");
+            }}
+            onPointerCancel={onPointerCancel}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            title="Drag to reorder or move between statuses. Use arrow keys to reorder."
+            type="button"
+          >
+            <span aria-hidden="true">⠿</span>
+          </button>
+          <label className="issue-row-move-label">
+            <span className="sr-only">Move {issue.simpleId} to status</span>
+            <select
+              aria-label={`Move ${issue.simpleId} to status`}
+              disabled={busy}
+              onChange={(event) => {
+                if (isIssueStatus(event.target.value)) {
+                  onMoveToStatus(event.target.value);
+                }
+              }}
+              value=""
+            >
+              <option disabled value="">
+                Move to…
+              </option>
+              {ISSUE_STATUSES.filter((status) => status !== issue.status).map(
+                (status) => (
+                  <option key={status} value={status}>
+                    {STATUS_LABEL[status]}
+                  </option>
+                ),
+              )}
+            </select>
+          </label>
+        </div>
+      )}
     </div>
   );
 }

@@ -87,6 +87,12 @@ export type IssueUpdateInput = {
   status?: IssueStatus;
 };
 
+export type IssueMoveInput = {
+  id: string;
+  status: IssueStatus;
+  beforeId?: string;
+};
+
 export type IssueThreadObservation = {
   sourceId: string;
   threadId: string;
@@ -118,6 +124,7 @@ type IssueRow = {
   pullRequestUrlsJson: string;
   status: IssueStatus;
   manualStatus: IssueStatus | null;
+  orderIndex: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -151,6 +158,7 @@ export type IssueStore = {
   detail(id: string): IssueDetail | null;
   create(input: IssueCreateInput): Issue;
   update(input: IssueUpdateInput): Issue;
+  move(input: IssueMoveInput): Issue;
   remove(id: string): { id: string };
   observeThreads(input: {
     projectId: string;
@@ -169,7 +177,7 @@ const ISSUE_COLUMNS = `id, simple_id AS simpleId, project_id AS projectId,
   title, description, labels_json AS labelsJson, branches_json AS branchesJson,
   pull_request_urls_json AS pullRequestUrlsJson, status,
   manual_status AS manualStatus,
-  created_at AS createdAt, updated_at AS updatedAt`;
+  order_index AS orderIndex, created_at AS createdAt, updated_at AS updatedAt`;
 
 function cleanList(values: string[] | undefined): string[] {
   if (!values) return [];
@@ -211,15 +219,103 @@ function readIssueRows(database: Database, projectId?: string): IssueRow[] {
     projectId === undefined
       ? database
           .query(
-            `SELECT ${ISSUE_COLUMNS} FROM factory_issues ORDER BY created_at, simple_id`,
+            `SELECT ${ISSUE_COLUMNS} FROM factory_issues
+              ORDER BY CASE status
+                WHEN 'todo' THEN 0
+                WHEN 'in_progress' THEN 1
+                WHEN 'needs_attention' THEN 2
+                ELSE 3 END,
+                order_index, created_at, simple_id`,
           )
           .all()
       : database
           .query(
-            `SELECT ${ISSUE_COLUMNS} FROM factory_issues WHERE project_id = $projectId ORDER BY created_at, simple_id`,
+            `SELECT ${ISSUE_COLUMNS} FROM factory_issues WHERE project_id = $projectId
+              ORDER BY CASE status
+                WHEN 'todo' THEN 0
+                WHEN 'in_progress' THEN 1
+                WHEN 'needs_attention' THEN 2
+                ELSE 3 END,
+                order_index, created_at, simple_id`,
           )
           .all({ $projectId: projectId });
   return rows as IssueRow[];
+}
+
+function readIssueIdsForStatus(
+  database: Database,
+  status: IssueStatus,
+  excludedId?: string,
+): string[] {
+  const rows = database
+    .query(
+      `SELECT id FROM factory_issues
+        WHERE status = $status AND ($excludedId IS NULL OR id <> $excludedId)
+        ORDER BY order_index, created_at, simple_id`,
+    )
+    .all({ $excludedId: excludedId ?? null, $status: status }) as Array<{
+    id: string;
+  }>;
+  return rows.map(({ id }) => id);
+}
+
+function writeStatusOrder(
+  database: Database,
+  status: IssueStatus,
+  issueIds: string[],
+): void {
+  const update = database.query(
+    "UPDATE factory_issues SET order_index = $orderIndex WHERE id = $id AND status = $status",
+  );
+  issueIds.forEach((id, orderIndex) => {
+    update.run({ $id: id, $orderIndex: orderIndex, $status: status });
+  });
+}
+
+function appendToStatusOrder(
+  database: Database,
+  issueId: string,
+  oldStatus: IssueStatus,
+  nextStatus: IssueStatus,
+): void {
+  if (oldStatus === nextStatus) return;
+  writeStatusOrder(
+    database,
+    oldStatus,
+    readIssueIdsForStatus(database, oldStatus, issueId),
+  );
+  const nextIds = readIssueIdsForStatus(database, nextStatus, issueId);
+  nextIds.push(issueId);
+  writeStatusOrder(database, nextStatus, nextIds);
+}
+
+function assertDoneStatusAllowed(
+  database: Database,
+  issueId: string,
+  pullRequestUrls: string[],
+): void {
+  if (pullRequestUrls.length === 0) return;
+  const mergedRows = database
+    .query(
+      `SELECT url, merged FROM factory_issue_pull_requests
+        WHERE issue_id = $issueId AND url IN (${pullRequestUrls
+          .map((_, index) => `$url${index}`)
+          .join(", ")})`,
+    )
+    .all(
+      Object.fromEntries([
+        ["$issueId", issueId],
+        ...pullRequestUrls.map((url, index) => [`$url${index}`, url]),
+      ]),
+    ) as Array<{ url: string; merged: number }>;
+  if (
+    mergedRows.length !== pullRequestUrls.length ||
+    mergedRows.some((pullRequest) => pullRequest.merged !== 1)
+  ) {
+    throw new Error(
+      "An issue with linked Pull Requests can be marked done only after every Pull Request is confirmed merged.",
+    );
+  }
 }
 
 function mapIssue(database: Database, row: IssueRow): Issue {
@@ -364,6 +460,7 @@ export function createIssueStore({
       pull_request_urls_json TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('todo', 'in_progress', 'needs_attention', 'done')),
       manual_status TEXT CHECK (manual_status IS NULL OR manual_status IN ('todo', 'in_progress', 'needs_attention', 'done')),
+      order_index INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -399,6 +496,36 @@ export function createIssueStore({
       event_fingerprint TEXT NOT NULL,
       PRIMARY KEY (issue_id, url)
     );
+  `);
+
+  const issueColumns = database
+    .query("PRAGMA table_info(factory_issues)")
+    .all() as Array<{ name: string }>;
+  if (!issueColumns.some(({ name }) => name === "order_index")) {
+    withTransaction(database, () => {
+      database.exec(
+        "ALTER TABLE factory_issues ADD COLUMN order_index INTEGER NOT NULL DEFAULT 0",
+      );
+      const existing = database
+        .query(
+          "SELECT id, status FROM factory_issues ORDER BY created_at, simple_id",
+        )
+        .all() as Array<{ id: string; status: IssueStatus }>;
+      const nextOrderByStatus = new Map<IssueStatus, number>();
+      for (const issue of existing) {
+        const orderIndex = nextOrderByStatus.get(issue.status) ?? 0;
+        database
+          .query(
+            "UPDATE factory_issues SET order_index = $orderIndex WHERE id = $id",
+          )
+          .run({ $id: issue.id, $orderIndex: orderIndex });
+        nextOrderByStatus.set(issue.status, orderIndex + 1);
+      }
+    });
+  }
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS factory_issues_status_order_idx
+      ON factory_issues(status, order_index, created_at, simple_id);
   `);
 
   const get = (id: string): Issue => {
@@ -448,6 +575,11 @@ export function createIssueStore({
           .get() as { nextNumber: number } | null;
         if (!counter) throw new Error("Factory issue counter is unavailable.");
         const number = counter.nextNumber;
+        const orderRow = database
+          .query(
+            "SELECT COALESCE(MAX(order_index), -1) + 1 AS orderIndex FROM factory_issues WHERE status = 'todo'",
+          )
+          .get() as { orderIndex: number };
         database
           .query(
             "UPDATE factory_issue_counter SET next_number = $nextNumber WHERE id = 1",
@@ -458,9 +590,10 @@ export function createIssueStore({
           .query(
             `INSERT INTO factory_issues
               (id, simple_id, project_id, title, description, labels_json,
-               branches_json, pull_request_urls_json, status, created_at, updated_at)
+               branches_json, pull_request_urls_json, status, order_index,
+               created_at, updated_at)
              VALUES ($id, $simpleId, $projectId, $title, $description, $labels,
-               $branches, $pullRequests, 'todo', $createdAt, $updatedAt)`,
+               $branches, $pullRequests, 'todo', $orderIndex, $createdAt, $updatedAt)`,
           )
           .run({
             $branches: JSON.stringify(cleanList(input.branches)),
@@ -472,6 +605,7 @@ export function createIssueStore({
             $pullRequests: JSON.stringify(
               cleanPullRequestUrls(input.pullRequestUrls),
             ),
+            $orderIndex: orderRow.orderIndex,
             $simpleId: simple,
             $title: title,
             $updatedAt: createdAt,
@@ -493,28 +627,8 @@ export function createIssueStore({
         input.pullRequestUrls === undefined
           ? previousUrls
           : cleanPullRequestUrls(input.pullRequestUrls);
-      if (input.status === "done" && nextUrls.length > 0) {
-        const mergedRows = database
-          .query(
-            `SELECT url, merged FROM factory_issue_pull_requests
-              WHERE issue_id = $issueId AND url IN (${nextUrls
-                .map((_, index) => `$url${index}`)
-                .join(", ")})`,
-          )
-          .all(
-            Object.fromEntries([
-              ["$issueId", input.id],
-              ...nextUrls.map((url, index) => [`$url${index}`, url]),
-            ]),
-          ) as Array<{ url: string; merged: number }>;
-        if (
-          mergedRows.length !== nextUrls.length ||
-          mergedRows.some((pullRequest) => pullRequest.merged !== 1)
-        ) {
-          throw new Error(
-            "An issue with linked Pull Requests can be marked done only after every Pull Request is confirmed merged.",
-          );
-        }
+      if (input.status === "done") {
+        assertDoneStatusAllowed(database, input.id, nextUrls);
       }
       const removedUrls = previousUrls.filter((url) => !nextUrls.includes(url));
       const addedUrls = nextUrls.filter((url) => !previousUrls.includes(url));
@@ -559,6 +673,9 @@ export function createIssueStore({
             $title: title ?? row.title,
             $updatedAt: now,
           });
+        if (nextStatus !== row.status) {
+          appendToStatusOrder(database, input.id, row.status, nextStatus);
+        }
         for (const url of removedUrls) {
           database
             .query(
@@ -592,11 +709,103 @@ export function createIssueStore({
       return get(input.id);
     },
 
+    move(input) {
+      const now = clock().toISOString();
+      withTransaction(database, () => {
+        const row = readIssueRow(database, input.id);
+        if (!row) throw new Error(`Issue ${input.id} does not exist.`);
+
+        if (input.beforeId !== undefined) {
+          const anchor = readIssueRow(database, input.beforeId);
+          if (!anchor)
+            throw new Error(`Issue ${input.beforeId} does not exist.`);
+          if (anchor.status !== input.status) {
+            throw new Error(
+              "An issue can only be placed before an issue in the destination status.",
+            );
+          }
+          if (input.beforeId === input.id) return;
+        }
+
+        const changesStatus = row.status !== input.status;
+        const pullRequestUrls = parseJsonList(row.pullRequestUrlsJson);
+        if (changesStatus && input.status === "done") {
+          assertDoneStatusAllowed(database, input.id, pullRequestUrls);
+        }
+
+        const targetIds = readIssueIdsForStatus(
+          database,
+          input.status,
+          input.id,
+        );
+        let insertionIndex = targetIds.length;
+        if (input.beforeId !== undefined) {
+          insertionIndex = targetIds.indexOf(input.beforeId);
+          if (insertionIndex < 0) {
+            throw new Error(
+              "The destination issue could not be found in the requested status.",
+            );
+          }
+        }
+        targetIds.splice(insertionIndex, 0, input.id);
+
+        if (changesStatus) {
+          database
+            .query(
+              `UPDATE factory_issues SET status = $status,
+                  manual_status = $manualStatus, updated_at = $updatedAt
+                WHERE id = $id`,
+            )
+            .run({
+              $id: input.id,
+              $manualStatus: input.status,
+              $status: input.status,
+              $updatedAt: now,
+            });
+          writeStatusOrder(
+            database,
+            row.status,
+            readIssueIdsForStatus(database, row.status),
+          );
+          for (const thread of readThreadRows(database, input.id)) {
+            const fingerprint = digest({
+              branch: thread.branch,
+              current: thread.current,
+              state: thread.state,
+              title: thread.title,
+              updatedAt: thread.updatedAt,
+            });
+            database
+              .query(
+                `UPDATE factory_issue_threads SET event_fingerprint = $fingerprint
+                  WHERE issue_id = $issueId AND source_id = $sourceId AND thread_id = $threadId`,
+              )
+              .run({
+                $fingerprint: fingerprint,
+                $issueId: input.id,
+                $sourceId: thread.sourceId,
+                $threadId: thread.threadId,
+              });
+          }
+        }
+        writeStatusOrder(database, input.status, targetIds);
+      });
+      return get(input.id);
+    },
+
     remove(id) {
-      const result = database
-        .query("DELETE FROM factory_issues WHERE id = $id")
-        .run({ $id: id });
-      if (result.changes === 0) throw new Error(`Issue ${id} does not exist.`);
+      withTransaction(database, () => {
+        const row = readIssueRow(database, id);
+        if (!row) throw new Error(`Issue ${id} does not exist.`);
+        database.query("DELETE FROM factory_issues WHERE id = $id").run({
+          $id: id,
+        });
+        writeStatusOrder(
+          database,
+          row.status,
+          readIssueIdsForStatus(database, row.status),
+        );
+      });
       return { id };
     },
 
@@ -927,6 +1136,9 @@ export function createIssueStore({
                 $status: nextStatus,
                 $updatedAt: now,
               });
+            if (nextStatus !== issue.status) {
+              appendToStatusOrder(database, issue.id, issue.status, nextStatus);
+            }
           }
         }
       });

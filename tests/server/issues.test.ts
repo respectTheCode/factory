@@ -54,6 +54,38 @@ function data<T>(response: RawResponse): T {
   return response.result?.data as T;
 }
 
+async function pollUntil<T>(
+  read: () => Promise<T>,
+  predicate: (value: T) => boolean,
+  timeoutMs = 2_000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let value = await read();
+  while (!predicate(value) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    value = await read();
+  }
+  return value;
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function issueReader() {
   const thread = {
     branch,
@@ -277,6 +309,134 @@ afterEach(() => {
 });
 
 describe("Factory issue routes", () => {
+  test("returns persisted issues before a deduped remote refresh and exposes refreshed status on later polls", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "factory-issues-refresh-"));
+    directories.push(directory);
+    let releaseActivity!: () => void;
+    let markActivityStarted!: () => void;
+    let readShellCalls = 0;
+    const activityGate = new Promise<void>((resolve) => {
+      releaseActivity = resolve;
+    });
+    const activityStarted = new Promise<void>((resolve) => {
+      markActivityStarted = resolve;
+    });
+    const baseReader = sourceActivityReader({
+      projectId: "t3-project-issues-gated",
+      threads: [
+        {
+          id: "thread-issue-gated",
+          branch,
+          state: "working",
+          title: "Gated issue thread",
+        },
+      ],
+    });
+    const gatedReader: T3ActivityReader = {
+      ...baseReader,
+      async readShell() {
+        readShellCalls += 1;
+        markActivityStarted();
+        await activityGate;
+        return baseReader.readShell();
+      },
+    };
+    const server = createFactoryServer({
+      databasePath: join(directory, "factory.sqlite"),
+      port: 0,
+      t3ActivityReader: gatedReader,
+      operator: { name: "test-operator", secret: "test-operator-secret" },
+    });
+    const socket = await openAuthenticatedSocket(server);
+    let requestId = 1;
+    try {
+      const project = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: {
+              gitOriginUrl: "git@github.com:acme/app.git",
+              name: "Gated App",
+              t3ProjectId: "t3-project-issues-gated",
+              workspaceRoot: "/work/app",
+            },
+            path: "projects.create",
+          },
+        }),
+      );
+      const issue = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: {
+              branches: [branch],
+              projectId: project.id,
+              title: "Gated issue",
+            },
+            path: "issues.create",
+          },
+        }),
+      );
+
+      const firstListPromise = request(socket, {
+        id: requestId++,
+        method: "query",
+        params: { input: { projectId: project.id }, path: "issues.list" },
+      });
+      await withTimeout(
+        activityStarted,
+        1_000,
+        "The list request did not start its remote refresh.",
+      );
+      const firstListResponse = await withTimeout(
+        firstListPromise,
+        1_000,
+        "The issue list waited for the blocked remote refresh.",
+      );
+      expect(
+        data<Array<{ id: string; status: string }>>(firstListResponse),
+      ).toContainEqual(
+        expect.objectContaining({ id: issue.id, status: "todo" }),
+      );
+
+      const secondList = data<Array<{ id: string }>>(
+        await request(socket, {
+          id: requestId++,
+          method: "query",
+          params: { input: { projectId: project.id }, path: "issues.list" },
+        }),
+      );
+      expect(secondList.map(({ id }) => id)).toContain(issue.id);
+      expect(readShellCalls).toBe(1);
+
+      releaseActivity();
+      const refreshed = await pollUntil(
+        async () =>
+          data<Array<{ id: string; status: string }>>(
+            await request(socket, {
+              id: requestId++,
+              method: "query",
+              params: { input: { projectId: project.id }, path: "issues.list" },
+            }),
+          ),
+        (issues) =>
+          issues.some(
+            (candidate) =>
+              candidate.id === issue.id && candidate.status === "in_progress",
+          ),
+      );
+      expect(
+        refreshed.find((candidate) => candidate.id === issue.id)?.status,
+      ).toBe("in_progress");
+    } finally {
+      releaseActivity();
+      socket.close();
+      await server.stop();
+    }
+  });
+
   test("exposes human-only issue CRUD, fresh T3/PR detail, and linked-thread replies", async () => {
     const directory = mkdtempSync(join(tmpdir(), "factory-issues-rpc-"));
     directories.push(directory);
@@ -640,14 +800,23 @@ describe("Factory issue routes", () => {
         method: "query",
         params: { input: { projectId }, path: "issues.list" },
       });
+      const refreshedIssues = await pollUntil(
+        async () =>
+          data<Array<{ id: string; status: string }>>(
+            await request(firstSocket, {
+              id: requestId++,
+              method: "query",
+              params: { input: { projectId }, path: "issues.list" },
+            }),
+          ),
+        (issues) =>
+          issues.some(
+            (issue) =>
+              issue.id === m4Issue.id && issue.status === "in_progress",
+          ),
+      );
       expect(
-        data<Array<{ id: string; status: string }>>(
-          await request(firstSocket, {
-            id: requestId++,
-            method: "query",
-            params: { input: { projectId }, path: "issues.list" },
-          }),
-        ).find((issue) => issue.id === m4Issue.id)?.status,
+        refreshedIssues.find((issue) => issue.id === m4Issue.id)?.status,
       ).toBe("in_progress");
       await request(firstSocket, {
         id: requestId++,
@@ -802,6 +971,11 @@ describe("Factory issue routes", () => {
         method: "query",
         params: { input: { projectId: project.id }, path: "issues.list" },
       });
+      await request(socket, {
+        id: requestId++,
+        method: "query",
+        params: { input: { id: openIssue.id }, path: "issues.detail" },
+      });
       for (const id of [openIssue.id, closedUnmergedIssue.id]) {
         const result = await request(socket, {
           id: requestId++,
@@ -816,6 +990,198 @@ describe("Factory issue routes", () => {
           "every Pull Request is confirmed merged",
         );
       }
+    } finally {
+      socket.close();
+      await server.stop();
+    }
+  });
+
+  test("moves issues before an anchor or appends them to the target status", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "factory-issues-move-rpc-"));
+    directories.push(directory);
+    const server = createFactoryServer({
+      databasePath: join(directory, "factory.sqlite"),
+      port: 0,
+      operator: { name: "test-operator", secret: "test-operator-secret" },
+    });
+    const socket = await openAuthenticatedSocket(server);
+    let requestId = 1;
+    try {
+      const project = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: { input: { name: "Move App" }, path: "projects.create" },
+        }),
+      );
+      const issues: Array<{ id: string; title: string }> = [];
+      for (const title of ["First", "Second", "Third"]) {
+        issues.push(
+          data<{ id: string; title: string }>(
+            await request(socket, {
+              id: requestId++,
+              method: "mutation",
+              params: {
+                input: { projectId: project.id, title },
+                path: "issues.create",
+              },
+            }),
+          ),
+        );
+      }
+
+      const moved = data<{ id: string; status: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: {
+              id: issues[2]!.id,
+              status: "todo",
+              beforeId: issues[0]!.id,
+            },
+            path: "issues.move",
+          },
+        }),
+      );
+      expect(moved).toMatchObject({ id: issues[2]!.id, status: "todo" });
+      await request(socket, {
+        id: requestId++,
+        method: "mutation",
+        params: {
+          input: { id: issues[1]!.id, status: "in_progress" },
+          path: "issues.move",
+        },
+      });
+      const listed = data<Array<{ id: string; status: string }>>(
+        await request(socket, {
+          id: requestId++,
+          method: "query",
+          params: { input: { projectId: project.id }, path: "issues.list" },
+        }),
+      );
+      expect(listed.map(({ id }) => id)).toEqual([
+        issues[2]!.id,
+        issues[0]!.id,
+        issues[1]!.id,
+      ]);
+      expect(listed.find(({ id }) => id === issues[1]!.id)?.status).toBe(
+        "in_progress",
+      );
+    } finally {
+      socket.close();
+      await server.stop();
+    }
+  });
+
+  test("rejects invalid move anchors and unconfirmed Done moves atomically", async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "factory-issues-move-guard-rpc-"),
+    );
+    directories.push(directory);
+    const server = createFactoryServer({
+      databasePath: join(directory, "factory.sqlite"),
+      githubStatusReader: unmergedGitHubReader(),
+      port: 0,
+      operator: { name: "test-operator", secret: "test-operator-secret" },
+    });
+    const socket = await openAuthenticatedSocket(server);
+    let requestId = 1;
+    try {
+      const project = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { name: "Move Guard App" },
+            path: "projects.create",
+          },
+        }),
+      );
+      const first = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { projectId: project.id, title: "First" },
+            path: "issues.create",
+          },
+        }),
+      );
+      const linked = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: {
+              projectId: project.id,
+              pullRequestUrls: [pullRequestUrl],
+              title: "Unmerged PR issue",
+            },
+            path: "issues.create",
+          },
+        }),
+      );
+      const last = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { projectId: project.id, title: "Last" },
+            path: "issues.create",
+          },
+        }),
+      );
+      await request(socket, {
+        id: requestId++,
+        method: "query",
+        params: { input: { id: linked.id }, path: "issues.detail" },
+      });
+      const before = data<Array<{ id: string; status: string }>>(
+        await request(socket, {
+          id: requestId++,
+          method: "query",
+          params: { input: { projectId: project.id }, path: "issues.list" },
+        }),
+      );
+
+      const invalidAnchor = await request(socket, {
+        id: requestId++,
+        method: "mutation",
+        params: {
+          input: { id: first.id, status: "todo", beforeId: linked.id },
+          path: "issues.move",
+        },
+      });
+      expect(invalidAnchor.error?.data?.code).toBe("BAD_REQUEST");
+      expect(invalidAnchor.error?.message).toContain("destination status");
+
+      const unconfirmedDone = await request(socket, {
+        id: requestId++,
+        method: "mutation",
+        params: {
+          input: { id: linked.id, status: "done" },
+          path: "issues.move",
+        },
+      });
+      expect(unconfirmedDone.error?.data?.code).toBe("BAD_REQUEST");
+      expect(unconfirmedDone.error?.message).toContain(
+        "every Pull Request is confirmed merged",
+      );
+
+      const after = data<Array<{ id: string; status: string }>>(
+        await request(socket, {
+          id: requestId++,
+          method: "query",
+          params: { input: { projectId: project.id }, path: "issues.list" },
+        }),
+      );
+      expect(after).toEqual(before);
+      expect(before.map(({ id }) => id)).toContain(first.id);
+      expect(before.map(({ id }) => id)).toContain(last.id);
+      expect(before.find(({ id }) => id === linked.id)?.status).not.toBe(
+        "done",
+      );
     } finally {
       socket.close();
       await server.stop();

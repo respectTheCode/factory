@@ -5,7 +5,7 @@
   "scripts": {
     "build": "bun run typecheck && bun run build:web",
     "build:client": "bash ./scripts/build-client.sh",
-    "build:web": "bun build ./src/web/main.tsx ./src/web/service-worker.ts --outdir ./dist --target browser",
+    "build:web": "bun build ./src/web/main.tsx ./src/web/service-worker.ts --outdir ./dist --target browser --production",
     "dev": "FACTORY_PORT=3001 bun run start",
     "format": "prettier --check package.json tsconfig.json src tests",
     "format:write": "prettier --write package.json tsconfig.json src tests",

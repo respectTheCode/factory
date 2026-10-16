@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 
 import { createFactoryApplication } from "../src/application";
 import {
@@ -71,6 +72,175 @@ afterEach(() => {
 });
 
 describe("Factory issue store", () => {
+  test("migrates existing issues in deterministic status-local order", () => {
+    const directory = mkdtempSync(join(tmpdir(), "factory-issues-migration-"));
+    directories.push(directory);
+    const databasePath = join(directory, "factory.sqlite");
+    const legacy = new Database(databasePath);
+    legacy.exec(`
+      CREATE TABLE factory_issues (
+        id TEXT PRIMARY KEY,
+        simple_id TEXT NOT NULL UNIQUE,
+        project_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        labels_json TEXT NOT NULL,
+        branches_json TEXT NOT NULL,
+        pull_request_urls_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('todo', 'in_progress', 'needs_attention', 'done')),
+        manual_status TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE factory_issue_counter (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        next_number INTEGER NOT NULL CHECK (next_number > 0)
+      );
+      INSERT INTO factory_issue_counter (id, next_number) VALUES (1, 4);
+    `);
+    const insert = legacy.query(
+      `INSERT INTO factory_issues
+        (id, simple_id, project_id, title, description, labels_json,
+         branches_json, pull_request_urls_json, status, created_at, updated_at)
+       VALUES ($id, $simpleId, $projectId, $title, '', '[]', '[]', '[]',
+         $status, $createdAt, $createdAt)`,
+    );
+    insert.run({
+      $createdAt: "2026-10-16T10:02:00.000Z",
+      $id: "legacy-later",
+      $projectId: projectId,
+      $simpleId: "F-2",
+      $status: "todo",
+      $title: "Later",
+    });
+    insert.run({
+      $createdAt: "2026-10-16T10:01:00.000Z",
+      $id: "legacy-progress",
+      $projectId: projectId,
+      $simpleId: "F-3",
+      $status: "in_progress",
+      $title: "Progress",
+    });
+    insert.run({
+      $createdAt: "2026-10-16T10:01:00.000Z",
+      $id: "legacy-earlier",
+      $projectId: projectId,
+      $simpleId: "F-1",
+      $status: "todo",
+      $title: "Earlier",
+    });
+    legacy.close();
+
+    const store = createIssueStore({ databasePath });
+    try {
+      expect(store.list({ projectId }).map(({ id }) => id)).toEqual([
+        "legacy-earlier",
+        "legacy-later",
+        "legacy-progress",
+      ]);
+      const appended = store.create({ projectId, title: "Appended" });
+      expect(store.list({ projectId }).map(({ id }) => id)).toEqual([
+        "legacy-earlier",
+        "legacy-later",
+        appended.id,
+        "legacy-progress",
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("persists manual order and appends issues when their status changes", () => {
+    const directory = mkdtempSync(join(tmpdir(), "factory-issues-order-"));
+    directories.push(directory);
+    const databasePath = join(directory, "factory.sqlite");
+    let store = createIssueStore({ databasePath });
+    const first = store.create({ projectId, title: "First" });
+    const second = store.create({ projectId, title: "Second" });
+    const third = store.create({ projectId, title: "Third" });
+    store.create({ projectId: "project-2", title: "Hidden project issue" });
+    try {
+      store.move({ id: third.id, status: "todo", beforeId: first.id });
+      store.move({ id: second.id, status: "in_progress" });
+      expect(store.list({ projectId }).map(({ id }) => id)).toEqual([
+        third.id,
+        first.id,
+        second.id,
+      ]);
+
+      store.close();
+      store = createIssueStore({ databasePath });
+      expect(store.list({ projectId }).map(({ id }) => id)).toEqual([
+        third.id,
+        first.id,
+        second.id,
+      ]);
+      const fourth = store.create({ projectId, title: "Fourth" });
+      expect(store.list({ projectId }).map(({ id }) => id)).toEqual([
+        third.id,
+        first.id,
+        fourth.id,
+        second.id,
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("rejects invalid move anchors without changing status or order", () => {
+    const store = makeStore();
+    try {
+      const first = store.create({ projectId, title: "First" });
+      const second = store.create({ projectId, title: "Second" });
+      const otherStatus = store.create({ projectId, title: "Other status" });
+      store.move({ id: otherStatus.id, status: "in_progress" });
+
+      expect(() =>
+        store.move({ id: first.id, status: "todo", beforeId: otherStatus.id }),
+      ).toThrow("destination status");
+      expect(store.list({ projectId }).map(({ id }) => id)).toEqual([
+        first.id,
+        second.id,
+        otherStatus.id,
+      ]);
+      expect(store.detail(first.id)?.issue.status).toBe("todo");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("keeps status and persisted order unchanged when Done evidence is incomplete", () => {
+    const store = makeStore();
+    try {
+      const first = store.create({ projectId, title: "First" });
+      const linked = store.create({
+        projectId,
+        pullRequestUrls: [prOne],
+        title: "Unmerged PR",
+      });
+      const last = store.create({ projectId, title: "Last" });
+      reconcile(store, [pullRequest(prOne, "open")]);
+      const before = store.list({ projectId }).map(({ id, status }) => ({
+        id,
+        status,
+      }));
+
+      expect(() => store.move({ id: linked.id, status: "done" })).toThrow(
+        "every Pull Request is confirmed merged",
+      );
+      expect(
+        store.list({ projectId }).map(({ id, status }) => ({ id, status })),
+      ).toEqual(before);
+      expect(before.map(({ id }) => id)).toContain(first.id);
+      expect(before.map(({ id }) => id)).toContain(last.id);
+      expect(before.find(({ id }) => id === linked.id)?.status).not.toBe(
+        "done",
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   test("starts empty, persists records, and allocates stable F simple IDs", () => {
     const directory = mkdtempSync(join(tmpdir(), "factory-issues-"));
     directories.push(directory);

@@ -10,6 +10,15 @@ labels, and zero or more GitHub pull requests. An issue contains a title and des
 labels, branch names, linked PRs, and matching T3 threads. Show the recent messages from each
 thread and allow the human to send a reply to that thread.
 
+Keep all four status groups visible, including empty groups. Drag an issue to reorder it
+within a group or move it to another status; persist the order across reloads. Filtered
+views preserve the relative order of hidden issues. Status moves retain the completion
+rules below, including the merged-PR guard.
+
+Show saved issues immediately while refreshing T3 and GitHub observations in the background.
+Remote source latency must not block the initial list. Polling displays refreshed activity
+without requiring a page reload.
+
 Match threads by project repository and branch within their configured T3 source. Associations
 persist when thread metadata changes. Multiple branches, threads, and PRs are supported.
 Thread messages stay scoped to authenticated humans; credentials never reach the browser.

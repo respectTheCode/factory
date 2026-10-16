@@ -730,6 +730,12 @@ function createRouter(
       ),
     );
   };
+  const scheduleIssueRefreshes = (projectIds: string[]): void => {
+    // Issue lists are backed by SQLite. Refresh remote T3/GitHub evidence after
+    // returning that snapshot so a slow or unavailable integration cannot hold
+    // the dashboard open.
+    void refreshIssues(projectIds).catch(() => undefined);
+  };
 
   const createSerializedMutation = (allowReviewer = false) =>
     trpc.middleware(async ({ ctx, next }) => {
@@ -1289,14 +1295,14 @@ function createRouter(
             .object({ projectId: z.string().trim().min(1).optional() })
             .optional(),
         )
-        .query(async ({ input }) => {
+        .query(({ input }) => {
           const initial = issueStore.list(input);
-          await refreshIssues(
+          scheduleIssueRefreshes(
             input?.projectId
               ? [input.projectId]
               : [...new Set(initial.map((issue) => issue.projectId))],
           );
-          return issueStore.list(input);
+          return initial;
         }),
       detail: humanProcedure()
         .input(z.object({ id: z.string().trim().min(1) }))
@@ -1429,6 +1435,31 @@ function createRouter(
               error instanceof Error
                 ? error.message
                 : "Issue could not be updated.";
+            throw new TRPCError({
+              code: message.includes("does not exist")
+                ? "NOT_FOUND"
+                : "BAD_REQUEST",
+              message,
+            });
+          }
+        }),
+      move: humanProcedure()
+        .input(
+          z.object({
+            id: z.string().trim().min(1),
+            status: z.enum(["todo", "in_progress", "needs_attention", "done"]),
+            beforeId: z.string().trim().min(1).optional(),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ input }) => {
+          try {
+            return issueStore.move(input);
+          } catch (error) {
+            const message =
+              error instanceof Error
+                ? error.message
+                : "Issue could not be moved.";
             throw new TRPCError({
               code: message.includes("does not exist")
                 ? "NOT_FOUND"
