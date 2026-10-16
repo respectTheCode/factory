@@ -219,10 +219,6 @@ describe("T3 issue messages", () => {
     for (const payload of [
       { projection: { thread: { id: "other" }, messages: [] } },
       {
-        payloadBudgetExceeded: true,
-        projection: { thread: { id: "thread-a" }, messages: [] },
-      },
-      {
         projection: { thread: { id: "thread-a" }, messages: [{ text: "bad" }] },
       },
     ]) {
@@ -256,5 +252,37 @@ describe("T3 issue messages", () => {
         requestId: "request-123",
       }),
     ).rejects.toThrow("orchestration:operate");
+  });
+
+  test("shows valid available message text with an explicit snapshot-budget warning", async () => {
+    const client = createT3Messaging({
+      baseUrl: "http://127.0.0.1:3773",
+      token: "token",
+      fetcher: async (url) =>
+        String(url).endsWith("/session")
+          ? Response.json({
+              authenticated: true,
+              permissions: ["orchestration:read", "orchestration:operate"],
+            })
+          : Response.json({
+              payloadBudgetExceeded: true,
+              projection: {
+                thread: { id: "thread-a" },
+                messages: [
+                  {
+                    id: "m1",
+                    threadId: "thread-a",
+                    role: "assistant",
+                    text: "Available recent message",
+                    createdAt: "2026-10-16T12:00:00Z",
+                  },
+                ],
+              },
+            }),
+    });
+    const result = await client.readMessages({ threadId: "thread-a" });
+    expect(result.messages[0]?.text).toBe("Available recent message");
+    expect(result.warning).toContain("limited this thread snapshot");
+    expect(result.canSend).toBe(true);
   });
 });

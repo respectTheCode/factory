@@ -1340,6 +1340,7 @@ function createRouter(
                   ...thread,
                   canSend: recent.canSend,
                   messages: recent.messages,
+                  ...(recent.warning ? { messageError: recent.warning } : {}),
                   ...(!recent.canSend
                     ? {
                         messageError:

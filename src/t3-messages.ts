@@ -12,6 +12,7 @@ export type T3Messaging = {
   readMessages(input: { threadId: string }): Promise<{
     messages: T3RecentMessage[];
     canSend: boolean;
+    warning?: string;
   }>;
   sendMessage(input: {
     threadId: string;
@@ -120,7 +121,7 @@ export function createT3Messaging(input: {
     async readMessages({ threadId }) {
       if (!threadId.trim()) throw new Error("T3 thread ID is required.");
       const result = await request(
-        `/api/orchestration/threads/${encodeURIComponent(threadId)}/bounded`,
+        `/api/orchestration/threads/${encodeURIComponent(threadId)}/bounded?compactTurnItems=1`,
         {
           headers: { "x-t3-orchestration-protocol": "2" },
         },
@@ -131,10 +132,7 @@ export function createT3Messaging(input: {
       } catch {
         throw new Error("T3 returned an invalid recent-message snapshot.");
       }
-      if (
-        parsed.payloadBudgetExceeded ||
-        parsed.projection.thread.id !== threadId
-      ) {
+      if (parsed.projection.thread.id !== threadId) {
         throw new Error(
           "T3 returned an incomplete or mismatched recent-message snapshot.",
         );
@@ -160,7 +158,16 @@ export function createT3Messaging(input: {
       } catch {
         /* Recent messages remain useful with a read-only credential. */
       }
-      return { messages, canSend };
+      return {
+        messages,
+        canSend,
+        ...(parsed.payloadBudgetExceeded
+          ? {
+              warning:
+                "T3 limited this thread snapshot. Showing the available recent messages.",
+            }
+          : {}),
+      };
     },
     async sendMessage({ threadId, text, requestId }) {
       if (
