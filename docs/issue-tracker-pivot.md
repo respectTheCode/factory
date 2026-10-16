@@ -17,7 +17,10 @@ rules below, including the merged-PR guard.
 
 Show saved issues immediately while refreshing T3 and GitHub observations in the background.
 Remote source latency must not block the initial list. Polling displays refreshed activity
-without requiring a page reload.
+without requiring a page reload. The issue dashboard and global connection indicator read
+T3 shell observations without matching threads against historical Tasks or writing legacy
+reconciliation state. Deployment environment metadata arrives in the HTML so the review
+banner does not depend on an additional request.
 
 Match threads by project repository and branch within their configured T3 source. Associations
 persist when thread metadata changes. Multiple branches, threads, and PRs are supported.

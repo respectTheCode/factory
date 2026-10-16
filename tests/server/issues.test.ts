@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 
+import { FactoryApplication } from "../../src/application";
 import type {
   GitHubPullRequestStatus,
   GitHubStatusReader,
@@ -83,6 +85,19 @@ async function withTimeout<T>(
     ]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function persistedFactoryState(databasePath: string): string {
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    const row = database
+      .query("SELECT state FROM factory_state WHERE id = 1")
+      .get() as { state: string } | null;
+    if (!row) throw new Error("Factory state snapshot was not persisted.");
+    return row.state;
+  } finally {
+    database.close();
   }
 }
 
@@ -432,6 +447,153 @@ describe("Factory issue routes", () => {
       ).toBe("in_progress");
     } finally {
       releaseActivity();
+      socket.close();
+      await server.stop();
+    }
+  });
+
+  test("issue refresh and global T3 status leave legacy observation state untouched", async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "factory-issues-lightweight-"),
+    );
+    directories.push(directory);
+    const databasePath = join(directory, "factory.sqlite");
+    const server = createFactoryServer({
+      databasePath,
+      port: 0,
+      t3ActivityReader: issueReader(),
+      operator: { name: "test-operator", secret: "test-operator-secret" },
+    });
+    const socket = await openAuthenticatedSocket(server);
+    let requestId = 1;
+    const prototype = FactoryApplication.prototype;
+    const legacyMethods = [
+      "getProjectHierarchy",
+      "getT3ThreadDetail",
+      "listProjectT3Activity",
+      "listReconciliationFindings",
+      "listSessionEvidence",
+      "matchT3Observation",
+      "refreshT3Observations",
+    ] as const;
+    const descriptors = new Map(
+      legacyMethods.map((method) => [
+        method,
+        Object.getOwnPropertyDescriptor(prototype, method),
+      ]),
+    );
+    try {
+      const project = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: {
+              gitOriginUrl: "git@github.com:acme/app.git",
+              name: "App",
+              t3ProjectId: projectIdFromT3,
+              workspaceRoot: "/work/app",
+            },
+            path: "projects.create",
+          },
+        }),
+      );
+      await request(socket, {
+        id: requestId++,
+        method: "mutation",
+        params: {
+          input: {
+            branchName: branch,
+            name: "Legacy matching Task",
+            projectId: project.id,
+          },
+          path: "tasks.create",
+        },
+      });
+      const issue = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: {
+              branches: [branch],
+              projectId: project.id,
+              title: "Issue",
+            },
+            path: "issues.create",
+          },
+        }),
+      );
+      const stateBefore = persistedFactoryState(databasePath);
+
+      for (const method of legacyMethods)
+        Object.defineProperty(prototype, method, {
+          configurable: true,
+          value() {
+            throw new Error(`Unexpected legacy T3 operation: ${method}`);
+          },
+        });
+
+      const listed = data<Array<{ id: string }>>(
+        await request(socket, {
+          id: requestId++,
+          method: "query",
+          params: { input: { projectId: project.id }, path: "issues.list" },
+        }),
+      );
+      expect(listed.map(({ id }) => id)).toContain(issue.id);
+      const detail = data<{
+        threads: Array<{
+          branch?: string;
+          current: boolean;
+          state: string;
+          threadId: string;
+        }>;
+        connections: Array<{ sourceId: string; state: string }>;
+      }>(
+        await request(socket, {
+          id: requestId++,
+          method: "query",
+          params: { input: { id: issue.id }, path: "issues.detail" },
+        }),
+      );
+      expect(detail.connections).toContainEqual(
+        expect.objectContaining({
+          sourceId: LEGACY_T3_SOURCE_ID,
+          state: "connected",
+        }),
+      );
+      expect(detail.threads).toContainEqual(
+        expect.objectContaining({
+          branch,
+          current: true,
+          state: "working",
+          threadId: "thread-issue-1",
+        }),
+      );
+      const headerStatus = data<{
+        counts: { linked: number; running: number; suggested: number };
+        status: string;
+        threadCount: number;
+      }>(
+        await request(socket, {
+          id: requestId++,
+          method: "query",
+          params: { input: {}, path: "t3.status" },
+        }),
+      );
+      expect(headerStatus).toMatchObject({
+        counts: { linked: 0, running: 1, suggested: 0 },
+        status: "ok",
+        threadCount: 1,
+      });
+      expect(persistedFactoryState(databasePath)).toBe(stateBefore);
+    } finally {
+      for (const method of legacyMethods) {
+        const descriptor = descriptors.get(method);
+        if (descriptor) Object.defineProperty(prototype, method, descriptor);
+        else Reflect.deleteProperty(prototype, method);
+      }
       socket.close();
       await server.stop();
     }

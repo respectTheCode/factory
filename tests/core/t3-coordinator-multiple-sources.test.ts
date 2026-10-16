@@ -174,6 +174,99 @@ describe("T3 coordinator multiple sources", () => {
     expect(app.getT3ThreadDetail("same", "linux").associations).toHaveLength(0);
   });
 
+  test("issue activity and global status skip legacy Task reconciliation", async () => {
+    const app = createApplication();
+    const project = app.createProject({
+      gitOriginUrl: "git@github.com:app/watchtower.git",
+      name: "Watchtower",
+    });
+    const task = app.createTask({
+      branchName: "feature/watchtower",
+      name: "Build Watchtower",
+      projectId: project.id,
+    });
+    const coordinator = createT3Coordinator({
+      application: app,
+      sources: [
+        {
+          machineId: "mac",
+          reader: reader({ sourceId: "mac", threadId: "issue-thread" }),
+          sourceId: "mac",
+        },
+      ],
+    });
+    const before = app.getTaskDetail(task.id);
+    const forbidden = [
+      "getProjectHierarchy",
+      "getT3ThreadDetail",
+      "listProjectT3Activity",
+      "listReconciliationFindings",
+      "listSessionEvidence",
+      "matchT3Observation",
+      "refreshT3Observations",
+    ] as const;
+    for (const method of forbidden)
+      Object.defineProperty(app, method, {
+        configurable: true,
+        value() {
+          throw new Error(`Unexpected legacy T3 call: ${method}`);
+        },
+      });
+
+    const activity = await coordinator.projectActivity(project.id, undefined, {
+      mode: "issues",
+    });
+    const status = await coordinator.status(undefined, undefined, {
+      skipAssociationMatching: true,
+    });
+    const health = await coordinator.connectionStatus();
+
+    expect(activity).toMatchObject({
+      status: "ok",
+      threads: [
+        {
+          association: { state: "unmatched", links: [] },
+          sourceCurrent: true,
+          sourceId: "mac",
+          threadId: "issue-thread",
+        },
+      ],
+      targets: [],
+      findings: [],
+    });
+    expect(status).toMatchObject({
+      status: "ok",
+      threadCount: 1,
+      counts: { running: 1, suggested: 0, linked: 0 },
+    });
+    expect(health).toMatchObject({
+      status: "ok",
+      threadCount: 1,
+      counts: { running: 1, suggested: 0, linked: 0 },
+    });
+    expect(app.getTaskDetail(task.id)).toEqual(before);
+
+    coordinator.replaceSources([
+      {
+        machineId: "mac",
+        reader: reader({
+          fail: true,
+          sourceId: "mac",
+          threadId: "issue-thread",
+        }),
+        sourceId: "mac",
+      },
+    ]);
+    expect(
+      await coordinator.status(undefined, undefined, {
+        skipAssociationMatching: true,
+      }),
+    ).toMatchObject({ status: "unreachable" });
+    expect(await coordinator.connectionStatus()).toMatchObject({
+      status: "unreachable",
+    });
+  });
+
   test("returns healthy source observations while preserving a failed source last success", async () => {
     const app = createApplication();
     const project = app.createProject({

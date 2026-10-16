@@ -231,6 +231,13 @@ function isDeploymentEnvironment(
   return value === "pilot" || value === "production" || value === "development";
 }
 
+function deploymentEnvironmentFromDocument(): DeploymentEnvironment {
+  const value = document.querySelector<HTMLMetaElement>(
+    'meta[name="factory-environment"]',
+  )?.content;
+  return isDeploymentEnvironment(value) ? value : "development";
+}
+
 function PilotBanner({
   environment,
 }: {
@@ -442,8 +449,7 @@ function unavailableObservedActivity(
 function Dashboard() {
   const agentTokenHandoff = useAgentTokenHandoff();
   const [connection] = useState(() => new ConnectionState());
-  const [deploymentEnvironment, setDeploymentEnvironment] =
-    useState<DeploymentEnvironment | null>(null);
+  const [deploymentEnvironment] = useState(deploymentEnvironmentFromDocument);
   const [snapshot, setSnapshot] = useState<ConnectionSnapshot>(
     connection.snapshot(),
   );
@@ -565,25 +571,6 @@ function Dashboard() {
         ? PILOT_DOCUMENT_TITLE
         : DEFAULT_DOCUMENT_TITLE;
   }, [deploymentEnvironment]);
-
-  useEffect(() => {
-    let active = true;
-    void fetch("/deployment.json", {
-      cache: "no-store",
-      credentials: "omit",
-    })
-      .then(async (response) => {
-        if (!response.ok) return;
-        const result = (await response.json()) as { environment?: unknown };
-        if (active && isDeploymentEnvironment(result.environment)) {
-          setDeploymentEnvironment(result.environment);
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, []);
 
   const refreshFloor = async (
     client: TRPCClient,

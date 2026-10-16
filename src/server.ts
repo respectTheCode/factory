@@ -614,8 +614,13 @@ function createRouter(
     issueRefreshes.set(projectId, state);
     state.inFlight = (async () => {
       try {
-        const activity =
-          await sourceAwareCoordinator.projectActivity(projectId);
+        const activity = await sourceAwareCoordinator.projectActivity(
+          projectId,
+          undefined,
+          {
+            mode: "issues",
+          },
+        );
         state.activity = activity;
         const freshSourceIds = activity.sources
           .filter(
@@ -1972,7 +1977,9 @@ function createRouter(
           const sourceId = resolveSourceForContext(ctx, input?.sourceId, {
             requireMachineSource: true,
           });
-          return sourceAwareCoordinator.status(input?.projectId, sourceId);
+          return sourceAwareCoordinator.status(input?.projectId, sourceId, {
+            skipAssociationMatching: input?.projectId === undefined,
+          });
         }),
       projectActivity: scopedProcedure(fieldProjectId("projectId"))
         .input(
@@ -3679,6 +3686,7 @@ export function createFactoryServer({
     hostname,
     port,
     async fetch(request, bunServer) {
+      const requestStartedAt = performance.now();
       const url = new URL(request.url);
 
       if (
@@ -3835,7 +3843,22 @@ export function createFactoryServer({
 
       const staticFile = getStaticFile(url.pathname);
       if (staticFile) {
-        const response = new Response(Bun.file(staticFile));
+        const isShellDocument = staticFile.endsWith("/web/index.html");
+        const shellReadStartedAt = performance.now();
+        const body = isShellDocument
+          ? (await Bun.file(staticFile).text()).replace(
+              /(<meta name="factory-environment" content=")[^"]*(" \/>)/,
+              `$1${factoryEnvironment}$2`,
+            )
+          : Bun.file(staticFile);
+        const response = new Response(body);
+        if (isShellDocument) {
+          response.headers.set("Content-Type", "text/html; charset=utf-8");
+          response.headers.set(
+            "Server-Timing",
+            `factory-handler;dur=${(performance.now() - requestStartedAt).toFixed(1)}, shell-read;dur=${(performance.now() - shellReadStartedAt).toFixed(1)}`,
+          );
+        }
         response.headers.set("Cache-Control", "no-cache");
         return response;
       }

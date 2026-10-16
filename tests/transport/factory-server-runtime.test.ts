@@ -224,6 +224,42 @@ describe("Factory server runtime", () => {
     }
   });
 
+  test("renders safe environment metadata on every application shell route", async () => {
+    for (const environment of ["development", "pilot", "production"] as const) {
+      const server = createFactoryServer({
+        databasePath: ":memory:",
+        environment,
+        port: 0,
+        requireExistingDatabase: false,
+      });
+
+      try {
+        for (const pathname of [
+          "/",
+          "/projects/project-1",
+          "/backups",
+          "/connections",
+        ]) {
+          const response = await fetch(new URL(pathname, server.url));
+          const html = await response.text();
+
+          expect(response.status).toBe(200);
+          expect(response.headers.get("cache-control")).toBe("no-cache");
+          expect(response.headers.get("content-type")).toContain("text/html");
+          expect(html).toContain(
+            `<meta name="factory-environment" content="${environment}" />`,
+          );
+          expect(html).not.toContain("__FACTORY_ENVIRONMENT__");
+          expect(response.headers.get("server-timing")).toMatch(
+            /factory-handler;dur=\d+(\.\d+)?, shell-read;dur=\d+(\.\d+)?/,
+          );
+        }
+      } finally {
+        await server.stop();
+      }
+    }
+  });
+
   test("closes application persistence across a restart", () => {
     const directory = temporaryDirectory("factory-server-restart-");
     const databasePath = join(directory, "factory.sqlite");

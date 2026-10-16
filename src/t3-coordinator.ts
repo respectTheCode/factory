@@ -790,6 +790,47 @@ function activityWithBackgroundLiveness(
   };
 }
 
+function issueActivityView(
+  project: FactoryProject,
+  source: Pick<T3CoordinatorSource, "sourceId" | "machineId" | "label">,
+  status: T3RouteStatus,
+  connection: T3ObservedConnection,
+  error?: string,
+  threads: T3ObservedThread[] = [],
+): T3ObservedActivity {
+  const counts = emptyCounts();
+  for (const thread of threads) {
+    if (threadIsRunning(thread)) counts.running += 1;
+    if (threadNeedsAttention(thread)) counts.needsAttention += 1;
+  }
+  const sourceView: T3ObservedActivitySource = {
+    connection,
+    counts,
+    ...(error === undefined ? {} : { error }),
+    findings: [],
+    ...(source.label === undefined ? {} : { label: source.label }),
+    machineId: source.machineId,
+    projectName: project.name,
+    sourceId: normalizeT3SourceId(source.sourceId),
+    status,
+    targets: [],
+    threads,
+  };
+  return {
+    connection,
+    counts,
+    ...(error === undefined ? {} : { error }),
+    findings: [],
+    machineId: source.machineId,
+    projectName: project.name,
+    sourceId: normalizeT3SourceId(source.sourceId),
+    sources: [sourceView],
+    status,
+    targets: [],
+    threads,
+  };
+}
+
 function failureConnection(
   result: {
     status: T3TransportState;
@@ -1284,19 +1325,22 @@ export function createT3Coordinator(input: {
   const makeStatusForSource = async (
     source: SourceRuntime,
     selected?: FactoryProject,
+    includeAssociationMatching = true,
   ): Promise<T3StatusSource> => {
     const shell = await readShellSafely(source.reader);
     if (!sourceIsCurrent(source)) return statusForSourceChanged(source);
     if (isT3Failure(shell)) {
       const connection = failureConnection(shell, source);
-      const observedLastSuccessful = (selected ? [selected] : projects())
-        .flatMap((project) =>
-          listProjectActivity(application, project.id, source.sourceId),
-        )
-        .map((item) => item.observation.observedAt.getTime())
-        .filter((value) => Number.isFinite(value))
-        .sort((left, right) => right - left)
-        .at(0);
+      const observedLastSuccessful = includeAssociationMatching
+        ? (selected ? [selected] : projects())
+            .flatMap((project) =>
+              listProjectActivity(application, project.id, source.sourceId),
+            )
+            .map((item) => item.observation.observedAt.getTime())
+            .filter((value) => Number.isFinite(value))
+            .sort((left, right) => right - left)
+            .at(0)
+        : undefined;
       const lastSuccessfulFetchAt =
         source.lastSuccessfulFetchAt ??
         (source.suppressPersistedLastSuccess ||
@@ -1376,6 +1420,7 @@ export function createT3Coordinator(input: {
           else counts.unmatched += 1;
           continue;
         }
+        if (!includeAssociationMatching) continue;
         const currentObservation = mapT3ThreadObservation({
           machineId: source.machineId,
           observedAt: shell.fetchedAt,
@@ -1538,6 +1583,156 @@ export function createT3Coordinator(input: {
       ),
       shell.threads.filter((thread) => thread.projectId === t3Project.id),
     );
+  };
+
+  const makeIssueActivityForSource = async (
+    source: SourceRuntime,
+    project: FactoryProject,
+  ): Promise<T3ObservedActivity> => {
+    const shell = await readShellSafely(source.reader);
+    if (!sourceIsCurrent(source)) return activityForSourceChanged(source);
+    if (isT3Failure(shell)) {
+      const connection = failureConnection(shell, source);
+      if (source.lastSuccessfulFetchAt !== undefined)
+        connection.lastSuccessfulFetchAt = source.lastSuccessfulFetchAt;
+      return issueActivityView(
+        project,
+        source,
+        shell.status,
+        connection,
+        shell.error,
+      );
+    }
+
+    source.lastSuccessfulFetchAt = shell.fetchedAt;
+    const factoryProjects = projects();
+    const resolution = shellProjectResolution(
+      shell,
+      project,
+      factoryProjects,
+      source.sourceId,
+    );
+    if (resolution.status !== "matched") {
+      return issueActivityView(
+        project,
+        source,
+        resolution.status,
+        {
+          ...successConnection(shell.fetchedAt, source),
+          error: resolution.explanation,
+        },
+        resolution.explanation,
+      );
+    }
+
+    const t3Project = shell.projects.find((candidate) => {
+      const candidateResolution = resolveT3Project(
+        candidate,
+        factoryProjects,
+        source.sourceId,
+      );
+      return (
+        candidateResolution.status === "matched" &&
+        candidateResolution.project.id === project.id
+      );
+    });
+    if (!t3Project) {
+      const explanation =
+        "The selected Factory Project has no matching T3 Project in the current shell.";
+      return issueActivityView(
+        project,
+        source,
+        "unmatched",
+        { ...successConnection(shell.fetchedAt, source), error: explanation },
+        explanation,
+      );
+    }
+
+    const threads = shell.threads
+      .filter((thread) => thread.projectId === t3Project.id)
+      .map((thread): T3ObservedThread => {
+        const latestSessionState = sessionState(thread.session);
+        const latestTurnState = thread.latestTurn?.state;
+        return {
+          ...(thread.branch === undefined ? {} : { branch: thread.branch }),
+          ...(thread.backgroundLiveness === undefined
+            ? {}
+            : { backgroundLiveness: thread.backgroundLiveness }),
+          ...(thread.linkedPullRequestUrl === undefined
+            ? {}
+            : { linkedPullRequestUrl: thread.linkedPullRequestUrl }),
+          ...(latestSessionState === undefined ? {} : { latestSessionState }),
+          ...(latestTurnState === undefined ? {} : { latestTurnState }),
+          ...(thread.latestTurn?.completedAt === undefined
+            ? {}
+            : { latestTurnCompletedAt: thread.latestTurn.completedAt }),
+          ...(thread.session?.providerName === undefined
+            ? {}
+            : { agent: thread.session.providerName }),
+          ...(thread.worktreePath === undefined
+            ? {}
+            : { worktreePath: thread.worktreePath }),
+          association: { links: [], state: "unmatched" },
+          externalProjectId: t3Project.id,
+          hasPendingApprovals: thread.hasPendingApprovals,
+          hasPendingUserInput: thread.hasPendingUserInput,
+          observedAt: shell.fetchedAt,
+          provider: "t3",
+          sourceCurrent: true,
+          sourceId: source.sourceId,
+          machineId: source.machineId,
+          sourceSequence: shell.sourceSequence,
+          sourceUpdatedAt: thread.updatedAt,
+          threadId: thread.id,
+          title: thread.title,
+        };
+      });
+    if (!sourceIsCurrent(source)) return activityForSourceChanged(source);
+    return issueActivityView(
+      project,
+      source,
+      "ok",
+      successConnection(shell.fetchedAt, source),
+      undefined,
+      threads,
+    );
+  };
+
+  const aggregateIssueActivity = (
+    project: FactoryProject,
+    perSource: T3ObservedActivity[],
+  ): T3ObservedActivity => {
+    const sourceViews = perSource.flatMap((activity) => activity.sources);
+    const healthy = perSource.filter((activity) => activity.status === "ok");
+    const first = perSource[0];
+    if (!first) throw new Error("T3 coordinator has no source activity.");
+    const aggregateStatus: T3RouteStatus = healthy.length
+      ? "ok"
+      : perSource.some((activity) => activity.status === "ambiguous")
+        ? "ambiguous"
+        : perSource.some((activity) => activity.status === "unmatched")
+          ? "unmatched"
+          : first.status;
+    const counts = emptyCounts();
+    for (const activity of perSource)
+      for (const key of Object.keys(counts) as Array<keyof typeof counts>)
+        counts[key] += activity.counts[key];
+    const errors = perSource
+      .map((activity) => activity.error)
+      .filter((error): error is string => error !== undefined);
+    return {
+      connection: healthy[0]?.connection ?? first.connection,
+      counts,
+      ...(errors.length ? { error: errors.join("; ") } : {}),
+      findings: [],
+      machineId: sources.length === 1 ? sources[0]!.machineId : "aggregate",
+      projectName: project.name,
+      sourceId: sources.length === 1 ? sources[0]!.sourceId : "aggregate",
+      sources: sourceViews,
+      status: aggregateStatus,
+      targets: [],
+      threads: perSource.flatMap((activity) => activity.threads),
+    };
   };
 
   const aggregateActivity = (
@@ -1708,12 +1903,15 @@ export function createT3Coordinator(input: {
     },
 
     async connectionStatus(sourceId?: string): Promise<T3StatusResult> {
-      return this.status(undefined, sourceId);
+      return this.status(undefined, sourceId, {
+        skipAssociationMatching: true,
+      });
     },
 
     async status(
       projectId?: string,
       sourceId?: string,
+      options?: { skipAssociationMatching?: boolean },
     ): Promise<T3StatusResult> {
       const selected =
         projectId === undefined ? undefined : requireProject(projectId);
@@ -1721,7 +1919,11 @@ export function createT3Coordinator(input: {
         sourceId === undefined ? undefined : sourceForSingle(sourceId);
       const results = await Promise.all(
         (scoped ? [scoped] : sources).map((source) =>
-          makeStatusForSource(source, selected),
+          makeStatusForSource(
+            source,
+            selected,
+            options?.skipAssociationMatching !== true,
+          ),
         ),
       );
       const first = results[0]!;
@@ -1778,13 +1980,16 @@ export function createT3Coordinator(input: {
     async projectActivity(
       projectId: string,
       sourceId?: string,
+      options?: { mode?: "legacy" | "issues" },
     ): Promise<T3ObservedActivity> {
       const project = requireProject(projectId);
       const scoped =
         sourceId === undefined ? undefined : sourceForSingle(sourceId);
       const perSource = await Promise.all(
         (scoped ? [scoped] : sources).map((source) =>
-          makeActivityForSource(source, project),
+          options?.mode === "issues"
+            ? makeIssueActivityForSource(source, project)
+            : makeActivityForSource(source, project),
         ),
       );
       if (scoped) {
@@ -1792,7 +1997,9 @@ export function createT3Coordinator(input: {
         if (!activity) throw new Error("T3 source activity was not returned.");
         return activity;
       }
-      return aggregateActivity(project, perSource);
+      return options?.mode === "issues"
+        ? aggregateIssueActivity(project, perSource)
+        : aggregateActivity(project, perSource);
     },
 
     async threadDetail(
