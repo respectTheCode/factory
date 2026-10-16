@@ -106,7 +106,7 @@ export type TaskHistoryRow = {
   text: string;
 };
 
-type HistoryPage = {
+export type HistoryPage = {
   items: TaskHistoryRow[];
   totalCount: number;
   nextCursor?: string;
@@ -157,6 +157,47 @@ function shortTime(value: Date | string | undefined): string | undefined {
     hour12: false,
     minute: "2-digit",
   });
+}
+
+export function TaskHistoryEntries({
+  history,
+  expanded,
+  loading,
+  onToggle,
+}: {
+  history: HistoryPage;
+  expanded: boolean;
+  loading: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <>
+      <ol className="simple-task-history">
+        {(expanded ? history.items : history.items.slice(0, 3)).map((item) => (
+          <li key={item.id}>
+            <time>{shortTime(item.at) ?? "Time unavailable"}</time>
+            <span>{item.text}</span>
+          </li>
+        ))}
+      </ol>
+      {history.totalCount > 3 && (
+        <button
+          className="simple-task-link"
+          disabled={loading}
+          onClick={onToggle}
+          type="button"
+        >
+          {loading
+            ? "Loading…"
+            : expanded
+              ? history.nextCursor
+                ? "Show more history"
+                : "Show less"
+              : `Show all ${history.totalCount}`}
+        </button>
+      )}
+    </>
+  );
 }
 
 function pullRequestLabel(url: string): string {
@@ -1006,39 +1047,17 @@ export function SimpleTaskDetail({
               {historyError}
             </p>
           ) : history?.items.length ? (
-            <ol className="simple-task-history">
-              {(historyExpanded
-                ? history.items
-                : history.items.slice(0, 3)
-              ).map((item) => (
-                <li key={item.id}>
-                  <time>{shortTime(item.at) ?? "Time unavailable"}</time>
-                  <span>{item.text}</span>
-                </li>
-              ))}
-            </ol>
+            <TaskHistoryEntries
+              expanded={historyExpanded}
+              history={history}
+              loading={historyLoading}
+              onToggle={() => void loadFullHistory()}
+            />
           ) : (
             <p className="simple-task-note">
               No task history has been recorded.
             </p>
           )}
-          {(history?.totalCount ?? 0) > 3 &&
-            (history?.nextCursor || historyExpanded) && (
-              <button
-                className="simple-task-link"
-                disabled={historyLoading}
-                onClick={() => void loadFullHistory()}
-                type="button"
-              >
-                {historyLoading
-                  ? "Loading…"
-                  : historyExpanded
-                    ? history?.nextCursor
-                      ? "Show more history"
-                      : "Show less"
-                    : `Show all ${history?.totalCount}`}
-              </button>
-            )}
         </section>
 
         <details className="simple-task-evidence">

@@ -63,6 +63,39 @@ function queueTime(item: FloorAction): number {
   return Number.isFinite(time) ? time : Number.POSITIVE_INFINITY;
 }
 
+export function normalizeHomeRequests(
+  requests: readonly FloorAction[],
+): FloorAction[] {
+  return Array.from(
+    new Map(requests.map((item) => [item.id, item])).values(),
+  ).sort(
+    (left, right) =>
+      queueTime(left) - queueTime(right) || left.id.localeCompare(right.id),
+  );
+}
+
+export function homeRequestsForTask(
+  projectId: string,
+  taskId: string,
+  subtaskIds: readonly string[],
+  queue: readonly FloorAction[],
+): FloorAction[] {
+  const subtaskIdSet = new Set(subtaskIds);
+  return normalizeHomeRequests(queue).filter((item) => {
+    const directTarget =
+      item.projectId === projectId &&
+      (item.taskId === taskId ||
+        Boolean(item.subtaskId && subtaskIdSet.has(item.subtaskId)));
+    const relatedTarget = item.relatedTargets?.some(
+      (target) =>
+        target.projectId === projectId &&
+        (target.taskId === taskId ||
+          Boolean(target.subtaskId && subtaskIdSet.has(target.subtaskId))),
+    );
+    return directTarget || relatedTarget;
+  });
+}
+
 export function homeTimeOf(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const date = new Date(value);
@@ -193,10 +226,7 @@ function makeTaskRow(
   taskId: string,
   requests: FloorAction[],
 ): HomeRow {
-  const ordered = [...requests].sort(
-    (left, right) =>
-      queueTime(left) - queueTime(right) || left.id.localeCompare(right.id),
-  );
+  const ordered = normalizeHomeRequests(requests);
   const first = ordered[0];
   return {
     id: `task:${project.id}:${taskId}`,
@@ -237,9 +267,7 @@ export function buildHomeGroups(
     }
   }
 
-  const dedupedQueue = Array.from(
-    new Map(queue.map((item) => [item.id, item])).values(),
-  );
+  const dedupedQueue = normalizeHomeRequests(queue);
   const requestsByTask = new Map<string, FloorAction[]>();
   const unlinkedRequests: FloorAction[] = [];
   for (const item of dedupedQueue) {

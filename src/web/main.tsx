@@ -53,7 +53,7 @@ import {
   taskView,
   type DashboardView,
 } from "./navigation";
-import { homeFreshness } from "./home-model";
+import { homeFreshness, homeRequestsForTask } from "./home-model";
 import {
   filterArchivedTasks,
   groupSubtasksByStatus,
@@ -1895,29 +1895,12 @@ function Dashboard() {
         )
     : undefined;
   const taskPageRequests = taskPageRecord
-    ? (floorSnapshot?.yourTurn.items ?? []).filter((item) => {
-        const directTarget =
-          item.projectId === taskPageRecord.projectId &&
-          (item.taskId === taskPageRecord.id ||
-            Boolean(
-              item.subtaskId &&
-              taskPageRecord.subtasks.some(
-                (step) => step.id === item.subtaskId,
-              ),
-            ));
-        const relatedTarget = item.relatedTargets?.some(
-          (target) =>
-            target.projectId === taskPageRecord.projectId &&
-            (target.taskId === taskPageRecord.id ||
-              Boolean(
-                target.subtaskId &&
-                taskPageRecord.subtasks.some(
-                  (step) => step.id === target.subtaskId,
-                ),
-              )),
-        );
-        return directTarget || relatedTarget;
-      })
+    ? homeRequestsForTask(
+        taskPageRecord.projectId,
+        taskPageRecord.id,
+        taskPageRecord.subtasks.map((step) => step.id),
+        floorSnapshot?.yourTurn.items ?? [],
+      )
     : [];
   const taskPageSimpleTask = taskPageRecord
     ? {

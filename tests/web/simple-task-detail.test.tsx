@@ -4,7 +4,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { FloorAction, FloorTaskCard } from "../../src/web/floor";
 import { homeTaskSentence } from "../../src/web/home-model";
-import { SimpleTaskDetail } from "../../src/web/simple-task-detail";
+import {
+  SimpleTaskDetail,
+  TaskHistoryEntries,
+} from "../../src/web/simple-task-detail";
 
 type Props = ComponentProps<typeof SimpleTaskDetail>;
 
@@ -500,5 +503,39 @@ describe("SimpleTaskDetail", () => {
     );
     expect(html).toContain("The rollout remains observable.");
     expect(html).toContain("Requirements in Linear, Rollout observability");
+  });
+
+  test("shows a local expansion control when four history rows fit on one page", () => {
+    const history = {
+      items: [1, 2, 3, 4].map((number) => ({
+        id: `event-${number}`,
+        actor: "Codex",
+        at: `2026-10-15T10:0${number}:00Z`,
+        text: `Event ${number}`,
+      })),
+      totalCount: 4,
+    };
+    const collapsed = renderToStaticMarkup(
+      createElement(TaskHistoryEntries, {
+        history,
+        expanded: false,
+        loading: false,
+        onToggle: () => {},
+      }),
+    );
+    const expanded = renderToStaticMarkup(
+      createElement(TaskHistoryEntries, {
+        history,
+        expanded: true,
+        loading: false,
+        onToggle: () => {},
+      }),
+    );
+
+    expect(collapsed.match(/<li>/g)).toHaveLength(3);
+    expect(collapsed).toContain("Show all 4");
+    expect(expanded.match(/<li>/g)).toHaveLength(4);
+    expect(expanded).toContain("Event 4");
+    expect(expanded).toContain("Show less");
   });
 });

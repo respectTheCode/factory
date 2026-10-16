@@ -60,3 +60,9 @@ Shared-chrome handoff: T-116 finished report `005e7509-ef18-4f14-9f95-a7202642ce
 ## Merge preparation
 
 On 2026-10-16, the user approved the preview and requested merge. The branch matches the current `origin/main` base (`66fc895`), and final local validation passes: all 664 tests / 3,200 assertions across 152 files, `bun run build` (typecheck and web bundle), `bun run format`, skill reference links and `git diff --check`. The repository currently has no GitHub Actions workflows, rulesets or branch protection configured; remote checks and automatic review must be reported separately from these local results.
+
+### Final code review corrections
+
+The pre-merge code review found two behavioral gaps: four-to-six-event history pages hid their extra events, and task detail filtered raw requests without Home's ordering and deduplication. Both are fixed. Home and task detail share request normalization, and a controlled history view exposes local expansion for every page with more than three events.
+
+Final checks after these fixes: all 666 tests / 3,206 assertions across 152 files pass, along with build/typecheck, repository formatting and diff checks. An isolated four-event browser fixture at port 3020 showed three collapsed rows, four after Show all 4, and three again after Show less. The added tests cover that single-page rendering and reversed/duplicate requests. No production records were used.

@@ -8,7 +8,11 @@ import type {
   FloorTaskCard,
 } from "../../src/floor";
 import { normalizeFloorSnapshot } from "../../src/web/floor";
-import { buildHomeGroups, homeTaskSentence } from "../../src/web/home-model";
+import {
+  buildHomeGroups,
+  homeRequestsForTask,
+  homeTaskSentence,
+} from "../../src/web/home-model";
 
 const finish = {
   kind: "agent_report",
@@ -288,6 +292,45 @@ describe("buildHomeGroups", () => {
     expect(
       groups.inProgress.filter((row) => row.taskId === "duplicate-task"),
     ).toHaveLength(1);
+  });
+
+  test("uses the Home request order and deduplication on a task page", () => {
+    const normalized = normalizeFloorSnapshot(
+      serverSnapshot(
+        [],
+        [
+          workRequest(
+            "newer-review",
+            target("project-a", "task-a"),
+            "2026-10-15T11:00:00Z",
+            "review",
+          ),
+          workRequest(
+            "older-check",
+            target("project-a", "task-a"),
+            "2026-10-15T09:00:00Z",
+          ),
+          workRequest(
+            "newer-review",
+            target("project-a", "task-a"),
+            "2026-10-15T11:00:00Z",
+            "review",
+          ),
+        ],
+      ),
+    );
+
+    const requests = homeRequestsForTask(
+      "project-a",
+      "task-a",
+      [],
+      normalized.yourTurn.items,
+    );
+
+    expect(requests.map((request) => request.id)).toEqual([
+      "older-check",
+      "newer-review",
+    ]);
   });
 
   test("shows an overlapping recently-done task only once, in Done today", () => {
