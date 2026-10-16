@@ -2,13 +2,16 @@ import { createHash } from "node:crypto";
 
 import { parseGitHubPullRequestUrl } from "./github";
 import { parseT3V2ShellPayload, parseT3V2ThreadPayload } from "./t3-v2";
+import { createT3Messaging, type T3Messaging } from "./t3-messages";
 
 /**
- * The T3 transport deliberately exposes a narrow read seam.  Callers cannot
- * turn this reader into a general T3 proxy, and the implementation owns all
- * authentication, bounds, version checks, and source-shape normalization.
+ * The T3 transport exposes bounded activity reads plus an optional, narrow
+ * recent-message/reply seam. It never exposes a general T3 proxy; the implementation
+ * owns authentication, bounds, version checks, and source-shape normalization.
  */
 export type T3ActivityReader = {
+  readMessages?: T3Messaging["readMessages"];
+  sendMessage?: T3Messaging["sendMessage"];
   readShell: () => Promise<T3ShellObservation>;
   readThread: (input: {
     threadId: string;
@@ -1108,6 +1111,13 @@ export function createT3ActivityReader({
   };
 
   return {
+    ...createT3Messaging({
+      baseUrl: configurationError ? undefined : normalizedBaseUrl,
+      token: configuredToken,
+      fetcher,
+      timeoutMs,
+      maxResponseBytes,
+    }),
     async readShell() {
       const time = fetchedAt(now);
       const descriptor = await readDescriptor();

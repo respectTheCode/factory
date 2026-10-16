@@ -12,7 +12,6 @@ import { requiredPullRequestSummary, taskPRWaitingCopy } from "./workflow-pr";
 import type { RequiredPullRequest } from "./workflow-panel";
 import { TaskProvenance } from "./workflow-panel";
 import type { DashboardSnapshot as ApplicationDashboardSnapshot } from "../application";
-import type { FloorSnapshot as ServerFloorSnapshot } from "../floor";
 import type { FactoryRouter } from "../server";
 import type { GitHubStatusSnapshot } from "../github";
 import type {
@@ -28,7 +27,8 @@ import {
   AgentTokenProvider,
   useAgentTokenHandoff,
 } from "./agent-token-handoff";
-import { Floor, normalizeFloorSnapshot, type FloorTarget } from "./floor";
+import { normalizeFloorSnapshot, type FloorTarget } from "./floor";
+import { IssuesPage } from "./issues";
 import {
   formatHistoryReportAttribution,
   historyThreadsForTarget,
@@ -92,7 +92,6 @@ type Wire<T> = T extends Date
 type DashboardSnapshot = Wire<ApplicationDashboardSnapshot>;
 type ProjectSummary = { id: string; name: string };
 type FloorViewSnapshot = ReturnType<typeof normalizeFloorSnapshot>;
-type FloorConnections = ServerFloorSnapshot["connections"];
 type WorkCounts = {
   backlog: number;
   planned: number;
@@ -218,22 +217,6 @@ function isLiveWorkState(state: WorkStatus): state is LiveWorkState {
   return (liveWorkStatusOrder as readonly string[]).includes(state);
 }
 
-function summarizeFloorConnections(
-  connections: FloorConnections | undefined,
-): ReturnType<typeof summarizeT3Connections> {
-  if (!connections) return { state: "unknown" };
-  const configured = connections.filter(
-    (connection) => connection.state !== "not_configured",
-  );
-  return {
-    connected: configured.filter(
-      (connection) => connection.state === "connected",
-    ).length,
-    state: "ready",
-    total: configured.length,
-  };
-}
-
 type TRPCClient = ReturnType<typeof createTRPCProxyClient<FactoryRouter>>;
 
 type DeploymentEnvironment = "pilot" | "production" | "development";
@@ -261,7 +244,7 @@ function PilotBanner({
       data-deployment-environment="pilot"
       role="status"
     >
-      PILOT — isolated test data
+      Review environment — isolated data
     </aside>
   );
 }
@@ -467,16 +450,6 @@ function Dashboard() {
   const [view, setView] = useState<DashboardView>(() =>
     dashboardViewFromPath(window.location.pathname),
   );
-  const [taskName, setTaskName] = useState("");
-  const [taskBranchName, setTaskBranchName] = useState("");
-  const [taskObjective, setTaskObjective] = useState("");
-  const [taskAcceptanceCriteria, setTaskAcceptanceCriteria] = useState("");
-  const [taskPriority, setTaskPriority] = useState<
-    "low" | "medium" | "high" | "urgent"
-  >("medium");
-  const [taskOwner, setTaskOwner] = useState("");
-  const [taskDependencies, setTaskDependencies] = useState("");
-  const [taskRepositoryLinks, setTaskRepositoryLinks] = useState("");
   const [subtaskNames, setSubtaskNames] = useState<Record<string, string>>({});
   const [subtaskDescriptions, setSubtaskDescriptions] = useState<
     Record<string, string>
@@ -492,12 +465,6 @@ function Dashboard() {
       }
     >
   >({});
-  const [projectTrackerInput, setProjectTrackerInput] = useState({
-    system: "linear" as "linear" | "notion",
-    stableId: "",
-    title: "",
-    url: "",
-  });
   const [projectGitOriginInput, setProjectGitOriginInput] = useState("");
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [floorSnapshot, setFloorSnapshot] = useState<ReturnType<
@@ -529,9 +496,6 @@ function Dashboard() {
   const [t3Status, setT3Status] = useState<T3StatusResult | undefined>(
     undefined,
   );
-  const [floorConnections, setFloorConnections] = useState<
-    FloorConnections | undefined
-  >(undefined);
   const [t3Busy, setT3Busy] = useState(false);
   const [t3ThreadDetails, setT3ThreadDetails] = useState<
     Record<string, ObservedThreadDetail>
@@ -679,7 +643,6 @@ function Dashboard() {
     floorRequest.current = null;
     floorRequestPromise.current = null;
     floorSnapshotRef.current = null;
-    setFloorConnections(undefined);
     setFloorSnapshot(null);
     updateFloorAuthority(false);
     if (error !== undefined) setFloorError(error);
@@ -736,7 +699,6 @@ function Dashboard() {
           if (state.state !== "idle") {
             floorRefreshGeneration.current += 1;
             updateFloorAuthority(false);
-            setFloorConnections(undefined);
             setFloorLoading(true);
           }
         },
@@ -746,7 +708,6 @@ function Dashboard() {
           floorRefreshGeneration.current += 1;
           const next = normalizeFloorSnapshot(result);
           floorSnapshotRef.current = next;
-          setFloorConnections(result.connections);
           setFloorSnapshot(next);
           updateFloorAuthority(true);
           setFloorError(null);
@@ -758,7 +719,6 @@ function Dashboard() {
           if (!isCurrent()) return;
           floorRefreshGeneration.current += 1;
           updateFloorAuthority(false);
-          setFloorConnections(undefined);
           setFloorError(
             error instanceof Error
               ? error.message
@@ -777,7 +737,6 @@ function Dashboard() {
           if (!isCurrent()) return;
           floorRefreshGeneration.current += 1;
           updateFloorAuthority(false);
-          setFloorConnections(undefined);
           setFloorError("Floor data stream closed; reconnecting.");
           setFloorSnapshot((current) => {
             if (!current) return current;
@@ -871,7 +830,6 @@ function Dashboard() {
         setTaskStatuses({});
         setGithubStatuses({});
         setT3Activity(null);
-        setFloorConnections(undefined);
         setT3Status(undefined);
         setT3Busy(false);
         setT3ThreadDetails({});
@@ -911,28 +869,39 @@ function Dashboard() {
   }, [connection, human, sessionLoading, webSocketGeneration]);
 
   useEffect(() => {
-    if (sessionLoading || !human || snapshot.state !== "connected") return;
+    if (
+      sessionLoading ||
+      !human ||
+      view.screen === "home" ||
+      snapshot.state !== "connected"
+    )
+      return;
     const client = trpc.current;
     if (!client) return;
     stopFloorSubscription();
     updateFloorAuthority(false);
-    setFloorConnections(undefined);
     setFloorError(null);
     setFloorLoading(true);
     startFloorSubscription(client);
     return () => stopFloorSubscription({ clear: true });
-  }, [connection, human, sessionLoading, snapshot.state, webSocketGeneration]);
+  }, [
+    connection,
+    human,
+    sessionLoading,
+    snapshot.state,
+    view.screen,
+    webSocketGeneration,
+  ]);
 
   useEffect(() => {
-    if (sessionLoading || !human || view.screen === "home") return;
+    if (sessionLoading || !human || snapshot.state !== "connected") return;
     let active = true;
     const pollT3Status = () => {
-      if (!active || connection.snapshot().state !== "connected") return;
+      if (!active) return;
       const client = trpc.current;
       if (client) void refreshT3Status(client);
     };
-    // Floor owns live T3 freshness on home; keep this query for the shared
-    // header on project, connection, and backup screens where Floor is absent.
+    // Keep the shared header current from the global T3 connection status.
     pollT3Status();
     const interval = window.setInterval(
       pollT3Status,
@@ -942,11 +911,7 @@ function Dashboard() {
       active = false;
       window.clearInterval(interval);
     };
-  }, [connection, human, sessionLoading, view.screen, webSocketGeneration]);
-
-  useEffect(() => {
-    if (view.screen === "home") setT3Status(undefined);
-  }, [view.screen]);
+  }, [human, sessionLoading, snapshot.state, view.screen, webSocketGeneration]);
 
   const refreshGitHubStatuses = async (detail: ProjectDetail) => {
     const client = trpc.current;
@@ -1532,7 +1497,6 @@ function Dashboard() {
     navigateToView(homeView());
   };
 
-  const [checkTaskId, setCheckTaskId] = useState<string | null>(null);
   const openFloorTarget = (target: FloorTarget) => {
     if (target.action === "check" && target.taskId)
       setCheckTaskId(target.taskId);
@@ -1541,6 +1505,7 @@ function Dashboard() {
     openProject(target.projectId);
   };
 
+  const [checkTaskId, setCheckTaskId] = useState<string | null>(null);
   const openBackups = () => {
     stopProjectSubscription();
     navigateToView(backupsView());
@@ -1552,7 +1517,9 @@ function Dashboard() {
   };
 
   const openProjectEditor = (projectId: string) => {
+    stopProjectSubscription();
     navigateToView(editProjectView(projectId));
+    void loadProject(projectId);
   };
 
   useEffect(() => {
@@ -1603,7 +1570,10 @@ function Dashboard() {
 
   const createProject = async (name: string) => {
     const client = trpc.current;
-    if (!client || !snapshot.canMutate || busy) return;
+    if (!client || !snapshot.canMutate || busy)
+      throw new Error(
+        "Factory is not ready to create a project. Try again shortly.",
+      );
     setBusy(true);
     try {
       const result = await client.projects.create.mutate({ name });
@@ -1612,33 +1582,6 @@ function Dashboard() {
     } finally {
       setBusy(false);
     }
-  };
-
-  const createTask = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!taskName.trim() || !projectDetail || !trpc.current) return;
-    await mutateAndRefresh(async () => {
-      const result = await trpc.current!.tasks.create.mutate({
-        acceptanceCriteria: lines(taskAcceptanceCriteria),
-        branchName: taskBranchName.trim() || undefined,
-        dependencies: lines(taskDependencies),
-        name: taskName.trim(),
-        objective: taskObjective.trim() || undefined,
-        owner: taskOwner.trim() || undefined,
-        priority: taskPriority,
-        projectId: projectDetail.id,
-        repositoryLinks: lines(taskRepositoryLinks),
-      });
-      setTaskName("");
-      setTaskBranchName("");
-      setTaskObjective("");
-      setTaskAcceptanceCriteria("");
-      setTaskPriority("medium");
-      setTaskOwner("");
-      setTaskDependencies("");
-      setTaskRepositoryLinks("");
-      return result;
-    });
   };
 
   const startTaskEdit = (taskId: string) => {
@@ -1789,7 +1732,7 @@ function Dashboard() {
         <PilotBanner environment={deploymentEnvironment} />
         <header>
           <a
-            aria-label="Factory dashboard"
+            aria-label="Factory issues"
             className="brand-link"
             href="/"
             onClick={(event) => {
@@ -1819,7 +1762,7 @@ function Dashboard() {
                 openHome();
               }}
             >
-              Floor
+              Issues
             </a>
             <a
               aria-current={view.screen === "backups" ? "page" : undefined}
@@ -1875,35 +1818,21 @@ function Dashboard() {
             <ConnectionIndicator
               snapshot={snapshot}
               onOpenConnections={openConnections}
-              floorConnections={
-                view.screen === "home" ? floorConnections : undefined
-              }
-              t3Status={
-                view.screen !== "home" && snapshot.state === "connected"
-                  ? t3Status
-                  : undefined
-              }
+              t3Status={snapshot.state === "connected" ? t3Status : undefined}
             />
           </div>
         </header>
       </div>
 
-      <main className={view.screen === "home" ? "floor-main" : "app-main"}>
+      <main className="app-main">
         <AgentTokenBanner />
         {view.screen === "home" && (
-          <Floor
-            busy={busy}
-            canMutate={
-              snapshot.canMutate &&
-              snapshot.state === "connected" &&
-              floorAuthoritative
-            }
-            connected={snapshot.state === "connected"}
-            error={floorError}
-            loading={floorLoading}
+          <IssuesPage
+            canMutate={snapshot.canMutate && snapshot.state === "connected"}
+            client={trpc.current}
             onCreateProject={createProject}
-            onOpenTarget={openFloorTarget}
-            snapshot={floorSnapshot}
+            onOpenProjectSettings={openProjectEditor}
+            projects={projects ?? []}
           />
         )}
 
@@ -1918,25 +1847,23 @@ function Dashboard() {
           />
         )}
 
-        {projects &&
-          projects.length > 0 &&
-          (view.screen === "project" || view.screen === "edit_project") && (
-            <nav aria-label="Projects" className="project-tabs">
-              {projects.map((project) => (
-                <button
-                  className={
-                    project.id === view.projectId ? "selected" : "secondary"
-                  }
-                  disabled={snapshot.state !== "connected"}
-                  key={project.id}
-                  onClick={() => void openProject(project.id)}
-                  type="button"
-                >
-                  {project.name}
-                </button>
-              ))}
-            </nav>
-          )}
+        {projects && projects.length > 0 && view.screen === "project" && (
+          <nav aria-label="Projects" className="project-tabs">
+            {projects.map((project) => (
+              <button
+                className={
+                  project.id === view.projectId ? "selected" : "secondary"
+                }
+                disabled={snapshot.state !== "connected"}
+                key={project.id}
+                onClick={() => void openProject(project.id)}
+                type="button"
+              >
+                {project.name}
+              </button>
+            ))}
+          </nav>
+        )}
 
         {projectDetail &&
           view.screen === "edit_project" &&
@@ -1947,23 +1874,17 @@ function Dashboard() {
                   <p className="eyebrow">Project settings</p>
                   <h2 id="project-edit-title">Edit {projectDetail.name}</h2>
                   <p className="project-summary">
-                    Keep planning metadata and external project links together.
+                    Set the Git origin used to associate branches and pull
+                    requests with this project.
                   </p>
                 </div>
                 <div className="detail-actions">
                   <button
                     className="secondary"
-                    onClick={() => openProject(projectDetail.id)}
-                    type="button"
-                  >
-                    Back to tasks
-                  </button>
-                  <button
-                    className="secondary"
                     onClick={openHome}
                     type="button"
                   >
-                    Home
+                    Back to issues
                   </button>
                 </div>
               </div>
@@ -1993,210 +1914,6 @@ function Dashboard() {
                 <button disabled={!snapshot.canMutate || busy} type="submit">
                   Save Git URL
                 </button>
-              </form>
-
-              <form
-                className="project-link-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  if (
-                    !projectTrackerInput.stableId.trim() ||
-                    !projectTrackerInput.url.trim() ||
-                    !trpc.current
-                  )
-                    return;
-                  void mutateAndRefresh(async () => {
-                    const result = await trpc.current!.projects.link.mutate({
-                      ...projectTrackerInput,
-                      projectId: projectDetail.id,
-                      stableId: projectTrackerInput.stableId.trim(),
-                      title: projectTrackerInput.title.trim() || undefined,
-                      url: projectTrackerInput.url.trim(),
-                    });
-                    setProjectTrackerInput({
-                      system: projectTrackerInput.system,
-                      stableId: "",
-                      title: "",
-                      url: "",
-                    });
-                    return result;
-                  });
-                }}
-              >
-                <select
-                  aria-label="Project tracker system"
-                  disabled={!snapshot.canMutate || busy}
-                  onChange={(event) =>
-                    setProjectTrackerInput((current) => ({
-                      ...current,
-                      system: event.target.value as "linear" | "notion",
-                    }))
-                  }
-                  value={projectTrackerInput.system}
-                >
-                  <option value="linear">Linear project</option>
-                  <option value="notion">Notion project</option>
-                </select>
-                <input
-                  aria-label="Project tracker ID"
-                  disabled={!snapshot.canMutate || busy}
-                  onChange={(event) =>
-                    setProjectTrackerInput((current) => ({
-                      ...current,
-                      stableId: event.target.value,
-                    }))
-                  }
-                  placeholder="Project ID"
-                  value={projectTrackerInput.stableId}
-                />
-                <input
-                  aria-label="Project tracker URL"
-                  disabled={!snapshot.canMutate || busy}
-                  onChange={(event) =>
-                    setProjectTrackerInput((current) => ({
-                      ...current,
-                      url: event.target.value,
-                    }))
-                  }
-                  placeholder="https://…"
-                  value={projectTrackerInput.url}
-                />
-                <input
-                  aria-label="Project tracker title"
-                  disabled={!snapshot.canMutate || busy}
-                  onChange={(event) =>
-                    setProjectTrackerInput((current) => ({
-                      ...current,
-                      title: event.target.value,
-                    }))
-                  }
-                  placeholder="Display title (optional)"
-                  value={projectTrackerInput.title}
-                />
-                <button
-                  disabled={
-                    !snapshot.canMutate ||
-                    busy ||
-                    !projectTrackerInput.stableId.trim() ||
-                    !projectTrackerInput.url.trim()
-                  }
-                  type="submit"
-                >
-                  Link project
-                </button>
-              </form>
-
-              {projectDetail.trackerLinks.length > 0 && (
-                <div className="links" aria-label="Project tracker links">
-                  {projectDetail.trackerLinks.map((link) => (
-                    <a
-                      href={link.url}
-                      key={link.id}
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      {link.system}: {link.title ?? link.stableId}
-                    </a>
-                  ))}
-                </div>
-              )}
-
-              <form className="task-editor" onSubmit={createTask}>
-                <div>
-                  <p className="eyebrow">New task</p>
-                  <h3>Plan the next piece of work</h3>
-                </div>
-                <div className="task-create-main">
-                  <label>
-                    <span className="visually-hidden">Task name</span>
-                    <input
-                      disabled={!snapshot.canMutate || busy}
-                      onChange={(event) => setTaskName(event.target.value)}
-                      placeholder="Task name"
-                      value={taskName}
-                    />
-                  </label>
-                  <button
-                    disabled={!snapshot.canMutate || busy || !taskName.trim()}
-                    type="submit"
-                  >
-                    Add task
-                  </button>
-                </div>
-                <details className="task-planning" open>
-                  <summary>Planning metadata</summary>
-                  <div className="planning-grid">
-                    <textarea
-                      aria-label="Task objective"
-                      disabled={!snapshot.canMutate || busy}
-                      onChange={(event) => setTaskObjective(event.target.value)}
-                      placeholder="Objective"
-                      value={taskObjective}
-                    />
-                    <textarea
-                      aria-label="Acceptance criteria"
-                      disabled={!snapshot.canMutate || busy}
-                      onChange={(event) =>
-                        setTaskAcceptanceCriteria(event.target.value)
-                      }
-                      placeholder="Acceptance criteria (one per line)"
-                      value={taskAcceptanceCriteria}
-                    />
-                    <input
-                      aria-label="Task branch name"
-                      disabled={!snapshot.canMutate || busy}
-                      onChange={(event) =>
-                        setTaskBranchName(event.target.value)
-                      }
-                      placeholder="Branch name (optional)"
-                      value={taskBranchName}
-                    />
-                    <select
-                      aria-label="Task priority"
-                      disabled={!snapshot.canMutate || busy}
-                      onChange={(event) =>
-                        setTaskPriority(
-                          event.target.value as
-                            | "low"
-                            | "medium"
-                            | "high"
-                            | "urgent",
-                        )
-                      }
-                      value={taskPriority}
-                    >
-                      <option value="low">Low priority</option>
-                      <option value="medium">Medium priority</option>
-                      <option value="high">High priority</option>
-                      <option value="urgent">Urgent priority</option>
-                    </select>
-                    <input
-                      aria-label="Task owner"
-                      disabled={!snapshot.canMutate || busy}
-                      onChange={(event) => setTaskOwner(event.target.value)}
-                      placeholder="Owner"
-                      value={taskOwner}
-                    />
-                    <textarea
-                      aria-label="Task dependencies"
-                      disabled={!snapshot.canMutate || busy}
-                      onChange={(event) =>
-                        setTaskDependencies(event.target.value)
-                      }
-                      placeholder="Dependencies (one per line)"
-                      value={taskDependencies}
-                    />
-                    <textarea
-                      aria-label="Repository links"
-                      disabled={!snapshot.canMutate || busy}
-                      onChange={(event) =>
-                        setTaskRepositoryLinks(event.target.value)
-                      }
-                      placeholder="Repository links (one URL per line)"
-                      value={taskRepositoryLinks}
-                    />
-                  </div>
-                </details>
               </form>
             </section>
           )}
@@ -3405,12 +3122,10 @@ function Dashboard() {
 }
 
 function ConnectionIndicator({
-  floorConnections,
   onOpenConnections,
   snapshot,
   t3Status,
 }: {
-  floorConnections?: FloorConnections;
   onOpenConnections: () => void;
   snapshot: ConnectionSnapshot;
   t3Status: T3StatusResult | undefined;
@@ -3421,9 +3136,7 @@ function ConnectionIndicator({
     lastConnected && snapshot.state !== "connected"
       ? `last connected ${lastConnected}`
       : undefined;
-  const t3Summary = floorConnections
-    ? summarizeFloorConnections(floorConnections)
-    : summarizeT3Connections(t3Status);
+  const t3Summary = summarizeT3Connections(t3Status);
   const t3Label = t3ConnectionLabel(t3Summary);
   const t3Health =
     t3Summary.state === "unknown"

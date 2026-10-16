@@ -1,17 +1,25 @@
-# SessionStart project briefs
+# Retired: SessionStart project briefs
 
-The Factory SessionStart hook loads the project brief for the checkout where a
-Claude Code or Codex CLI session starts. It resolves the checkout's Git origin,
-workspace root, and current branch, then calls the read-only `project brief`
-command. A brief is injected only when exactly one Factory Project matches.
+> This is historical manual-compatibility documentation. Factory SessionStart hooks are
+> retired from the current agent setup: client tarballs no longer bundle the hook, and
+> `install-agent-client.sh` no longer installs or trusts it. The legacy source and manual
+> installer remain in the repository for compatibility only; do not add them to new agent
+> installations. M4 and M5 were cleaned up on 2026-10-16; see
+> [the retirement evidence](issue-tracker-retirement-evidence.md). To remove a legacy setup
+> from a Factory checkout on an agent machine, run `bash scripts/uninstall-agent-reporting.sh`.
 
-Install or update both client configurations with:
+The historical Factory SessionStart hook loads the project brief for the checkout where a
+Claude Code or Codex CLI session starts. It resolves the checkout's Git origin, workspace
+root, and current branch, then calls the read-only `project brief` command. A brief is injected
+only when exactly one Factory Project matches.
+
+Historical manual installation (not part of current agent provisioning) used:
 
 ```sh
 bun run scripts/install-session-hooks.ts
 ```
 
-The installer merges one `SessionStart` command group into the existing files;
+The manual installer merges one `SessionStart` command group into the existing files;
 it does not replace existing groups. Claude settings must already exist because
 that file is user-managed. A missing Codex `~/.codex/hooks.json` starts from an
 empty configuration. Use `--dry-run` to inspect the JSON report without writing,
@@ -30,14 +38,12 @@ Changing the Factory group changes Codex's hook hash. After reinstalling the
 hook, rerun `bun run scripts/trust-codex-session-hook.ts` so Codex trusts the
 new definition.
 
-On agent machines the hook runs the compiled `factory` binary instead of a
-checkout. It sources `~/.config/factory/env` when present, then uses
-`FACTORY_CLI` or a `factory` found on `PATH`; only when neither exists does it
-fall back to `bun run src/cli.ts` in the checkout. `scripts/install-agent-client.sh`
-installs the hook and merges both client configurations through
-`factory hooks install`, then records the Codex trust hash through
-`factory hooks trust-codex` when the Codex CLI is present. Run that trust
-command again after any change to the hook definition.
+In the historical agent setup, the hook ran the compiled `factory` binary instead of a
+checkout. It sourced `~/.config/factory/env` when present, then used `FACTORY_CLI` or a
+`factory` found on `PATH`; only when neither existed did it fall back to `bun run src/cli.ts`
+in the checkout. Current client archives do not contain the hook, and
+`scripts/install-agent-client.sh` now installs only the CLI and its connection configuration.
+Manual hook installation and Codex trust steps below are retained for compatibility only.
 
 The hook uses these environment overrides:
 
@@ -88,7 +94,7 @@ notifications, or blocks a session. It is context loading only. It is distinct
 from the reporting hooks deferred in
 [`docs/reviews/2026-09-04-tool-fixes-and-hooks.md`](reviews/2026-09-04-tool-fixes-and-hooks.md).
 
-## Trusting the Codex hook
+## Historical manual Codex hook trust
 
 Codex skips an untrusted non-managed hook. Trust is tied to the exact hook
 definition, so the hash changes whenever that definition changes, including when
@@ -104,7 +110,7 @@ interactive Codex session. `--dangerously-bypass-hook-trust` is reserved for
 one-off automation and should not replace recording trust for the installed
 hook.
 
-## Verification
+## Historical manual verification
 
 Run the script directly with a SessionStart-shaped payload. Use a tracked
 checkout for the first command and an untracked directory for the second:

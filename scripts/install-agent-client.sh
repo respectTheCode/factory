@@ -93,47 +93,16 @@ if [ ! -x "$binary_source" ]; then
 fi
 [ -x "$binary_source" ] || fail "compiled factory binary not found; set FACTORY_BINARY or use the target tarball."
 
-skill_source=${FACTORY_SKILL_SOURCE:-$script_directory/../skills/software-factory}
-hook_source=${FACTORY_HOOK_SOURCE:-$script_directory/factory-session-brief-hook.sh}
-[ -d "$skill_source" ] || fail "software-factory skill directory not found: $skill_source"
-[ -f "$hook_source" ] || fail "session hook script not found: $hook_source"
-
 config_directory="$home/.config/factory"
 token_destination="$config_directory/access-token"
 env_destination="$config_directory/env"
 installed_binary="$prefix/bin/factory"
-claude_settings="$home/.claude/settings.json"
-codex_hooks="$home/.codex/hooks.json"
-installed_hook="$config_directory/factory-session-brief-hook.sh"
-codex_binary=${CODEX_BIN:-}
-if [ -n "$codex_binary" ]; then
-  case "$codex_binary" in
-    */*) [ -x "$codex_binary" ] || codex_binary= ;;
-    *) codex_binary=$(command -v "$codex_binary" 2>/dev/null || true) ;;
-  esac
-else
-  codex_binary=$(command -v codex 2>/dev/null || true)
-fi
-if [ -n "$codex_binary" ]; then
-  codex_available=1
-else
-  codex_available=0
-fi
 
 if [ "$dry_run" -eq 1 ]; then
   echo "Would install binary: $binary_source -> $installed_binary"
   echo "Would write environment: $env_destination"
   echo "Would copy token from: $token_mode${token_file:+ ($token_file)} -> $token_destination"
   [ -n "$machine_id" ] && echo "Would record machine label: $machine_id"
-  echo "Would install skill: $skill_source -> $home/.codex/skills/software-factory/"
-  echo "Would install skill: $skill_source -> $home/.claude/skills/software-factory/"
-  echo "Would install hook: $hook_source -> $installed_hook"
-  echo "Would merge hooks: $claude_settings and $codex_hooks"
-  if [ "$codex_available" -eq 1 ]; then
-    echo "Would run: $installed_binary hooks trust-codex --json"
-  else
-    echo "Codex CLI not found; run \"$installed_binary hooks trust-codex --json\" after installing Codex."
-  fi
   echo "Would run: $installed_binary doctor"
   exit 0
 fi
@@ -149,18 +118,10 @@ fi
 umask 077
 mkdir -p \
   "$prefix/bin" \
-  "$config_directory" \
-  "$home/.claude" \
-  "$home/.codex" \
-  "$home/.codex/skills/software-factory" \
-  "$home/.claude/skills/software-factory"
+  "$config_directory"
 
 cp "$binary_source" "$installed_binary"
 chmod 755 "$installed_binary"
-cp -R "$skill_source/." "$home/.codex/skills/software-factory/"
-cp -R "$skill_source/." "$home/.claude/skills/software-factory/"
-cp "$hook_source" "$installed_hook"
-chmod 755 "$installed_hook"
 
 token_temporary=$(mktemp "$config_directory/access-token.XXXXXX") || fail "could not create token file."
 env_temporary=$(mktemp "$config_directory/env.XXXXXX") || fail "could not create environment file."
@@ -180,30 +141,6 @@ mv "$token_temporary" "$token_destination"
 } > "$env_temporary"
 chmod 600 "$env_temporary"
 mv "$env_temporary" "$env_destination"
-
-if [ ! -e "$claude_settings" ]; then
-  printf '{}\n' > "$claude_settings"
-fi
-
-FACTORY_URL=$factory_url FACTORY_ACCESS_TOKEN_FILE=$token_destination \
-  "$installed_binary" hooks install \
-    --script-path "$installed_hook" \
-    --claude-settings "$claude_settings" \
-    --codex-hooks "$codex_hooks" \
-    --json
-
-if [ "$codex_available" -eq 1 ]; then
-  set +e
-  FACTORY_URL=$factory_url FACTORY_ACCESS_TOKEN_FILE=$token_destination CODEX_BIN=$codex_binary \
-    "$installed_binary" hooks trust-codex --json
-  trust_status=$?
-  set -e
-  if [ "$trust_status" -ne 0 ]; then
-    echo "Could not trust the Codex SessionStart hook; run \"$installed_binary hooks trust-codex --json\" later." >&2
-  fi
-else
-  echo "Codex CLI not found; run \"$installed_binary hooks trust-codex --json\" after installing Codex."
-fi
 
 set +e
 FACTORY_URL=$factory_url FACTORY_ACCESS_TOKEN_FILE=$token_destination \

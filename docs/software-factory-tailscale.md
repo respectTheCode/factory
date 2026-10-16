@@ -136,10 +136,10 @@ bun run src/cli.ts credential revoke --machine-id mac-studio --json --database "
 
 On the agent machine, install the compiled client from the target tarball built by
 `bun run build:client` on the Factory host (`dist/client/factory-<os>-<arch>.tar.gz`). The
-installer needs no checkout and no Bun. It installs `~/.local/bin/factory`, writes
-`~/.config/factory/env` and the `0600` token file, installs the skill for Claude and Codex,
-merges the SessionStart hooks, trusts the Codex hook when the Codex CLI is present, and ends
-with `factory doctor`:
+installer needs no checkout and no Bun. It installs only `~/.local/bin/factory`, writes
+`~/.config/factory/env` and the `0600` token file, and ends with `factory doctor`. The tarball
+does not contain agent skills or SessionStart hooks, and installation leaves Claude and Codex
+settings alone:
 
 ```bash
 tar -xzf factory-darwin-arm64.tar.gz
@@ -147,6 +147,22 @@ sh scripts/install-agent-client.sh --url "http://<factory-lan-ip>:3000" \
   --token-file /path/to/token --machine-id mac-studio
 factory doctor
 ```
+
+### Retire an existing agent reporting setup
+
+The old `software-factory` skills and Factory SessionStart hooks are retired. M4 and M5 have
+already been cleaned up; see [the retirement evidence](issue-tracker-retirement-evidence.md).
+To remove a legacy installation on another agent machine, run the repository helper as the
+`agent` user from a Factory checkout on that machine:
+
+```bash
+bash scripts/uninstall-agent-reporting.sh
+```
+
+Before removing anything, the helper saves the removed skill trees and changed settings files
+under `~/.local/state/factory-reporting-retirement/<UTC timestamp>`. It removes only the
+`software-factory` skill copies and Factory reporting entries from SessionStart, preserving
+other hook entries and settings. Running it again is a no-op.
 
 The CLI checks `GET /version` before its first call and refuses an incompatible API. Plain
 `http://` is accepted only for loopback and private LAN addresses because the bearer token

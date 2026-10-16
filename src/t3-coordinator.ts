@@ -111,6 +111,7 @@ export type T3ObservedThread = {
   branch?: string;
   worktreePath?: string;
   linkedPullRequestUrl?: string;
+  backgroundLiveness?: "working" | "monitoring";
   latestSessionState?:
     | "idle"
     | "starting"
@@ -761,6 +762,31 @@ function activityView(
     machineId,
     sourceId,
     sources: [sourceView],
+  };
+}
+
+function activityWithBackgroundLiveness(
+  activity: T3ObservedActivity,
+  shellThreads: T3ThreadShellObservation[],
+): T3ObservedActivity {
+  const livenessByThreadId = new Map(
+    shellThreads
+      .filter((thread) => thread.backgroundLiveness !== undefined)
+      .map((thread) => [thread.id, thread.backgroundLiveness!]),
+  );
+  const withLiveness = (thread: T3ObservedThread): T3ObservedThread => {
+    const backgroundLiveness = livenessByThreadId.get(thread.threadId);
+    return backgroundLiveness === undefined
+      ? thread
+      : { ...thread, backgroundLiveness };
+  };
+  return {
+    ...activity,
+    threads: activity.threads.map(withLiveness),
+    sources: activity.sources.map((source) => ({
+      ...source,
+      threads: source.threads.map(withLiveness),
+    })),
   };
 }
 
@@ -1498,14 +1524,19 @@ export function createT3Coordinator(input: {
         },
       ],
     });
-    return activityView(
-      application,
-      project,
-      successConnection(shell.fetchedAt, source),
-      "ok",
-      undefined,
-      new Set(observations.map((observation) => observation.externalThreadId)),
-      source,
+    return activityWithBackgroundLiveness(
+      activityView(
+        application,
+        project,
+        successConnection(shell.fetchedAt, source),
+        "ok",
+        undefined,
+        new Set(
+          observations.map((observation) => observation.externalThreadId),
+        ),
+        source,
+      ),
+      shell.threads.filter((thread) => thread.projectId === t3Project.id),
     );
   };
 

@@ -1,6 +1,14 @@
 # Factory agent guidance
 
-Factory's work records own execution scope, reports, and human verification. Linked Linear or Notion items remain the source for product requirements and decisions; reconcile conflicting scope rather than silently overriding it. Use `skills/software-factory/SKILL.md` for the reporting loop; read its CLI reference only for the operation needed. Preserve unrelated checkout changes and use the CLI for Factory metadata rather than direct database edits.
+Factory is pivoting to a Factory-owned issue tracker. The authoritative behavior is in
+[the issue tracker plan](docs/issue-tracker-pivot.md). New issues start empty; preserve legacy
+Tasks, Steps, reports, and backups as historical data, without importing them into Issues.
+
+Factory observes T3 and GitHub activity. Agents do not report progress to Factory, install
+`software-factory` reporting skills, or install SessionStart project-brief hooks. The retired
+skill and hook sources remain historical compatibility code only. Do not follow their old
+reporting loop for new issue work. Keep existing connections, credentials, backups, and
+unrelated checkout changes intact.
 
 ## Implementation model routing
 

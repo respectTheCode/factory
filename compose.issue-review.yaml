@@ -1,0 +1,35 @@
+# Isolated review deployment. Seed this directory with a verified online snapshot
+# and the private managed T3 source registry; never mount production's writable DB.
+name: factory-issue-review
+services:
+  factory:
+    image: ${FACTORY_REVIEW_IMAGE:?Set the reviewed image tag}
+    platform: linux/amd64
+    init: true
+    user: bun
+    environment:
+      FACTORY_ENVIRONMENT: pilot
+      FACTORY_HOST: 0.0.0.0
+      FACTORY_PORT: "3000"
+      FACTORY_DB: /data/factory.sqlite
+      FACTORY_REQUIRE_EXISTING_DB: "true"
+      FACTORY_OPERATOR_NAME: kevin
+      FACTORY_OPERATOR_SECRET_FILE: /run/secrets/factory_operator
+      GITHUB_TOKEN_FILE: /run/secrets/factory_github
+      FACTORY_T3_SOURCES_FILE: /run/factory-t3/sources.json
+      FACTORY_BACKUP_DIR: /backups/issue-review
+      FACTORY_BACKUP_REQUIRE_NFS: "true"
+    ports:
+      - "${FACTORY_BIND_IP:?Set the private LAN address}:${FACTORY_REVIEW_PORT:-3117}:3000"
+    volumes:
+      - ${FACTORY_REVIEW_DATA_DIR:?Set the isolated review data directory}:/data
+      - factory-backups:/backups
+      - ${FACTORY_SECRET_DIR:?Set the existing private secret directory}/production-operator-secret:/run/secrets/factory_operator:ro
+      - ${FACTORY_SECRET_DIR:?Set the existing private secret directory}/github-token:/run/secrets/factory_github:ro
+      - ${FACTORY_T3_CONFIG_DIR:?Set the existing private T3 config directory}:/run/factory-t3:ro
+    restart: unless-stopped
+    stop_grace_period: 30s
+volumes:
+  factory-backups:
+    external: true
+    name: factory-pilot-backups-nfs

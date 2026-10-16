@@ -16,7 +16,7 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   revision+="-dirty"
 fi
 
-output_directory="$repository_root/dist/client"
+output_directory=${FACTORY_CLIENT_OUTPUT_DIRECTORY:-$repository_root/dist/client}
 mkdir -p "$output_directory"
 
 temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/factory-client-build.XXXXXX")
@@ -32,9 +32,7 @@ build_target() {
   staging="$temporary_directory/$target_name"
 
   rm -rf "$staging"
-  mkdir -p \
-    "$staging/skills/software-factory" \
-    "$staging/scripts"
+  mkdir -p "$staging/scripts"
 
   "$bun_path" build --compile ./src/client.ts \
     --target "$bun_target" \
@@ -42,10 +40,6 @@ build_target() {
     --define "FACTORY_CLIENT_REVISION=\"$revision\"" \
     --define "import.meta.main=true"
 
-  cp -R "$repository_root/skills/software-factory/." \
-    "$staging/skills/software-factory/"
-  cp "$repository_root/scripts/factory-session-brief-hook.sh" \
-    "$staging/scripts/factory-session-brief-hook.sh"
   cp "$repository_root/scripts/install-agent-client.sh" \
     "$staging/scripts/install-agent-client.sh"
   cp "$binary" "$staging/factory"
@@ -54,8 +48,6 @@ build_target() {
   tar -czf "$tarball" \
     -C "$staging" \
     factory \
-    skills/software-factory \
-    scripts/factory-session-brief-hook.sh \
     scripts/install-agent-client.sh
 
   echo "built $binary"

@@ -72,6 +72,11 @@ import {
 } from "./screenshot-evidence";
 import { canonicalPayloadDigest, createIdempotencyStore } from "./idempotency";
 import {
+  createIssueStore,
+  type IssuePullRequestObservation,
+  type IssueStore,
+} from "./issues";
+import {
   DEFAULT_SHUTDOWN_TIMEOUT_MS,
   resolveFactoryEnvironment,
   resolveGitHubToken,
@@ -487,6 +492,7 @@ function withContextDashboardItems<T>(
 
 function createRouter(
   application: ReturnType<typeof createFactoryApplication>,
+  issueStore: IssueStore,
   machineCredentials: ReturnType<typeof createMachineCredentialStore>,
   githubStatusReader: GitHubStatusReader,
   t3Coordinator: ReturnType<typeof createT3Coordinator>,
@@ -585,6 +591,145 @@ function createRouter(
       ({ taskId, subtaskId }) => Boolean(taskId) !== Boolean(subtaskId),
       "Provide exactly one Task or Subtask ID.",
     );
+
+  type IssueActivity = Awaited<
+    ReturnType<typeof sourceAwareCoordinator.projectActivity>
+  >;
+  const issueRefreshes = new Map<
+    string,
+    {
+      startedAt: number;
+      activity?: IssueActivity;
+      inFlight?: Promise<IssueActivity | undefined>;
+    }
+  >();
+  const refreshIssueProject = (
+    projectId: string,
+  ): Promise<IssueActivity | undefined> => {
+    const now = Date.now();
+    const state = issueRefreshes.get(projectId) ?? { startedAt: 0 };
+    if (state.inFlight) return state.inFlight;
+    if (now - state.startedAt < 15_000) return Promise.resolve(state.activity);
+    state.startedAt = now;
+    issueRefreshes.set(projectId, state);
+    state.inFlight = (async () => {
+      try {
+        const activity =
+          await sourceAwareCoordinator.projectActivity(projectId);
+        state.activity = activity;
+        const freshSourceIds = activity.sources
+          .filter(
+            (source) =>
+              source.status === "ok" && source.connection.state === "connected",
+          )
+          .map((source) => source.sourceId);
+        const freshSources = new Set(freshSourceIds);
+
+        const repository = application
+          .listProjects()
+          .find((project) => project.id === projectId)?.gitOriginUrl;
+        if (activity.sources.length > 0) {
+          issueStore.observeThreads({
+            freshSourceIds,
+            projectId,
+            threads: activity.threads
+              .filter((thread) => freshSources.has(thread.sourceId))
+              .map((thread) => ({
+                ...(thread.branch === undefined
+                  ? {}
+                  : { branch: thread.branch }),
+                ...(thread.linkedPullRequestUrl === undefined
+                  ? {}
+                  : { linkedPullRequestUrl: thread.linkedPullRequestUrl }),
+                ...(repository === undefined ? {} : { repository }),
+                current: thread.sourceCurrent !== false,
+                sourceId: thread.sourceId,
+                state:
+                  thread.backgroundLiveness === "working" ||
+                  thread.latestSessionState === "running" ||
+                  thread.latestTurnState === "running"
+                    ? "working"
+                    : "stopped",
+                threadId: thread.threadId,
+                title: thread.title,
+                updatedAt: thread.sourceUpdatedAt,
+              })),
+          });
+        }
+
+        const pullRequestUrls = [
+          ...new Set(
+            issueStore
+              .list({ projectId })
+              .flatMap((issue) => issue.pullRequestUrls),
+          ),
+        ];
+        const pullRequestObservations: IssuePullRequestObservation[] = [];
+        let nextIndex = 0;
+        await Promise.all(
+          Array.from(
+            {
+              length: Math.min(
+                FLOOR_GITHUB_STATUS_CONCURRENCY,
+                pullRequestUrls.length,
+              ),
+            },
+            async () => {
+              while (nextIndex < pullRequestUrls.length) {
+                const pullRequestUrl = pullRequestUrls[nextIndex++];
+                if (!pullRequestUrl) continue;
+                try {
+                  const snapshot = await githubStatusReader.read(
+                    parseGitHubPullRequestUrl(pullRequestUrl),
+                  );
+                  const pullRequest = snapshot.pullRequest;
+                  pullRequestObservations.push({
+                    ok: snapshot.status === "ok" && pullRequest !== undefined,
+                    url: pullRequestUrl,
+                    ...(pullRequest === undefined
+                      ? {}
+                      : {
+                          state: pullRequest.state,
+                          ...(pullRequest.mergedAt === undefined
+                            ? {}
+                            : { mergedAt: pullRequest.mergedAt }),
+                          updatedAt: pullRequest.updatedAt,
+                        }),
+                  });
+                } catch {
+                  pullRequestObservations.push({
+                    ok: false,
+                    url: pullRequestUrl,
+                  });
+                }
+              }
+            },
+          ),
+        );
+        issueStore.reconcileProject({
+          freshSourceIds,
+          projectId,
+          pullRequests: pullRequestObservations,
+          // Completeness is checked per issue so one failed PR does not block
+          // fresh evidence for unrelated issues in this Project.
+          pullRequestPassComplete: true,
+        });
+        return activity;
+      } catch {
+        return state.activity;
+      } finally {
+        state.inFlight = undefined;
+      }
+    })();
+    return state.inFlight;
+  };
+  const refreshIssues = async (projectIds: string[]): Promise<void> => {
+    await Promise.all(
+      [...new Set(projectIds)].map((projectId) =>
+        refreshIssueProject(projectId),
+      ),
+    );
+  };
 
   const createSerializedMutation = (allowReviewer = false) =>
     trpc.middleware(async ({ ctx, next }) => {
@@ -1136,6 +1281,266 @@ function createRouter(
         .query(({ input }) =>
           application.getScreenshotEvidence(input.screenshotId),
         ),
+    }),
+    issues: trpc.router({
+      list: humanProcedure()
+        .input(
+          z
+            .object({ projectId: z.string().trim().min(1).optional() })
+            .optional(),
+        )
+        .query(async ({ input }) => {
+          const initial = issueStore.list(input);
+          await refreshIssues(
+            input?.projectId
+              ? [input.projectId]
+              : [...new Set(initial.map((issue) => issue.projectId))],
+          );
+          return issueStore.list(input);
+        }),
+      detail: humanProcedure()
+        .input(z.object({ id: z.string().trim().min(1) }))
+        .query(async ({ input }) => {
+          const initial = issueStore.detail(input.id);
+          if (!initial) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: `Issue ${input.id} does not exist.`,
+            });
+          }
+          const activity = await refreshIssueProject(initial.issue.projectId);
+          const detail = issueStore.detail(input.id);
+          if (!detail) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: `Issue ${input.id} does not exist.`,
+            });
+          }
+          const sourceById = new Map(
+            t3ConnectionStore
+              .getSources()
+              .map((source) => [source.sourceId, source]),
+          );
+          const threads = await Promise.all(
+            detail.threads.map(async (thread) => {
+              const reader = sourceById.get(thread.sourceId)?.reader;
+              if (!reader?.readMessages) {
+                return {
+                  ...thread,
+                  canSend: false,
+                  messageError:
+                    "Recent T3 messages are unavailable for this connection.",
+                };
+              }
+              try {
+                const recent = await reader.readMessages({
+                  threadId: thread.threadId,
+                });
+                return {
+                  ...thread,
+                  canSend: recent.canSend,
+                  messages: recent.messages,
+                  ...(!recent.canSend
+                    ? {
+                        messageError:
+                          "Sending replies requires orchestration:operate permission in Connections.",
+                      }
+                    : {}),
+                };
+              } catch (error) {
+                return {
+                  ...thread,
+                  canSend: false,
+                  messageError:
+                    error instanceof Error
+                      ? error.message
+                      : "Recent T3 messages are unavailable. Check the connection and retry.",
+                };
+              }
+            }),
+          );
+          return {
+            ...detail,
+            connections:
+              activity?.sources.map((source) => ({
+                sourceId: source.sourceId,
+                state: source.connection.state,
+                ...((source.error ?? source.connection.error)
+                  ? { error: source.error ?? source.connection.error }
+                  : {}),
+              })) ?? [],
+            threads,
+          };
+        }),
+      create: humanProcedure()
+        .input(
+          z.object({
+            projectId: z.string().trim().min(1),
+            title: z.string().trim().min(1).max(300),
+            description: z.string().max(20_000).optional(),
+            labels: z.array(z.string().max(100)).max(50).optional(),
+            branches: z.array(z.string().max(500)).max(50).optional(),
+            pullRequestUrls: z.array(z.string().url()).max(50).optional(),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ input }) => {
+          try {
+            application.getProjectDetail(input.projectId);
+          } catch {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: `Project ${input.projectId} does not exist.`,
+            });
+          }
+          try {
+            return issueStore.create(input);
+          } catch (error) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Issue could not be created.",
+            });
+          }
+        }),
+      update: humanProcedure()
+        .input(
+          z.object({
+            id: z.string().trim().min(1),
+            title: z.string().trim().min(1).max(300).optional(),
+            description: z.string().max(20_000).optional(),
+            labels: z.array(z.string().max(100)).max(50).optional(),
+            branches: z.array(z.string().max(500)).max(50).optional(),
+            pullRequestUrls: z.array(z.string().url()).max(50).optional(),
+            status: z
+              .enum(["todo", "in_progress", "needs_attention", "done"])
+              .optional(),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ input }) => {
+          try {
+            return issueStore.update(input);
+          } catch (error) {
+            const message =
+              error instanceof Error
+                ? error.message
+                : "Issue could not be updated.";
+            throw new TRPCError({
+              code: message.includes("does not exist")
+                ? "NOT_FOUND"
+                : "BAD_REQUEST",
+              message,
+            });
+          }
+        }),
+      remove: humanProcedure()
+        .input(z.object({ id: z.string().trim().min(1) }))
+        .use(serializedMutation)
+        .mutation(({ input }) => {
+          try {
+            return issueStore.remove(input.id);
+          } catch (error) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Issue does not exist.",
+            });
+          }
+        }),
+      sendMessage: humanProcedure()
+        .input(
+          z.object({
+            id: z.string().trim().min(1),
+            sourceId: sourceIdSchema,
+            threadId: z.string().trim().min(1),
+            text: z.string().trim().min(1).max(50_000),
+            requestId: requestKeySchema,
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(async ({ ctx, input }) => {
+          const scope = `${idempotencyScope(ctx)}:issues.sendMessage`;
+          const payloadDigest = canonicalPayloadDigest({
+            id: input.id,
+            sourceId: input.sourceId,
+            text: input.text,
+            threadId: input.threadId,
+          });
+          idempotencyStore.purgeExpired();
+          const existing = idempotencyStore.get(scope, input.requestId);
+          if (existing) {
+            if (existing.payloadDigest !== payloadDigest) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "request key reused with a different payload",
+              });
+            }
+            return JSON.parse(existing.response) as unknown;
+          }
+
+          const detail = issueStore.detail(input.id);
+          if (!detail) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: `Issue ${input.id} does not exist.`,
+            });
+          }
+          if (
+            !detail.threads.some(
+              (thread) =>
+                thread.sourceId === input.sourceId &&
+                thread.threadId === input.threadId,
+            )
+          ) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "This T3 thread is not linked to the selected issue.",
+            });
+          }
+          const source = t3ConnectionStore
+            .getSources()
+            .find((candidate) => candidate.sourceId === input.sourceId);
+          if (!source) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: `T3 source ${input.sourceId} does not exist.`,
+            });
+          }
+          if (!source.reader.sendMessage) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "This T3 connection cannot send replies.",
+            });
+          }
+          try {
+            const receipt = await source.reader.sendMessage({
+              requestId: input.requestId,
+              text: input.text,
+              threadId: input.threadId,
+            });
+            idempotencyStore.put({
+              createdAt: new Date().toISOString(),
+              payloadDigest,
+              requestKey: input.requestId,
+              response: JSON.stringify(receipt),
+              scope,
+            });
+            return receipt;
+          } catch (error) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "T3 could not send the reply. Check the connection and retry.",
+            });
+          }
+        }),
     }),
     projects: trpc.router({
       create: humanProcedure()
@@ -2867,6 +3272,7 @@ export function createFactoryServer({
     databasePath,
     refreshBeforeOperations: false,
   });
+  const issueStore = createIssueStore({ databasePath });
   const humanSessions = createHumanSessionStore({ databasePath });
   const machineCredentials = createMachineCredentialStore({ databasePath });
   const idempotencyStore = createIdempotencyStore({ databasePath });
@@ -3041,6 +3447,7 @@ export function createFactoryServer({
   projectUpdates.onPublish(floorUpdates.invalidate);
   const router = createRouter(
     application,
+    issueStore,
     machineCredentials,
     resolvedGitHubStatusReader,
     t3Coordinator,
@@ -3445,6 +3852,7 @@ export function createFactoryServer({
         await backupStartPromise?.catch(() => undefined);
         return stopServerResources({
           application,
+          issueStore,
           closeWebSockets: () => {
             for (const socket of sockets) socket.terminate();
             sockets.clear();
@@ -3493,6 +3901,7 @@ export function createFactoryServer({
 
 async function stopServerResources({
   application,
+  issueStore,
   closeWebSockets,
   forceStop,
   stopListening,
@@ -3504,6 +3913,7 @@ async function stopServerResources({
   timeoutMs,
 }: {
   application: ReturnType<typeof createFactoryApplication>;
+  issueStore: IssueStore;
   closeWebSockets: () => void;
   forceStop: () => void | Promise<void>;
   stopListening: () => void | Promise<void>;
@@ -3531,6 +3941,7 @@ async function stopServerResources({
       // Resource closure below is still required if Bun has already stopped.
     }
   } finally {
+    issueStore.close();
     application.close();
     humanSessions.close();
     machineCredentials.close();

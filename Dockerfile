@@ -15,6 +15,10 @@ RUN bun scripts/build-revision.ts
 RUN bun run build
 USER bun
 RUN FACTORY_REVISION= bun test \
+      tests/issues.test.ts \
+      tests/server/issues.test.ts \
+      tests/t3-messages.test.ts \
+      tests/persistence/issues-backup.test.ts \
       tests/transport/factory-server-config.test.ts \
       tests/transport/factory-human-session.test.ts \
       tests/transport/serialized-writes.test.ts \
