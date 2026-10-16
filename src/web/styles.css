@@ -2722,8 +2722,23 @@ main {
   z-index: 1;
 }
 
-.app-shell-home {
-  padding-top: 16px;
+.all-tasks-project-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 12px 0 20px;
+  max-width: 40rem;
+  padding: 0;
+}
+
+.all-tasks-project-list li {
+  margin: 0;
+}
+
+.all-tasks-project-list button {
+  min-height: 44px;
+  text-align: left;
+  width: 100%;
 }
 
 main.app-main,
@@ -2797,6 +2812,41 @@ h2 {
 header {
   border-bottom: 1px solid var(--rule);
   padding: 0 24px 16px;
+}
+
+.app-header {
+  flex-wrap: wrap;
+  position: relative;
+}
+
+.app-header .global-nav {
+  flex-wrap: wrap;
+}
+
+.app-header .global-nav-link {
+  justify-content: center;
+  align-items: center;
+  display: inline-flex;
+  min-height: 44px;
+  white-space: nowrap;
+}
+
+.app-skip-link {
+  align-items: center;
+  background: var(--accent);
+  border-radius: var(--r-field);
+  color: var(--on-accent);
+  display: inline-flex;
+  left: 16px;
+  min-height: 44px;
+  padding: 10px 14px;
+  position: absolute;
+  top: -100px;
+  z-index: 20;
+}
+
+.app-skip-link:focus {
+  top: 8px;
 }
 .wordmark {
   font: 700 15px/1 var(--sans);
@@ -4124,6 +4174,10 @@ option {
     align-items: flex-start;
     flex-direction: column;
     padding-inline: 12px;
+  }
+
+  .app-header .global-nav {
+    flex-wrap: wrap;
   }
 
   .header-status {

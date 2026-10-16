@@ -1,58 +1,66 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const skill = readFileSync(
-  join(import.meta.dir, "../../skills/software-factory/SKILL.md"),
+const skillDirectory = join(import.meta.dir, "../../skills/software-factory");
+const skill = readFileSync(join(skillDirectory, "SKILL.md"), "utf8");
+const routine = readFileSync(
+  join(skillDirectory, "references/routine-workflow.md"),
   "utf8",
 );
+const installation = readFileSync(
+  join(skillDirectory, "references/installation.md"),
+  "utf8",
+);
+const compactSkill = skill.replace(/\s+/g, " ");
+const compactRoutine = routine.replace(/\s+/g, " ");
 
 describe("Software Factory skill", () => {
-  test("directs agents to auto-associate the current T3 session", () => {
-    expect(skill).toContain("session auto-link");
-    expect(skill).toContain(
-      'export T3_BASE_URL="${T3_BASE_URL:-http://127.0.0.1:3773}"',
-    );
-    expect(skill).toContain(
-      'export T3_ACCESS_TOKEN_FILE="${T3_ACCESS_TOKEN_FILE:-$HOME/Library/Application Support/Factory/secrets/t3-read-token}"',
-    );
-    expect(skill).toContain("project t3-status --project-id ... --json");
-    expect(skill).toContain('--workspace-root "$REPO_CHECKOUT"');
-    expect(skill).toContain("remote get-url origin 2>/dev/null || true");
-    expect(skill).toContain(
-      "Immediately after `project context` resolves exactly one Project and Task",
-    );
-    expect(skill).toContain(
-      "If it returns `unmatched` or `ambiguous`, create no association",
-    );
+  test("routes users to existing references for the work they need", () => {
+    const links = [...skill.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)]
+      .map((match) => match[1])
+      .filter((link): link is string => link !== undefined);
+
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link).not.toMatch(/^(https?:|#)/);
+      expect(existsSync(join(skillDirectory, link))).toBe(true);
+    }
+    expect(skill).toContain("references/routine-workflow.md");
+    expect(skill).toContain("references/cli-and-maintenance.md");
+    expect(skill).toContain("references/reviewer-acceptance.md");
+    expect(skill).toContain("references/installation.md");
   });
 
-  test("fails closed when T3 is not configured or unavailable", () => {
-    expect(skill).toContain("Any transport state (`not_configured`");
-    expect(skill).toContain("report the exact status string");
-    expect(skill).toContain(
-      "handoff so Kevin can fix the service or credential",
+  test("keeps execution, requirements, evidence, and acceptance with their owners", () => {
+    expect(compactSkill).toMatch(/T3.*GitHub.*Linear and Notion/);
+    expect(compactSkill).toContain(
+      "Factory records work and evidence; it does not claim deployment",
     );
-    expect(skill).toContain("never retry by guessing a thread ID");
-    expect(skill).toContain("using `session link` to work around it");
+    expect(compactSkill).toMatch(/human check is opt-in.*human/);
+    expect(compactSkill).toContain("Session association is optional metadata");
   });
 
-  test("preserves zero-to-many association and human authority boundaries", () => {
-    expect(skill).toContain(
-      "A Code Session may have zero, one, or many Work Associations",
-    );
-    expect(skill).toContain(
-      "never change T3, Work State, Status Reports, or Verification",
-    );
-    expect(skill).toContain("only as a fallback");
+  test("uses Task reports and does not require session association or report-only Steps", () => {
+    expect(compactRoutine).toContain("workflowEpoch");
+    expect(compactRoutine).toContain("--state in_progress");
+    expect(compactRoutine).toContain("blocked with a clear reason");
+    expect(compactRoutine).toContain("finished with concrete evidence");
+    expect(compactRoutine).toContain("unchanged observations are no-ops");
+    expect(compactRoutine).toContain("Steps still open");
+    expect(compactRoutine).toContain("metadata, not a reporting prerequisite");
+    expect(compactRoutine).not.toMatch(/Immediately after.*session auto-link/i);
   });
 
-  test("documents the bounded session-start project brief", () => {
-    expect(skill).toContain("bun run src/cli.ts project brief");
-    expect(skill).toContain(
-      "Session-start hooks inject `project brief` as the session's bounded starting context.",
+  test("documents exact-copy installation for both clients without client reconfiguration", () => {
+    expect(installation).toContain("CODEX_HOME");
+    expect(installation).toContain("~/.codex/skills/software-factory");
+    expect(installation).toContain("~/.claude/skills/software-factory");
+    expect(installation).toContain("rsync -a --delete");
+    expect(installation).toContain("diff -qr");
+    expect(installation).toContain("both machines");
+    expect(installation).toContain(
+      "do not use scripts/install-agent-client.sh",
     );
-    expect(skill).toContain("capped at 6000 characters by default");
-    expect(skill).toContain("truncated brief is never a complete record");
   });
 });

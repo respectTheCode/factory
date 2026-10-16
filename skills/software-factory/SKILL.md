@@ -1,288 +1,60 @@
 ---
 name: software-factory
-description: Resolve and report authorized work in Factory-tracked projects; keep coding evidence separate from authorized acceptance.
+description: Resolve and report authorized work in Factory-tracked projects; keep human acceptance separate from agent evidence.
 ---
 
 # Software Factory
 
-Codex and Claude share this operating loop. Check Factory at the start of work in a tracked
-project and reconcile the affected records before the final handoff. A review-only request
-permits reads and proposed corrections, not status mutations. When implementation or data
-maintenance is authorized, updating its Factory records is part of that work.
+Use this skill for Factory-tracked work in Codex or Claude Code. Read the current Task,
+do only the work the user authorized, and report evidence before handing it back.
+Review-only requests permit reads and proposed corrections, not status changes.
 
-Set `FACTORY_REPORTER=codex` for Codex or `FACTORY_REPORTER=claude` for Claude. Use that
-identity for reports; do not copy another client's attribution from an example.
+## What Factory is for
 
-Use the CLI from the Factory checkout so agent updates share the same SQLite
-state as the PWA. The CLI emits one stable JSON object per command with
-`schemaVersion: 1`. Each SQLite client refreshes persisted state before its operation, so a
-running PWA and a CLI/skill can share the database without requiring a server restart.
+Factory Home answers what needs you, what is in progress, and what finished today.
+Task detail shows status, requests, recent history, read-only Steps, and collapsed
+Evidence. All tasks holds planning and broader task controls.
 
-Set the database explicitly when working outside the default local database:
+T3 is where agents execute work. GitHub owns code review and merge. Linear and Notion
+own product requirements and decisions. Factory records work and evidence; it does not
+claim deployment. Reconcile conflicting scope with the source record and user rather
+than silently changing it.
 
-```bash
-FACTORY_CHECKOUT="${FACTORY_CHECKOUT:-/Users/agent/Projects/factory}"
-FACTORY_DB="${FACTORY_DB:-$FACTORY_CHECKOUT/factory.sqlite}"
-export T3_BASE_URL="${T3_BASE_URL:-http://127.0.0.1:3773}"
-export T3_ACCESS_TOKEN_FILE="${T3_ACCESS_TOKEN_FILE:-$HOME/Library/Application Support/Factory/secrets/t3-read-token}"
-```
+## Routine work
 
-The read-only token file is operator-provisioned with mode `0600`, and T3 reads are read-only.
-Never print, echo, or paste the token into a handoff.
+Use a fresh, unambiguous session-start brief when it identifies the project and Task.
+Check the selected Task before reporting. Read compact project context only when
+project identity or scope is unclear. Follow [the routine reporting workflow](references/routine-workflow.md)
+for reports, evidence, and optional session association.
 
-### Remote mode
+Report in progress when work starts, blocked with the blocker, and finished with
+concrete evidence when the outcome is delivered. Unchanged observations are no-ops.
+Retain the starting workflowEpoch; never refresh it to bypass a conflict. The routine
+workflow has the reporting details.
 
-On machines with an installed client, load the operator-managed configuration before
-running Factory commands:
+Steps are optional checklists that support execution. They are not report-only children
+or approval stages.
 
-```sh
-set -a
-. "$HOME/.config/factory/env"
-set +a
-"$FACTORY_CLI" doctor --json
-```
+## Authority boundaries
 
-Use that configured remote endpoint and token path; do not substitute a former
-host URL or add `--database`. The local database examples below apply only to
-explicitly authorized host maintenance, not routine work on a remote client.
+A required code Task finishes only when every required canonical PR has
+server-confirmed merge evidence showing the code reached the default branch. A human
+check is opt-in and can be recorded only by a human. Keep work completion, PR review,
+merge, deployment, and human acceptance distinct.
 
-Agent machines that do not host the Factory service use the remote CLI instead of a local
-database. Set `FACTORY_URL` (the service on the local network, for example
-`http://192.168.1.20:3000`) and `FACTORY_ACCESS_TOKEN_FILE` (an absolute path to this machine's
-`0600` credential file, provisioned by Kevin). In remote mode omit `--database` from every
-command; passing both is an ambiguity error, and the CLI never falls back to a local database.
-Run `bun run src/cli.ts doctor --json` first: it reports the mode, API compatibility, and the
-machine identity with its Project scope, and exits non-zero when reporting cannot work. Reads
-and reports are limited to the coding credential's Projects; coding credentials cannot
-perform human checks or mark-done overrides. Historical reviewer access remains separate
-from coding access. Task and Step reports may add `--session-thread-id` with the current T3 thread so the
-report carries its session reference. With multiple T3 sources, add `--session-source-id`
-when the source is known; the server validates it against the machine credential. Never print
-or paste the machine token.
+Session association is optional metadata. Never guess a thread or source, and never
+delay a valid report to repair a missing association.
 
-## Choose the relevant operation
+Use the reporter identity for the active client: codex or claude. Do not borrow another
+identity or expose credential values. T3 observations are read-only. In remote mode,
+use the configured Factory CLI and do not combine its endpoint with a local database.
 
-- For routine work, use the reporting loop below. A fresh unambiguous session-start brief can supply the known project identity; inspect the selected task before reporting.
-- For task creation/edits, archive/restore, backups, or database maintenance, read [references/cli-and-maintenance.md](references/cli-and-maintenance.md).
-- To refresh the compact context, use `bun run src/cli.ts project brief` with the repository identity and database flags below.
+## Read only what the task needs
 
-Screenshot proof is an evidence attachment scoped to a Task or Subtask. Use the bounded
-`screenshot list` read for metadata and pass `--output` to `screenshot get` only when image
-bytes are required. Remote retries must reuse the same stable `--request-key` for an unchanged
-upload; a changed file or metadata uses a new key. The supported syntax and local/remote
-examples are in [references/cli-and-maintenance.md](references/cli-and-maintenance.md).
+- For normal Task reporting, read [the routine reporting workflow](references/routine-workflow.md).
+- For task planning, edits, archive or restore, screenshots, backups, or database maintenance, read [the CLI and maintenance reference](references/cli-and-maintenance.md).
+- For reviewer compatibility and historical permissions, read [reviewer acceptance](references/reviewer-acceptance.md).
+- To copy or verify this source skill on Codex and Claude Code machines, read [skill installation](references/installation.md).
 
-Tasks and Subtasks accept `T-<number>` / `ST-<number>` as well as UUIDs. Prefer simple IDs in communication. Reports are append-only observations. Blocked reports name the blocker. Steps finish directly
-without a reason or approval. Task-level finished reports satisfy the agent-report finish
-rule; code Tasks wait for confirmed required merges reaching the default branch. An explicit
-human check remains human-only and opt-in. Deployment is separate from Task completion.
-
-## Agent operating loop
-
-Session-start hooks inject `project brief` as the session's bounded starting context. It is
-capped at 6000 characters by default with a truncation notice when the cap is reached. A
-truncated brief is never a complete record; run `task detail` for the full Task record. The
-brief is a starting point, not a substitute for the loop below.
-
-Agent-facing CLI reads are bounded. Prefer `project context --compact` and `task detail
---summary` when selecting work, then expand only the fields needed for the next decision. The
-bounded list reads accept `--limit` (up to the route cap), and a returned `--cursor` continues
-the same route and target. The current caps are: project list 50, project context Tasks 50,
-portfolio Projects 50, attention 100, credential records 50, Task/Subtask status Subtasks 100, T3 status sources 20,
-GitHub check/workflow runs 50 each, session-detail findings 50, and Subtask history reports 100. A page that omits rows includes `truncated: true`, a non-null `nextCursor`, and a stderr
-warning; page it before treating the read as complete. Exact-cap pages are complete and report
-`truncated: false` when `--limit` was supplied. Cursors are scoped to the command and record
-identity, so do not reuse one for another route or Task/Subtask. GitHub status returns one
-composite `--cursor` that advances check runs and workflow runs together; field-specific
-`--check-runs-cursor` and `--workflow-runs-cursor` continuations remain available and their
-warnings name the matching flag.
-
-Use `subtask history --tail N` for the newest N reports, or `--since ISO_TIMESTAMP` for reports
-strictly after a timestamp. Both support cursor paging; history cursors bind the normalized
-`--since` filter and use `(createdAt, id)` so a cursor cannot be continued with a changed or
-missing filter, and reports with equal timestamps are neither duplicated nor skipped. History keeps
-verifications attached to the reports in the returned page and retains IDs, states, reasons,
-and counts. `task detail --summary` retains identity, state, reason, priority/owner, and counts
-for acceptance criteria, dependencies, repository links, and tracker links while omitting the
-long values. `project context --compact` keeps project identity, Task IDs, names, states, reasons,
-criteria/link counts, and each task's `subtaskCount` while omitting long descriptions, evidence,
-tracker-link values, and nested Subtask rows. Expand nested rows with bounded `task status
---task-id` or `subtask status --task-id`. Full `project context` includes
-nested Subtask rows without a separate nested cap; use compact context plus the expansion reads
-when the project may contain many Subtasks.
-
-`session detail` findings use the same cap/cursor contract; the T3 thread payload's turns and
-checkpoint data remain bounded by the existing `--turn-limit` transport guard (maximum 10), so
-they are not an unbounded Factory list.
-
-For coding work, resolve the current checkout before reading or reporting Factory work. First
-resolve the Project without a branch filter and inspect its existing Tasks. Then use the branch
-filter when it identifies the work. The CLI
-normalizes common HTTPS, SSH URL, and SCP-style Git origins plus absolute workspace roots.
-`project context` fails closed when every supplied Project identity does not resolve to exactly
-one Project, or when a supplied branch matches zero or multiple Tasks:
-
-```bash
-REPO_CHECKOUT="$(git rev-parse --show-toplevel)"
-GIT_ORIGIN="$(git -C "$REPO_CHECKOUT" remote get-url origin 2>/dev/null || true)"
-GIT_BRANCH="$(git -C "$REPO_CHECKOUT" branch --show-current)"
-export T3_BASE_URL="${T3_BASE_URL:-http://127.0.0.1:3773}"
-export T3_ACCESS_TOKEN_FILE="${T3_ACCESS_TOKEN_FILE:-$HOME/Library/Application Support/Factory/secrets/t3-read-token}"
-cd "$FACTORY_CHECKOUT"
-if [[ -n "$GIT_ORIGIN" ]]; then
-  CONTEXT_SELECTOR=(--git-origin-url "$GIT_ORIGIN")
-else
-  CONTEXT_SELECTOR=(--workspace-root "$REPO_CHECKOUT")
-fi
-bun run src/cli.ts project context "${CONTEXT_SELECTOR[@]}" \
-  --json --database "$FACTORY_DB"
-# For a task-specific branch, resolve its unique Task as well:
-if [[ -n "$GIT_BRANCH" ]]; then
-  bun run src/cli.ts project context "${CONTEXT_SELECTOR[@]}" \
-    --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
-fi
-# Continue below only after selecting the correct PROJECT_ID and TASK_ID.
-bun run src/cli.ts project t3-status --project-id PROJECT_ID \
-  --json --database "$FACTORY_DB"
-if [[ -n "$GIT_BRANCH" ]]; then
-  bun run src/cli.ts session auto-link --project-id PROJECT_ID --task-id TASK_ID \
-    --branch-name "$GIT_BRANCH" --json --database "$FACTORY_DB"
-fi
-bun run src/cli.ts project attention "${CONTEXT_SELECTOR[@]}" \
-  --json --database "$FACTORY_DB"
-bun run src/cli.ts task detail --task-id TASK_ID --json --database "$FACTORY_DB"
-bun run src/cli.ts subtask history --subtask-id SUBTASK_ID --json --database "$FACTORY_DB"
-```
-
-Immediately after `project context` resolves exactly one Project and Task, run `session auto-link`
-with those IDs and the current branch. The command reads current T3 activity and adds an idempotent
-Factory Work Association only when exactly one running T3 thread in the credential-bound
-source has that branch. Add `--thread-id` when the originating T3 thread is known and
-`--source-id` when selecting among configured sources for that machine. Never choose a
-source by branch alone. Use
-`project t3-status --project-id ... --json` as the quick way to confirm the connection state is
-`connected`.
-Treat `linked` as success. If it returns `unmatched` or `ambiguous`, create no association, continue
-only with the resolved Factory work, and name the missing or candidate thread IDs in the handoff; do
-not guess. Any transport state (`not_configured`, `unreachable`, `authentication_failed`,
-`permission_denied`, `incompatible`, `invalid_response`, or `unavailable`) also creates no
-association. Continue with the resolved Factory work only, report the exact status string in the
-handoff so Kevin can fix the service or credential, and never retry by guessing a thread ID or by
-using `session link` to work around it.
-
-A Code Session may have zero, one, or many Work Associations. Automatic Task association does not
-replace existing associations. When the agent selects a specific Subtask, run `session auto-link`
-again with `--subtask-id`; this adds the Subtask association idempotently. Use explicit `session
-link` or the PWA's collapsed **Manage associations** section only as a fallback. Remove one
-association with its `--association-id`; never remove unrelated associations. Association changes
-are Factory metadata only and never change T3, Work State, Status Reports, or Verification.
-
-If the checkout has no Git remote, the normalized absolute workspace root remains sufficient
-for Factory Project context. T3 matching on a non-legacy source additionally requires an explicit
-Project source mapping; see `docs/t3-multiple-sources.md` in the Factory repository.
-Workspace matching removes trailing
-slashes and lexical dot segments; it does not resolve symlinks. Stored or remote relative roots
-are not Project identities: correct their metadata to an absolute root rather than guessing. If the
-checkout is detached and `git branch --show-current` is empty, omit the branch-filtered command
-and automatic session association.
-
-A missing branch match on `main`, `master`, or a maintenance branch does not mean the Project is
-missing. Use the successful Project-only result to inspect Task details and histories. Select an
-existing Task only when the user's stated scope or explicit Task ID identifies it unambiguously;
-do not rewrite historical branch names to make a resolver pass. For authorized new work with no
-existing matching outcome, create a bounded Task and reportable Subtasks after checking for
-duplicates. If the intended Task remains ambiguous, report the candidates and leave those records
-unchanged. A missing or duplicate Project identity still fails closed: ask Kevin to resolve it.
-
-Session association is optional metadata, not a prerequisite for reporting resolved work. T3
-observes only sessions available through its API; a Codex or Claude session outside T3 may have
-no match. Never claim it was linked, invent its identity, or let that failure suppress the work
-report.
-
-Read `task status --json` at work start and retain its `workflowEpoch` for every report
-from that work. Do not fetch a newer epoch to bypass a reopen conflict. When work starts,
-submit a Task-level `in_progress` report. Report `blocked` with the
-blocker, or `finished` with concrete evidence when the outcome is delivered. A Task can
-report and finish without Steps; create Steps only when a checklist helps execution.
-
-```sh
-bun run src/cli.ts task report --task-id TASK_ID --workflow-epoch WORKFLOW_EPOCH --state in_progress \
-  --reporter "$FACTORY_REPORTER" --evidence "Work started" --json
-bun run src/cli.ts task report --task-id TASK_ID --workflow-epoch WORKFLOW_EPOCH --state finished \
-  --reporter "$FACTORY_REPORTER" --evidence "What changed and what was checked" --json
-```
-
-Use the configured remote environment and omit `--database` in remote mode. Local host
-maintenance supplies the explicit database. Reuse the same request key for an unchanged
-remote retry. Read the latest report first: unchanged observations are no-ops. Include the
-observed revision or PR, checks actually run, and remaining work. Read Task status after
-reporting and retain the returned report ID in the handoff.
-
-The finish rule chooses confirmed required PR merges or an agent finished report. Steps
-never finish or reopen their Task. A code Task can finish with open Steps; those remain
-visible as left open when the Task finished. Every required canonical linked PR must have
-fresh, server-confirmed merge evidence proving its code reached the repository's default
-branch. A stacked merge waits for that reachability; it needs no bookkeeping decision.
-Missing or unavailable GitHub evidence never counts as a merge. Reopening invalidates old
-reports, checks, and merge proof for the new work.
-
-An opt-in human check requires the human after the other finish conditions are met.
-Agents and reviewer credentials cannot self-check or record human mark-done overrides.
-Historical reports, verifications, and deliberately requested holds retain their original
-meaning; do not invent approval records or convert routine old claims into a decision queue.
-Implementation, PR review, completion, merge, deployment, and human acceptance are distinct
-observations. A session ending never proves an outcome.
-
-The compatibility `subtask` commands still address Steps. Use direct Step reports for
-To do (`not_started`), Doing (`in_progress`), Done (`complete`), or Blocked (`blocked`).
-No separate verification is required. Keep optional checklist scope aligned with the Task;
-do not create report-only children just to satisfy a reporting lifecycle.
-
-Keep titles, descriptions, PR links, and remaining Subtasks aligned with the authorized scope.
-Do not temporarily reset a started Task to `planned` to bypass the acceptance-criteria guard;
-record a changed scope in the description and hand off any criteria change for human review.
-The final handoff names affected Task/Subtask IDs, new report IDs, remaining work, and any
-unresolved Factory or session association failure. A session ending alone is never evidence
-that its work completed. Optional structured handoffs name the next owner and action,
-with same-Task Subtask dependencies; revision and artifact fields preserve review
-provenance. See [CLI report fields](references/cli-and-maintenance.md). Factory
-records these claims without launching, scheduling, retrying, or messaging agents.
-
-## Local installation
-
-The maintained source is the complete `skills/software-factory/` directory in the Factory checkout. On agent
-machines `scripts/install-agent-client.sh` installs it together with the compiled `factory` binary; on the
-Factory host install the entrypoint and `references/` for both local agents at
-`~/.codex/skills/software-factory/` and `~/.claude/skills/software-factory/`, then compare every
-installed file with its source. Factory
-service deployment does not install agent skills. New sessions must discover the installed
-skill; an existing session's already-loaded instructions are not proof of adoption. Remote
-agents need their own supported client and installation; these local paths do not configure them.
-
-Tracker links can be attached through the CLI, PWA, or tRPC API. They remain references to the
-source item in Linear or Notion; Factory does not push updates to either system.
-Those source items own product requirements and decisions; Factory owns execution reports
-and review decisions. Reconcile conflicting scope instead of treating one as an automatic override.
-
-The resolved context includes Project Tracker Links plus matching Task planning, Subtasks, and
-Task Tracker Links. Branch names are Factory context only; matching a Linear or Notion
-identifier does not update that external system.
-
-Use `released` when the work shipped and `wont_do` when it is intentionally abandoned. These
-Archive States remain visible in the project and history, disappear from Attention, and can be
-restored without deleting Status Reports or Verifications. Archiving a Subtask does not archive
-its parent Task.
-
-## Review and authority
-
-Keep using the coding credential for progress reports. Never borrow a reviewer credential
-or a human session to approve work. Reviewers retain their separate, revocable identity and
-legacy history permissions; they cannot perform an explicit human check or mark-done override.
-
-Review ordinary code work through its linked PR. Confirmed required merges reaching the
-default branch finish the Task by its rule; no duplicate Step approval or parent acceptance
-is needed. Hardware checks and judgment calls can use an opt-in human check. Existing
-accepted, rejected, and deferred records remain historical evidence with their attribution.
-See [historical reviewer acceptance](references/reviewer-acceptance.md) for compatibility
-permissions. PR publication, merge, release, and deployment still need the user's applicable
-authorization; Factory completion does not grant it.
+Preserve historical reports and verification records. A session ending by itself is
+never evidence that work finished.

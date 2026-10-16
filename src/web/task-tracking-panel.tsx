@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 
 import type { ReportedStatus } from "./status-presentation";
 import {
@@ -47,6 +47,8 @@ type Props = {
   busy: boolean;
   onReport?: (input: TrackingReportInput) => void | Promise<void>;
   onRefreshPullRequests?: () => void | Promise<void>;
+  readOnly?: boolean;
+  children?: ReactNode;
 };
 
 type Tab = "contributors" | "handoff" | "review";
@@ -128,6 +130,8 @@ export function TaskTracking({
   busy,
   onReport,
   onRefreshPullRequests,
+  readOnly = false,
+  children,
 }: Props) {
   const [tab, setTab] = useState<Tab>("contributors");
   const [selectedStepId, setSelectedStepId] = useState(task.id);
@@ -586,304 +590,311 @@ export function TaskTracking({
           </p>
         ) : null}
 
-        <details className="task-tracking-report-details">
-          <summary>Append a structured report</summary>
-          <form
-            className="task-tracking-report-form"
-            onSubmit={(event) => void submitReport(event)}
-          >
-            <div className="task-tracking-form-heading">
-              <div>
-                <p className="task-tracking-eyebrow">Current Factory report</p>
-                <h5>Record the current state and next subtask</h5>
+        {!readOnly && (
+          <details className="task-tracking-report-details">
+            <summary>Append a structured report</summary>
+            <form
+              className="task-tracking-report-form"
+              onSubmit={(event) => void submitReport(event)}
+            >
+              <div className="task-tracking-form-heading">
+                <div>
+                  <p className="task-tracking-eyebrow">
+                    Current Factory report
+                  </p>
+                  <h5>Record the current state and next subtask</h5>
+                </div>
+                {operatorName?.trim() ? (
+                  <span>Reporter · {operatorName}</span>
+                ) : (
+                  <span>Reporter attribution unavailable</span>
+                )}
               </div>
-              {operatorName?.trim() ? (
-                <span>Reporter · {operatorName}</span>
-              ) : (
-                <span>Reporter attribution unavailable</span>
-              )}
-            </div>
-            <div className="task-tracking-form-grid">
-              <label>
-                <span>Report target</span>
-                <select
-                  disabled={!reportEnabled}
-                  onChange={(event) => changeStep(event.target.value)}
-                  required
-                  value={selectedStepId}
-                >
-                  <option value={task.id}>This task</option>
-                  {task.subtasks.map((subtask) => (
-                    <option key={subtask.id} value={subtask.id}>
-                      {subtask.simpleId} · {subtask.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Reported state</span>
-                <select
-                  disabled={!reportEnabled}
-                  onChange={(event) =>
-                    setReportedState(event.target.value as ReportedStatus)
-                  }
-                  value={reportedState}
-                >
-                  {(selectedStepId === task.id
-                    ? [
-                        { label: "Active", value: "in_progress" as const },
-                        { label: "Blocked", value: "blocked" as const },
-                        { label: "Finished", value: "complete" as const },
-                      ]
-                    : reportStates
-                  ).map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <label>
-              <span>
-                Reason <em>required</em>
-              </span>
-              <textarea
-                disabled={!reportEnabled}
-                onChange={(event) => setReason(event.target.value)}
-                required
-                value={reason}
-              />
-            </label>
-            <label>
-              <span>Report evidence</span>
-              <textarea
-                disabled={!reportEnabled}
-                onChange={(event) => setReportEvidence(event.target.value)}
-                placeholder="Evidence included in this report"
-                value={reportEvidence}
-              />
-            </label>
-            <fieldset className="task-tracking-fieldset">
-              <legend>
-                Handoff details <span>optional</span>
-              </legend>
               <div className="task-tracking-form-grid">
                 <label>
-                  <span>Next owner kind</span>
+                  <span>Report target</span>
                   <select
                     disabled={!reportEnabled}
-                    onChange={(event) =>
-                      setNextOwnerKind(
-                        event.target.value as "human" | "agent" | "unknown",
-                      )
-                    }
-                    value={nextOwnerKind}
+                    onChange={(event) => changeStep(event.target.value)}
+                    required
+                    value={selectedStepId}
                   >
-                    <option value="unknown">Unknown</option>
-                    <option value="human">Human</option>
-                    <option value="agent">Agent</option>
+                    <option value={task.id}>This task</option>
+                    {task.subtasks.map((subtask) => (
+                      <option key={subtask.id} value={subtask.id}>
+                        {subtask.simpleId} · {subtask.name}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <label>
-                  <span>Next owner</span>
-                  <input
-                    maxLength={200}
+                  <span>Reported state</span>
+                  <select
                     disabled={!reportEnabled}
-                    onChange={(event) => setNextOwner(event.target.value)}
-                    value={nextOwner}
-                  />
+                    onChange={(event) =>
+                      setReportedState(event.target.value as ReportedStatus)
+                    }
+                    value={reportedState}
+                  >
+                    {(selectedStepId === task.id
+                      ? [
+                          { label: "Active", value: "in_progress" as const },
+                          { label: "Blocked", value: "blocked" as const },
+                          { label: "Finished", value: "complete" as const },
+                        ]
+                      : reportStates
+                    ).map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
                 </label>
               </div>
               <label>
-                <span>Next action</span>
-                <input
-                  maxLength={2000}
+                <span>
+                  Reason <em>required</em>
+                </span>
+                <textarea
                   disabled={!reportEnabled}
-                  onChange={(event) => setNextAction(event.target.value)}
-                  value={nextAction}
+                  onChange={(event) => setReason(event.target.value)}
+                  required
+                  value={reason}
                 />
               </label>
               <label>
-                <span>Dependency</span>
-                <input
-                  maxLength={2000}
+                <span>Report evidence</span>
+                <textarea
                   disabled={!reportEnabled}
-                  onChange={(event) => setDependency(event.target.value)}
-                  value={dependency}
+                  onChange={(event) => setReportEvidence(event.target.value)}
+                  placeholder="Evidence included in this report"
+                  value={reportEvidence}
                 />
               </label>
-              <label>
-                <span>Wait on subtask IDs</span>
-                <input
-                  disabled={!reportEnabled}
-                  onChange={(event) => setWaitingOnIds(event.target.value)}
-                  placeholder="ST-12, ST-13"
-                  value={waitingOnIds}
-                />
-              </label>
-            </fieldset>
-            <label>
-              <span>Tested revision</span>
-              <input
-                disabled={!reportEnabled}
-                onChange={(event) => setTestedRevision(event.target.value)}
-                placeholder="7–40 hexadecimal characters"
-                value={testedRevision}
-              />
-            </label>
-            <fieldset className="task-tracking-fieldset">
-              <legend>
-                Reported artifacts <span>links are claims</span>
-              </legend>
-              {artifacts.map((artifact, index) => (
-                <div className="task-tracking-artifact-row" key={index}>
+              <fieldset className="task-tracking-fieldset">
+                <legend>
+                  Handoff details <span>optional</span>
+                </legend>
+                <div className="task-tracking-form-grid">
                   <label>
-                    <span>Label</span>
-                    <input
-                      maxLength={200}
-                      disabled={!reportEnabled}
-                      onChange={(event) =>
-                        setArtifacts((current) =>
-                          current.map((item, itemIndex) =>
-                            itemIndex === index
-                              ? { ...item, label: event.target.value }
-                              : item,
-                          ),
-                        )
-                      }
-                      value={artifact.label}
-                    />
-                  </label>
-                  <label>
-                    <span>URL</span>
-                    <input
-                      maxLength={2048}
-                      disabled={!reportEnabled}
-                      onChange={(event) =>
-                        setArtifacts((current) =>
-                          current.map((item, itemIndex) =>
-                            itemIndex === index
-                              ? { ...item, url: event.target.value }
-                              : item,
-                          ),
-                        )
-                      }
-                      value={artifact.url}
-                    />
-                  </label>
-                  <label>
-                    <span>Kind</span>
+                    <span>Next owner kind</span>
                     <select
                       disabled={!reportEnabled}
                       onChange={(event) =>
-                        setArtifacts((current) =>
-                          current.map((item, itemIndex) =>
-                            itemIndex === index
-                              ? {
-                                  ...item,
-                                  kind: event.target
-                                    .value as TrackingArtifact["kind"],
-                                }
-                              : item,
-                          ),
+                        setNextOwnerKind(
+                          event.target.value as "human" | "agent" | "unknown",
                         )
                       }
-                      value={artifact.kind}
+                      value={nextOwnerKind}
                     >
-                      <option value="artifact">Artifact</option>
-                      <option value="preview">Preview</option>
-                      <option value="test">Test</option>
-                      <option value="review">Review</option>
+                      <option value="unknown">Unknown</option>
+                      <option value="human">Human</option>
+                      <option value="agent">Agent</option>
                     </select>
                   </label>
                   <label>
-                    <span>Artifact revision</span>
+                    <span>Next owner</span>
                     <input
-                      maxLength={40}
+                      maxLength={200}
                       disabled={!reportEnabled}
-                      onChange={(event) =>
-                        setArtifacts((current) =>
-                          current.map((item, itemIndex) =>
-                            itemIndex === index
-                              ? { ...item, testedRevision: event.target.value }
-                              : item,
-                          ),
-                        )
-                      }
-                      value={artifact.testedRevision}
+                      onChange={(event) => setNextOwner(event.target.value)}
+                      value={nextOwner}
                     />
                   </label>
-                  <button
-                    aria-label={`Remove artifact ${index + 1}`}
-                    className="task-tracking-remove"
-                    disabled={!reportEnabled}
-                    onClick={() =>
-                      setArtifacts((current) =>
-                        current.filter((_, itemIndex) => itemIndex !== index),
-                      )
-                    }
-                    type="button"
-                  >
-                    Remove
-                  </button>
                 </div>
-              ))}
+                <label>
+                  <span>Next action</span>
+                  <input
+                    maxLength={2000}
+                    disabled={!reportEnabled}
+                    onChange={(event) => setNextAction(event.target.value)}
+                    value={nextAction}
+                  />
+                </label>
+                <label>
+                  <span>Dependency</span>
+                  <input
+                    maxLength={2000}
+                    disabled={!reportEnabled}
+                    onChange={(event) => setDependency(event.target.value)}
+                    value={dependency}
+                  />
+                </label>
+                <label>
+                  <span>Wait on subtask IDs</span>
+                  <input
+                    disabled={!reportEnabled}
+                    onChange={(event) => setWaitingOnIds(event.target.value)}
+                    placeholder="ST-12, ST-13"
+                    value={waitingOnIds}
+                  />
+                </label>
+              </fieldset>
+              <label>
+                <span>Tested revision</span>
+                <input
+                  disabled={!reportEnabled}
+                  onChange={(event) => setTestedRevision(event.target.value)}
+                  placeholder="7–40 hexadecimal characters"
+                  value={testedRevision}
+                />
+              </label>
+              <fieldset className="task-tracking-fieldset">
+                <legend>
+                  Reported artifacts <span>links are claims</span>
+                </legend>
+                {artifacts.map((artifact, index) => (
+                  <div className="task-tracking-artifact-row" key={index}>
+                    <label>
+                      <span>Label</span>
+                      <input
+                        maxLength={200}
+                        disabled={!reportEnabled}
+                        onChange={(event) =>
+                          setArtifacts((current) =>
+                            current.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? { ...item, label: event.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                        value={artifact.label}
+                      />
+                    </label>
+                    <label>
+                      <span>URL</span>
+                      <input
+                        maxLength={2048}
+                        disabled={!reportEnabled}
+                        onChange={(event) =>
+                          setArtifacts((current) =>
+                            current.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? { ...item, url: event.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                        value={artifact.url}
+                      />
+                    </label>
+                    <label>
+                      <span>Kind</span>
+                      <select
+                        disabled={!reportEnabled}
+                        onChange={(event) =>
+                          setArtifacts((current) =>
+                            current.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? {
+                                    ...item,
+                                    kind: event.target
+                                      .value as TrackingArtifact["kind"],
+                                  }
+                                : item,
+                            ),
+                          )
+                        }
+                        value={artifact.kind}
+                      >
+                        <option value="artifact">Artifact</option>
+                        <option value="preview">Preview</option>
+                        <option value="test">Test</option>
+                        <option value="review">Review</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Artifact revision</span>
+                      <input
+                        maxLength={40}
+                        disabled={!reportEnabled}
+                        onChange={(event) =>
+                          setArtifacts((current) =>
+                            current.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? {
+                                    ...item,
+                                    testedRevision: event.target.value,
+                                  }
+                                : item,
+                            ),
+                          )
+                        }
+                        value={artifact.testedRevision}
+                      />
+                    </label>
+                    <button
+                      aria-label={`Remove artifact ${index + 1}`}
+                      className="task-tracking-remove"
+                      disabled={!reportEnabled}
+                      onClick={() =>
+                        setArtifacts((current) =>
+                          current.filter((_, itemIndex) => itemIndex !== index),
+                        )
+                      }
+                      type="button"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <button
+                  className="task-tracking-secondary-button"
+                  disabled={!reportEnabled || artifacts.length >= 20}
+                  onClick={() =>
+                    setArtifacts((current) => [
+                      ...current,
+                      {
+                        label: "",
+                        url: "",
+                        kind: "artifact",
+                        testedRevision: "",
+                      },
+                    ])
+                  }
+                  type="button"
+                >
+                  Add artifact link
+                </button>
+              </fieldset>
+              {formError ? (
+                <p
+                  aria-live="polite"
+                  className="task-tracking-error"
+                  role="alert"
+                >
+                  {formError}
+                </p>
+              ) : null}
+              {success ? (
+                <p
+                  aria-live="polite"
+                  className="task-tracking-success"
+                  role="status"
+                >
+                  Update added.
+                </p>
+              ) : null}
+              {!connected ? (
+                <p className="task-tracking-form-note">
+                  Connect to Factory to add a report.
+                </p>
+              ) : !canMutate ? (
+                <p className="task-tracking-form-note">
+                  This session cannot edit Factory records.
+                </p>
+              ) : null}
               <button
-                className="task-tracking-secondary-button"
-                disabled={!reportEnabled || artifacts.length >= 20}
-                onClick={() =>
-                  setArtifacts((current) => [
-                    ...current,
-                    {
-                      label: "",
-                      url: "",
-                      kind: "artifact",
-                      testedRevision: "",
-                    },
-                  ])
-                }
-                type="button"
+                className="task-tracking-submit"
+                disabled={!reportEnabled}
+                type="submit"
               >
-                Add artifact link
+                {submitting ? "Saving report…" : "Add report"}
               </button>
-            </fieldset>
-            {formError ? (
-              <p
-                aria-live="polite"
-                className="task-tracking-error"
-                role="alert"
-              >
-                {formError}
-              </p>
-            ) : null}
-            {success ? (
-              <p
-                aria-live="polite"
-                className="task-tracking-success"
-                role="status"
-              >
-                Update added.
-              </p>
-            ) : null}
-            {!connected ? (
-              <p className="task-tracking-form-note">
-                Connect to Factory to add a report.
-              </p>
-            ) : !canMutate ? (
-              <p className="task-tracking-form-note">
-                This session cannot edit Factory records.
-              </p>
-            ) : null}
-            <button
-              className="task-tracking-submit"
-              disabled={!reportEnabled}
-              type="submit"
-            >
-              {submitting ? "Saving report…" : "Add report"}
-            </button>
-          </form>
-        </details>
+            </form>
+          </details>
+        )}
       </div>
 
       <div
@@ -1186,6 +1197,7 @@ export function TaskTracking({
           evidence. Task completion follows its finish rule.
         </p>
       </div>
+      {children}
     </section>
   );
 }

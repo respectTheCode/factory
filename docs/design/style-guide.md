@@ -1,5 +1,31 @@
 # Factory Design System — "Ledger"
 
+## Current everyday UI: Ledger v0.6
+
+2026-10-15. The [simplified Factory design](factory-simple.md) and its
+[Opus review](factory-simple-opus-review.md) establish the task-focused layout.
+The user subsequently requested that Home match the rest of Factory. Shared
+Factory chrome and the Ledger styling below apply across routes; the simpler
+information hierarchy remains.
+
+- Home is one column: Needs you, In progress, and Done today. One task appears
+  once; every canonical request remains reachable, including unlinked threads.
+- Task detail has one status sentence and next action. Evidence is collapsed;
+  editing and completion configuration stay available behind More.
+- Use the existing full Factory brand, visible Home / All tasks / Backups
+  navigation, signed-in session controls, and Connections indicator on every
+  route. The active destination is visible; Home does not have a separate Menu.
+- Keep the shared Ledger neutrals, semantic signals, lavender accent, IBM Plex
+  fonts, panel surfaces, controls, and shell alignment. Do not reintroduce count
+  tiles, clocks, bays, or duplicate requests. State always has a text label.
+- Preserve canonical queue rules, source freshness, revision guards, history,
+  and completion semantics. Factory does not start agents or approve GitHub PRs.
+- Use the existing Thread details panel; no unsupported T3 deep links.
+- All product controls have 44px targets, visible focus, and reduced-motion
+  and forced-colours support.
+
+---
+
 v0.4 · 2026-10-11 · dark-only · mobile-first · **clean records, dirty room**
 
 Factory is the fifth design system in the family, after Beacon, Forge ("Tally

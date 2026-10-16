@@ -1,0 +1,1171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#141210">
+<title>Factory, simplified · prototype with sample data</title>
+<!--
+  Factory, simplified — click-through prototype.
+  Spec: docs/design/factory-simple.md
+  Everything below is sample data. The page makes no network requests and
+  writes nothing anywhere; local interactions reset on reload.
+  Routes:  #/  ·  #/task/T-91  ·  #/task/T-62/check
+  Data states (?state=):  live (default) · stale · offline · clear · loading · empty
+  Revised after the Opus review (docs/design/factory-simple-opus-review.md):
+  no T3 deep links, stale T3 requests withheld, Done today, several requests
+  per task, a request with no task, and loading/empty states.
+-->
+<style>
+  /* Bundled Ledger faces when served from the repository root; system fallback otherwise. */
+  @font-face{font-family:"IBM Plex Sans";src:url("../../../src/web/fonts/ibm-plex-sans-latin-400-normal.woff2") format("woff2");font-weight:400;font-display:swap}
+  @font-face{font-family:"IBM Plex Sans";src:url("../../../src/web/fonts/ibm-plex-sans-latin-500-normal.woff2") format("woff2");font-weight:500;font-display:swap}
+  @font-face{font-family:"IBM Plex Sans";src:url("../../../src/web/fonts/ibm-plex-sans-latin-600-normal.woff2") format("woff2");font-weight:600;font-display:swap}
+  @font-face{font-family:"IBM Plex Sans";src:url("../../../src/web/fonts/ibm-plex-sans-latin-700-normal.woff2") format("woff2");font-weight:700;font-display:swap}
+  @font-face{font-family:"IBM Plex Mono";src:url("../../../src/web/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");font-weight:400;font-display:swap}
+  @font-face{font-family:"IBM Plex Mono";src:url("../../../src/web/fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2");font-weight:500;font-display:swap}
+
+  :root{
+    color-scheme:dark;
+    /* Ledger neutrals, unchanged */
+    --canvas:#141210; --panel:#1B1815; --raised:#24201B; --rule:#342E26;
+    --ink:#EAE6DF; --ink-dim:#A2988A; --ink-faint:#635A4D;
+    /* Ledger signals: one meaning each */
+    --warn:#F0B429;  /* needs you */
+    --info:#4AA3E0;  /* an agent is working */
+    --ok:#2FBE6B;    /* done */
+    --down:#E5484D;  /* blocked; offline */
+    --accent:#9499CB; --on-accent:#141210;
+    --edge-warn:rgba(240,180,41,.45); --edge-down:rgba(229,72,77,.5);
+    --edge-ok:rgba(47,190,107,.4); --edge-info:rgba(74,163,224,.4);
+    --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --col:52rem;
+    --r:10px;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--canvas);color:var(--ink);font:400 15px/1.55 var(--sans);font-feature-settings:"kern"}
+  a{color:var(--accent)}
+  button,input,textarea,select{font:inherit;color:inherit}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .vh{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+  .wrap{max-width:var(--col);margin:0 auto;padding:0 24px}
+
+  .skip{position:absolute;left:12px;top:-60px;z-index:20;background:var(--accent);color:var(--on-accent);padding:10px 14px;border-radius:6px;font-weight:600;text-decoration:none}
+  .skip:focus{top:12px}
+
+  /* ---------- Prototype frame: deliberately unlike the product ---------- */
+  .proto{border-bottom:1px dashed var(--accent);background:rgba(148,153,203,.07);font-size:13px;color:var(--ink-dim)}
+  .proto .wrap{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding-top:8px;padding-bottom:8px}
+  .proto strong{color:var(--accent);font-weight:600}
+  .proto p{margin:0;flex:1 1 18rem}
+  .proto fieldset{border:0;margin:0;padding:0;display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+  .proto legend{float:left;margin-right:6px;padding:0;color:var(--ink-dim)}
+  .proto label{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 10px;border:1px solid var(--rule);border-radius:6px;cursor:pointer;color:var(--ink)}
+  .proto label:has(input:checked){border-color:var(--accent);background:rgba(148,153,203,.14)}
+  .proto label:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+  .proto input{accent-color:var(--accent);margin:0}
+  .proto .reset{min-height:32px;padding:0 10px;border:1px solid var(--rule);border-radius:6px;background:transparent;cursor:pointer}
+
+  /* ---------- Product header ---------- */
+  .bar{border-bottom:1px solid var(--rule)}
+  .bar .wrap{display:flex;align-items:center;gap:16px;min-height:56px}
+  .brand{display:inline-flex;align-items:center;gap:10px;color:var(--ink);text-decoration:none;font-weight:700;font-size:12px;letter-spacing:.18em;min-height:44px}
+  .brand svg{width:20px;height:20px}
+  .fresh{margin:0 0 0 auto;display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-dim);text-align:right}
+  .fresh .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--ok)}
+  .fresh[data-tone="warn"] .dot{background:var(--warn)}
+  .fresh[data-tone="down"] .dot{background:var(--down)}
+  .fresh[data-tone="quiet"] .dot{background:var(--ink-faint)}
+  .fresh[data-tone="warn"]{color:var(--ink)}
+  .fresh[data-tone="down"]{color:var(--ink)}
+
+  .disclose{position:relative}
+  .btn-quiet{min-height:44px;padding:0 12px;border:1px solid var(--rule);border-radius:8px;background:transparent;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+  .btn-quiet:hover{background:var(--raised)}
+  .pop{position:absolute;right:0;top:calc(100% + 6px);z-index:10;min-width:16rem;background:var(--raised);border:1px solid var(--rule);border-radius:var(--r);box-shadow:0 10px 24px rgba(0,0,0,.45);padding:6px}
+  .pop ul{list-style:none;margin:0;padding:0}
+  .pop li button,.pop li a{display:flex;width:100%;min-height:44px;align-items:center;padding:0 12px;border:0;border-radius:6px;background:transparent;text-align:left;cursor:pointer;color:var(--ink);text-decoration:none}
+  .pop li button:hover,.pop li a:hover{background:var(--panel)}
+  .pop .note{margin:6px 12px 8px;font-size:12px;color:var(--ink-dim)}
+  .pop hr{border:0;border-top:1px solid var(--rule);margin:6px 0}
+
+  .banner{border-bottom:1px solid var(--edge-down);background:rgba(229,72,77,.08)}
+  .banner .wrap{padding-top:12px;padding-bottom:12px}
+  .banner p{margin:0;max-width:62ch}
+  .banner strong{font-weight:600}
+
+  main{max-width:var(--col);margin:0 auto;padding:32px 24px 56px;outline:none}
+  main.enter{animation:enter .14s ease-out}
+  @keyframes enter{from{opacity:.0}to{opacity:1}}
+
+  /* ---------- Home ---------- */
+  /* Plain text: the groups follow in the same order, so the sentence needs no links. */
+  .answer{font-size:22px;line-height:1.4;font-weight:500;margin:0 0 20px;letter-spacing:-.005em;outline:none}
+  .answer[aria-busy="true"]{color:var(--ink-dim)}
+  .answer .asof{display:block;font-size:15px;font-weight:400;color:var(--ink-dim);margin-bottom:4px}
+  .filter{display:flex;align-items:center;gap:10px;margin:0 0 28px;font-size:14px;color:var(--ink-dim)}
+  .filter select{min-height:44px;padding:0 36px 0 12px;border:1px solid var(--rule);border-radius:8px;background:var(--panel);color:var(--ink);appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none'%3E%3Cpath d='m3 4.5 3 3 3-3' stroke='%23A2988A' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+
+  .group{margin:0 0 36px;scroll-margin-top:16px}
+  .group h2{display:flex;align-items:baseline;gap:10px;margin:0 0 4px;font-size:15px;font-weight:600}
+  .group h2 .n{font-family:var(--mono);font-weight:400;font-size:13px;color:var(--ink-dim)}
+  .group .aside{margin:0 0 8px;font-size:13px;color:var(--ink-dim);max-width:62ch}
+  .group .aside.warn{color:var(--ink)}
+  .group .aside.warn::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--warn);margin-right:8px;vertical-align:1px}
+  .empty{margin:8px 0 0;padding:14px 0;border-top:1px solid var(--rule);color:var(--ink-dim)}
+  .empty button{border:0;background:none;color:var(--accent);cursor:pointer;padding:0;text-decoration:underline;text-underline-offset:3px;min-height:44px}
+
+  ol.rows{list-style:none;margin:8px 0 0;padding:0;border-top:1px solid var(--rule)}
+  .row{position:relative;display:grid;grid-template-columns:20px minmax(0,1fr) auto;column-gap:14px;align-items:start;padding:14px 8px 14px 4px;border-bottom:1px solid var(--rule);border-radius:2px}
+  .row:hover{background:rgba(36,32,27,.6)}
+  .row:has(.row-link:focus-visible){outline:2px solid var(--accent);outline-offset:-2px;border-radius:6px}
+  .row .mk{padding-top:3px;grid-row:1 / span 3}
+  .row-link{color:var(--ink);text-decoration:none;font-weight:500;font-size:15px;line-height:1.4}
+  .row-link::after{content:"";position:absolute;inset:0}
+  .row-link:focus-visible{outline:none}
+  /* A T3 request with no task: the title is plain text and the action is the only control. */
+  .row-title{font-weight:500;font-size:15px;line-height:1.4}
+  .row-also{grid-column:2;margin:4px 0 0;font-size:14px;line-height:1.45;color:var(--ink)}
+  .row-say{grid-column:2;margin:2px 0 0;color:var(--ink-dim);font-size:14px;line-height:1.45;max-width:60ch}
+  .row-say .lead{color:var(--ink)}
+  .row-meta{grid-column:2;margin:6px 0 0;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--ink-dim)}
+  .row-meta .mono{font-size:12px}
+  .row-act{grid-column:3;grid-row:1 / span 3;align-self:center;position:relative;z-index:1;display:flex;gap:8px}
+
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 16px;border-radius:8px;border:1px solid transparent;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;white-space:nowrap}
+  .btn-primary{background:var(--accent);color:var(--on-accent)}
+  .btn-primary:hover{background:#A5A9D6}
+  .btn-second{background:transparent;color:var(--ink);border-color:var(--rule)}
+  .btn-second:hover{background:var(--raised)}
+  /* Row actions: one per task, quieter than the task page's filled primary. */
+  .btn-row{background:transparent;color:var(--accent);border-color:rgba(148,153,203,.55)}
+  .btn-row:hover{background:rgba(148,153,203,.12)}
+  .btn[aria-disabled="true"],.btn:disabled{background:var(--raised);color:var(--ink-faint);border-color:var(--rule);cursor:not-allowed}
+  .btn svg,.link svg{flex:none}
+  .link{display:inline-flex;align-items:center;gap:6px;min-height:44px;color:var(--accent);text-decoration:none;font-weight:500;font-size:14px;background:none;border:0;padding:0;cursor:pointer}
+  .link:hover{text-decoration:underline;text-underline-offset:3px}
+
+  .more-line{margin:-12px 0 0;font-size:14px;color:var(--ink-dim)}
+  .more-line.next{margin-top:0}
+
+  /* ---------- Task detail ---------- */
+  .back{display:inline-flex;align-items:center;gap:6px;min-height:44px;color:var(--ink-dim);text-decoration:none;font-size:14px;margin:-12px 0 8px}
+  .back:hover{color:var(--ink)}
+  .head{display:flex;align-items:flex-start;gap:16px}
+  .head > .head-main{flex:1;min-width:0}
+  .head > .disclose{flex:none}
+  .crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;margin:0 0 6px;font-size:13px;color:var(--ink-dim)}
+  .crumbs .link{min-height:44px;margin:-12px 0;font-size:13px}
+  h1.title{margin:0 0 20px;font-size:22px;line-height:1.3;font-weight:600;max-width:40ch;outline:none}
+
+  .state{border:1px solid var(--rule);border-radius:var(--r);background:var(--panel);padding:20px 22px 18px;margin:0 0 32px}
+  .state[data-tone="warn"]{border-color:var(--edge-warn)}
+  .state[data-tone="down"]{border-color:var(--edge-down)}
+  .state[data-tone="ok"]{border-color:var(--edge-ok)}
+  .state[data-tone="info"]{border-color:var(--edge-info)}
+  .state-label{display:flex;align-items:center;gap:8px;margin:0 0 6px;font-size:13px;font-weight:600}
+  .state[data-tone="warn"] .state-label{color:var(--warn)}
+  .state[data-tone="down"] .state-label{color:var(--down)}
+  .state[data-tone="ok"] .state-label{color:var(--ok)}
+  .state[data-tone="info"] .state-label{color:var(--info)}
+  .state[data-tone="quiet"] .state-label{color:var(--ink-dim)}
+  .state h2{margin:0 0 8px;font-size:28px;line-height:1.22;font-weight:600;letter-spacing:-.01em;max-width:30ch;text-wrap:balance}
+  .state p{margin:0 0 8px;color:var(--ink-dim);max-width:60ch}
+  .state p.src{font-size:13px}
+  .state blockquote{margin:12px 0;padding:10px 14px;border-left:2px solid var(--rule);color:var(--ink);max-width:60ch}
+  .state blockquote footer{margin-top:4px;font-size:13px;color:var(--ink-dim)}
+  .acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px 20px;margin-top:14px}
+
+  .also{margin-top:16px;padding-top:12px;border-top:1px solid var(--rule)}
+  .also h3{margin:0 0 4px;font-size:14px;font-weight:600}
+  .also ul{list-style:none;margin:0;padding:0}
+  .also li{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:0 16px}
+  .also li span{color:var(--ink)}
+  .also .sub{color:var(--ink-dim);font-size:13px}
+
+  .check{margin-top:16px;padding-top:16px;border-top:1px solid var(--rule)}
+  .check label{display:block;font-size:14px;font-weight:500;margin:0 0 6px}
+  .check label small{font-weight:400;color:var(--ink-dim)}
+  .check input,.check textarea{width:100%;max-width:36rem;min-height:44px;padding:10px 12px;border:1px solid var(--rule);border-radius:8px;background:var(--canvas)}
+  .check textarea{min-height:88px;resize:vertical}
+  .check .hint{margin:8px 0 0;font-size:13px;color:var(--ink-dim)}
+  .check .err{margin:8px 0 0;font-size:13px;color:var(--down)}
+
+  section.part{margin:0 0 32px}
+  section.part > h2{display:flex;align-items:baseline;gap:10px;margin:0 0 8px;font-size:15px;font-weight:600}
+  section.part > h2 .n{font-weight:400;font-size:14px;color:var(--ink-dim)}
+  ul.steps{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule)}
+  ul.steps li{display:grid;grid-template-columns:20px minmax(0,1fr) auto;column-gap:12px;padding:10px 4px;border-bottom:1px solid var(--rule)}
+  ul.steps .mk{padding-top:3px}
+  ul.steps .who{font-size:13px;color:var(--ink-dim);white-space:nowrap}
+  ul.steps .done-name{color:var(--ink-dim)}
+  ul.steps .why{grid-column:2 / span 2;margin:2px 0 0;font-size:13px;color:var(--down)}
+  .left-open{margin:10px 0 0;font-size:13px;color:var(--ink-dim)}
+
+  ol.log{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule)}
+  ol.log li{display:grid;grid-template-columns:8.5rem minmax(0,1fr);column-gap:14px;padding:9px 4px;border-bottom:1px solid var(--rule);font-size:14px}
+  ol.log time{font-family:var(--mono);font-size:12px;color:var(--ink-dim);padding-top:2px;font-variant-numeric:tabular-nums}
+  ol.log .who{font-weight:500}
+
+  details.ev{border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+  details.ev summary{display:flex;align-items:center;gap:10px;min-height:48px;cursor:pointer;font-weight:600;font-size:15px;list-style:none}
+  details.ev summary::-webkit-details-marker{display:none}
+  details.ev summary::before{content:"";width:8px;height:8px;border-right:1.5px solid var(--ink-dim);border-bottom:1.5px solid var(--ink-dim);transform:rotate(-45deg);margin:0 4px 0 2px;transition:transform .12s}
+  details.ev[open] summary::before{transform:rotate(45deg)}
+  details.ev summary .n{font-weight:400;font-size:14px;color:var(--ink-dim)}
+  dl.facts{margin:0 0 16px;display:grid;grid-template-columns:9.5rem minmax(0,1fr);gap:12px 18px;font-size:14px}
+  dl.facts dt{color:var(--ink-dim)}
+  dl.facts dd{margin:0}
+  dl.facts dd p{margin:0 0 6px}
+  dl.facts dd .sub{color:var(--ink-dim);font-size:13px}
+  .ev-note{margin:0 0 16px;font-size:13px;color:var(--ink-dim);max-width:62ch}
+
+  .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:30;max-width:min(36rem,calc(100vw - 24px));background:var(--raised);border:1px dashed var(--accent);border-radius:var(--r);padding:12px 16px;font-size:14px;box-shadow:0 10px 24px rgba(0,0,0,.45)}
+  .toast[hidden]{display:none}
+  .toast strong{color:var(--accent);font-weight:600}
+
+  footer.proto-foot{border-top:1px dashed var(--accent);font-size:12px;color:var(--ink-dim)}
+  footer.proto-foot .wrap{padding-top:12px;padding-bottom:20px}
+  footer.proto-foot p{margin:0}
+
+  /* ---------- Phone ---------- */
+  @media (max-width:640px){
+    .wrap{padding:0 16px}
+    .proto p{flex-basis:100%}
+    .proto legend{float:none;width:100%;margin-bottom:4px}
+    .fresh .long{display:none}
+    main{padding:24px 16px 48px}
+    .answer{font-size:19px}
+    .row{grid-template-columns:20px minmax(0,1fr);padding-right:4px}
+    .row .mk{grid-row:1 / span 4}
+    .row-act{grid-column:2;grid-row:auto;margin-top:10px;align-self:stretch}
+    .row-act .btn{flex:1}
+    .state{padding:16px 16px 14px;margin-left:-4px;margin-right:-4px}
+    .state h2{font-size:23px}
+    .acts{flex-direction:column;align-items:stretch;gap:4px}
+    .acts .btn{width:100%}
+    .acts .link{justify-content:center}
+    dl.facts{grid-template-columns:1fr;gap:2px}
+    dl.facts dd{margin-bottom:12px}
+    ol.log li{grid-template-columns:1fr;row-gap:2px}
+    .head .disclose .pop{right:0}
+  }
+  @media (prefers-reduced-motion:reduce){
+    main.enter{animation:none}
+    details.ev summary::before{transition:none}
+  }
+  @media (forced-colors:active){
+    .row:has(.row-link:focus-visible){outline:2px solid Highlight}
+    .fresh .dot{forced-color-adjust:none}
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="proto" role="region" aria-label="Prototype controls">
+  <div class="wrap">
+    <p><strong>Prototype with sample data.</strong> Nothing here reads from or writes to Factory, GitHub or T3. Changes you make stay in this page and reset on reload.</p>
+    <fieldset id="modes">
+      <legend>Show data as</legend>
+      <label><input type="radio" name="mode" value="live"> Live</label>
+      <label><input type="radio" name="mode" value="stale"> T3 not reporting</label>
+      <label><input type="radio" name="mode" value="offline"> Factory offline</label>
+      <label><input type="radio" name="mode" value="clear"> Nothing needs you</label>
+      <label><input type="radio" name="mode" value="loading"> Loading</label>
+      <label><input type="radio" name="mode" value="empty"> No tasks yet</label>
+    </fieldset>
+    <button type="button" class="reset" id="reset">Reset sample</button>
+  </div>
+</div>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="#/" aria-label="Factory home">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4.5" y="3" width="15" height="3.5" rx=".6" fill="currentColor"/><rect x="4.5" y="3" width="3" height="18" rx=".6" fill="currentColor"/><rect x="4.5" y="10.5" width="9" height="3.5" rx=".6" fill="currentColor"/><rect x="16" y="10.5" width="3.5" height="3.5" rx="1" fill="#9499CB"/></svg>
+      FACTORY
+    </a>
+    <p class="fresh" id="fresh" role="status"></p>
+    <div class="disclose">
+      <button type="button" class="btn-quiet" id="app-menu-btn" aria-expanded="false" aria-controls="app-menu">Menu</button>
+      <div class="pop" id="app-menu" hidden>
+        <ul>
+          <li><button type="button" data-secondary="All tasks, by project">All tasks</button></li>
+          <li><button type="button" data-secondary="Connections: T3, GitHub and agent access">Connections</button></li>
+          <li><button type="button" data-secondary="Backups">Backups</button></li>
+          <li><hr></li>
+          <li><button type="button" data-secondary="Sign out">Sign out</button></li>
+        </ul>
+        <p class="note">These are secondary screens. They aren't part of this prototype.</p>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="banner" id="offline" hidden>
+  <div class="wrap">
+    <p role="alert"><strong>Factory is offline.</strong> You're seeing what was true at 14:20. Checks and thread details are paused until it reconnects. Links to GitHub still work.</p>
+  </div>
+</div>
+
+<main id="main" tabindex="-1"></main>
+
+<footer class="proto-foot">
+  <div class="wrap"><p>Sample data as of Wednesday 15 October 2026, 14:20. Projects, people, task IDs, PRs, commits and messages are illustrative. External links open nothing.</p></div>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* ---------------- Marks: shape + colour, always paired with words ---------------- */
+  const MARKS = {
+    needs:   '<circle cx="8" cy="8" r="5.5" fill="var(--warn)"/>',
+    working: '<circle cx="8" cy="8" r="5.6" stroke="var(--info)" stroke-width="1.6"/><path d="M8 8V3.4A4.6 4.6 0 0 1 12.6 8Z" fill="var(--info)"/>',
+    quiet:   '<circle cx="8" cy="8" r="5.6" stroke="var(--ink-dim)" stroke-width="1.6" stroke-dasharray="2.4 2.4"/>',
+    blocked: '<circle cx="8" cy="8" r="5.6" stroke="var(--down)" stroke-width="1.6"/><path d="M4.6 8h6.8" stroke="var(--down)" stroke-width="1.8"/>',
+    done:    '<circle cx="8" cy="8" r="6.2" fill="var(--ok)"/><path d="m5.2 8.1 1.9 1.9 3.7-3.8" stroke="var(--canvas)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
+    "step-done":    '<circle cx="8" cy="8" r="6" fill="var(--ink-dim)"/><path d="m5.3 8.1 1.8 1.8 3.6-3.7" stroke="var(--canvas)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+    "step-doing":   '<circle cx="8" cy="8" r="5.4" stroke="var(--info)" stroke-width="1.4"/><path d="M8 8V3.6A4.4 4.4 0 0 1 12.4 8Z" fill="var(--info)"/>',
+    "step-todo":    '<circle cx="8" cy="8" r="5.4" stroke="var(--ink-dim)" stroke-width="1.4" stroke-dasharray="2 2"/>',
+    "step-blocked": '<circle cx="8" cy="8" r="5.4" stroke="var(--down)" stroke-width="1.4"/><path d="M4.8 8h6.4" stroke="var(--down)" stroke-width="1.6"/>'
+  };
+  const mark = (k, size = 16) => `<svg class="mk-svg" width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" aria-hidden="true">${MARKS[k]}</svg>`;
+  const EXT = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.5 2.5h5v5M9.5 2.5 3 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const BACK = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M8.5 3 4.5 7l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const TONE = { needs: "warn", blocked: "down", working: "info", quiet: "quiet", done: "ok" };
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  /* ---------------- Sample data (illustrative) ----------------
+     Each task has a live presentation plus optional overrides for the
+     "stale" and "clear" data states. `wait` is minutes waiting, used for
+     oldest-first ordering in Needs you. `age` is the literal meta text and
+     appears only when the Floor card or queue item carries that time.
+     Home row text uses only Floor card and queue fields; the task page may
+     use the task's full status and history.
+     There is no supported T3 URL, so T3 actions are `thread`: they open
+     Factory's existing observed-thread panel (metadata only). */
+  const TASKS = [
+    {
+      id: "T-73", project: "Factory", title: "Restore Factory GitHub integration in Dokploy",
+      live: {
+        bucket: "needs", mark: "blocked", label: "Blocked on you", wait: 1515, age: "waiting 1d",
+        row: "<span class=lead>Blocked on you:</span> the GitHub token for Dokploy expired.",
+        headline: "The GitHub token for Dokploy expired.",
+        body: ["Claude stopped at “Rotate Dokploy GitHub token” yesterday at 13:05 and is waiting for you. Once the token is replaced, tell Claude in its T3 thread, “Restore Dokploy GitHub”."],
+        src: "Reported by Claude, 1 day ago.",
+        action: { kind: "thread", thread: "Restore Dokploy GitHub", label: "Thread details" }
+      },
+      clear: {
+        bucket: "progress", mark: "working", label: "In progress", age: "seen 1m ago",
+        row: "Claude is working in “Restore Dokploy GitHub”. 1 of 3 steps done.",
+        headline: "Claude is working on it.",
+        body: ["Now: Rotate Dokploy GitHub token, step 2 of 3. Observed from T3 1 minute ago."],
+        src: "", action: null, link: { thread: "Restore Dokploy GitHub", label: "Thread details" }
+      },
+      steps: [
+        { s: "done", name: "Confirm Dokploy can reach GitHub", who: "Claude, 2d" },
+        { s: "blocked", name: "Rotate Dokploy GitHub token", who: "Claude, 1d", why: "Token expired. Waiting on you." },
+        { s: "todo", name: "Redeploy and confirm the webhook fires", who: "" }
+      ],
+      log: [
+        ["Yesterday 13:05", "Claude", "said it’s blocked on you: the GitHub token for Dokploy expired."],
+        ["Yesterday 11:40", "Claude", "finished “Confirm Dokploy can reach GitHub”."],
+        ["13 Oct 09:12", "Kevin", "created the task."]
+      ],
+      ev: {
+        finish: "When its PR merges into main. No PR is linked yet.",
+        sessions: [["Claude", "T3 thread “Restore Dokploy GitHub”", "Waiting for input since yesterday 13:05. Seen 1 minute ago."]],
+        handoffs: ["Claude → you: replace the GitHub token in Dokploy. Yesterday 13:05."]
+      }
+    },
+    {
+      id: "T-62", project: "Factory", title: "Configure Factory on the M5 mini",
+      live: {
+        bucket: "needs", mark: "needs", label: "Needs you", wait: 278, age: "waiting 5h",
+        row: "Claude finished. It’s ready for your check.",
+        headline: "Check that it works.",
+        body: ["Claude finished 5 hours ago. This task asked for your check before it counts as done."],
+        ask: "Open Factory on the M5 mini and confirm the home page loads with live T3 status.",
+        report: "Factory runs under launchd on the M5 mini. Tailscale serves it on port 443. /health answered ok at 09:41.",
+        src: "", action: { kind: "check", label: "Check it" }
+      },
+      clear: {
+        bucket: "done", mark: "done", label: "Done", age: "done 13:55", doneSort: 1,
+        row: "You checked it.",
+        headline: "You checked it.",
+        body: ["Recorded today at 13:55, after Claude finished at 09:42."], src: "", action: null
+      },
+      steps: [],
+      log: [
+        ["09:42", "Claude", "finished: “Factory runs under launchd on the M5 mini. /health answered ok at 09:41.”"],
+        ["08:10", "Claude", "started work."],
+        ["14 Oct 17:30", "Kevin", "created the task and asked to check it before it’s done."]
+      ],
+      ev: {
+        finish: "When Claude reports it finished, then your check.",
+        sessions: [["Claude", "T3 thread “M5 mini setup”", "Idle since 09:42. Seen 1 minute ago."]],
+        handoffs: []
+      }
+    },
+    {
+      id: "T-115", project: "Grail", title: "Fix shuffle repeating the same track", tracker: ["Linear", "GRA-198"],
+      live: {
+        bucket: "needs", mark: "needs", label: "Needs you", wait: 190, age: "waiting 3h",
+        row: "Factory can’t tell when this is done: PR #40 closed without merging.",
+        headline: "Factory can’t tell when this is done.",
+        body: ["PR #40 was required to finish this task, and it closed on GitHub without merging. Choose another PR, or change how this task finishes."],
+        src: "GitHub, checked 4 minutes ago: PR #40 closed, not merged.",
+        action: { kind: "secondary", label: "Choose what finishes it", to: "How this task finishes: link another PR, mark PR #40 not required, or let the agent’s report finish it" },
+        link: { to: "PR #40 on GitHub", label: "Open PR #40 on GitHub" }
+      },
+      clear: {
+        bucket: "progress", mark: "working", label: "In progress", age: "seen 2m ago",
+        row: "Claude is working in “Shuffle repeats”. 2 of 2 steps done.",
+        headline: "Claude is working on it.",
+        body: ["Now: a new fix for PR #43. Observed from T3 2 minutes ago."],
+        src: "", action: null, link: { thread: "Shuffle repeats", label: "Thread details" }
+      },
+      steps: [
+        { s: "done", name: "Reproduce the repeat", who: "Claude, 1d" },
+        { s: "done", name: "Fix the shuffle seed", who: "Claude, 5h" }
+      ],
+      log: [
+        ["11:20", "GitHub", "PR #40 closed without merging."],
+        ["Yesterday 17:05", "Claude", "finished: “PR #40 is ready.”"],
+        ["Yesterday 09:00", "Kevin", "created the task from Linear GRA-198."]
+      ],
+      ev: {
+        finish: "When PR #40 merges into main. PR #40 closed without merging.",
+        prs: [["PR #40", "Fix shuffle repeats", "Closed without merging. Required to finish.", "GitHub, checked 4 minutes ago."]],
+        sessions: [["Claude", "T3 thread “Shuffle repeats”", "Ended yesterday 17:06."]], handoffs: []
+      }
+    },
+    {
+      id: "T-91", project: "Factory", title: "Deploy production automatically from main", tracker: ["Linear", "FAC-31"],
+      live: {
+        bucket: "needs", mark: "needs", label: "Needs you", wait: 120, age: "waiting 2h",
+        row: "Codex says PR #18 is ready. Review it on GitHub.",
+        headline: "Review PR #18 on GitHub.",
+        body: ["Codex finished and says PR #18 is ready. This task is done when PR #18 merges into main."],
+        src: "GitHub, checked 2 minutes ago: checks passing on <span class=mono>a91c4e2</span>, no unresolved threads.",
+        action: { kind: "ext", to: "PR #18 on GitHub", label: "Review PR #18 on GitHub", short: "Review PR #18" },
+        // A second queue item on the same task. The oldest item sets the row;
+        // every other item stays reachable here and on the task page.
+        also: [{ row: "Codex is waiting for your approval in T3.", age: "waiting 8m", thread: "Deploy from main" }]
+      },
+      // Stale T3: the approval is withheld, as the server does today.
+      stale: { also: [] },
+      clear: {
+        bucket: "done", mark: "done", label: "Done", age: "done 14:05", doneSort: 0, also: [],
+        row: "PR #18 merged into main.",
+        headline: "PR #18 merged into main.",
+        body: ["Merged today at 14:05 as <span class=mono>a91c4e2</span>. Deployment isn’t tracked here."],
+        src: "", action: null, link: { to: "commit a91c4e2 on GitHub", label: "View the merge commit" }
+      },
+      steps: [
+        { s: "done", name: "Write the deployment workflow", who: "Claude, 1d" },
+        { s: "done", name: "Add release checks", who: "Codex, 4h" }
+      ],
+      log: [
+        ["12:20", "Codex", "finished: “PR #18 is ready. CI passing on a91c4e2.”"],
+        ["11:02", "Codex", "linked PR #18."],
+        ["Yesterday 16:44", "Claude", "finished “Write the deployment workflow”."],
+        ["13 Oct 10:05", "Kevin", "created the task from Linear FAC-31."]
+      ],
+      ev: {
+        finish: "When PR #18 merges into main.",
+        prs: [["PR #18", "Deploy production from main", "Open. Required to finish.", "GitHub, checked 2 minutes ago: checks passing, no unresolved threads, head a91c4e2."]],
+        sessions: [["Codex", "T3 thread “Deploy from main”", "Waiting for approval since 14:12. Seen 1 minute ago."], ["Claude", "T3 thread “Release workflow”", "Ended yesterday."]],
+        handoffs: ["Codex → you: review PR #18. Today 12:20."]
+      }
+    },
+    {
+      id: "T-94", project: "Factory", title: "Design the simplified Factory home",
+      live: {
+        bucket: "needs", mark: "needs", label: "Needs you", wait: 12, age: "waiting 12m",
+        // T3 reports only that input is pending, never the question text.
+        row: "Codex is waiting for your answer in T3.",
+        headline: "Codex is waiting for your answer in T3.",
+        body: ["Its T3 thread “Simplified home” is waiting for input. Factory can see that, but not the question, and it can’t answer for you."],
+        src: "Observed from T3 1 minute ago.",
+        action: { kind: "thread", thread: "Simplified home", label: "Thread details" }
+      },
+      // Stale T3: the request is withheld (fail closed), so the task falls back to In progress.
+      stale: {
+        bucket: "progress", mark: "quiet", label: "In progress, not confirmed", age: "",
+        row: "T3 isn’t reporting, so Factory can’t see this task’s agent.",
+        headline: "Factory can’t see this task’s agent right now.",
+        body: ["T3 hasn’t reported since 14:14. Factory doesn’t show agents’ questions or approvals until it does, so check T3 directly. Last report to Factory: Codex finished “Write the design note” at 13:10."],
+        src: "", action: null, link: null
+      },
+      clear: {
+        bucket: "progress", mark: "working", label: "In progress", age: "seen 1m ago",
+        row: "Codex is working in “Simplified home”. 2 of 5 steps done.",
+        headline: "Codex is working on it.",
+        body: ["Now: Build the home list, step 3 of 5. Observed from T3 1 minute ago."],
+        src: "", action: null, link: { thread: "Simplified home", label: "Thread details" }
+      },
+      steps: [
+        { s: "done", name: "Audit the current UI", who: "Codex, 3h" },
+        { s: "done", name: "Write the design note", who: "Codex, 1h" },
+        { s: "doing", name: "Build the home list", who: "Codex, 12m" },
+        { s: "todo", name: "Keyboard and phone checks", who: "" },
+        { s: "todo", name: "Open a PR", who: "" }
+      ],
+      log: [
+        ["13:10", "Codex", "finished “Write the design note”."],
+        ["12:05", "Codex", "finished “Audit the current UI”."],
+        ["11:30", "Codex", "started work."]
+      ],
+      ev: {
+        finish: "When its PR merges into main. No PR is linked yet.",
+        sessions: [["Codex", "T3 thread “Simplified home”", "Waiting for your answer since 14:08. Seen 1 minute ago."]],
+        handoffs: []
+      }
+    },
+    {
+      id: "T-71", project: "Factory", title: "Support T3 orchestration v2",
+      live: {
+        bucket: "progress", mark: "working", label: "In progress", age: "seen 1m ago",
+        row: "Codex is working in “Orchestration v2”. 1 of 4 steps done.",
+        headline: "Codex is working on it.",
+        body: ["Now: Map v2 thread events, step 2 of 4. Observed from T3 1 minute ago."],
+        src: "", action: null, link: { thread: "Orchestration v2", label: "Thread details" }
+      },
+      // Stale T3: the Floor card drops stale sessions, so Factory can't say what the agent was doing.
+      stale: {
+        mark: "quiet", label: "In progress, not confirmed", age: "",
+        row: "T3 isn’t reporting, so Factory can’t see this task’s agent.",
+        headline: "Factory can’t see this task’s agent right now.",
+        body: ["T3 hasn’t reported since 14:14. Last report to Factory: Codex started “Map v2 thread events” at 14:19."],
+        link: null
+      },
+      steps: [
+        { s: "done", name: "Read the v2 protocol notes", who: "Codex, 1h" },
+        { s: "doing", name: "Map v2 thread events", who: "Codex, 1m" },
+        { s: "todo", name: "Keep v1 working during the move", who: "" },
+        { s: "todo", name: "Open a PR", who: "" }
+      ],
+      log: [["14:19", "Codex", "started “Map v2 thread events”."], ["13:02", "Codex", "finished “Read the v2 protocol notes”."], ["12:40", "Kevin", "created the task."]],
+      ev: { finish: "When its PR merges into main. No PR is linked yet.", sessions: [["Codex", "T3 thread “Orchestration v2”", "Running. Seen 1 minute ago."]], handoffs: [] }
+    },
+    {
+      id: "T-38", project: "Factory", title: "Attach screenshot proof to tasks",
+      live: {
+        bucket: "progress", mark: "working", label: "In progress", age: "seen 3m ago",
+        row: "Claude is working in “Screenshot proof”. 1 of 4 steps done.",
+        headline: "Claude is working on it.",
+        body: ["Now: Upload endpoint, step 2 of 4. Observed from T3 3 minutes ago."],
+        src: "", action: null, link: { thread: "Screenshot proof", label: "Thread details" }
+      },
+      stale: {
+        mark: "quiet", label: "In progress, not confirmed", age: "",
+        row: "T3 isn’t reporting, so Factory can’t see this task’s agent.",
+        headline: "Factory can’t see this task’s agent right now.",
+        body: ["T3 hasn’t reported since 14:14. Last report to Factory: Claude started “Upload endpoint” at 14:02."],
+        link: null
+      },
+      steps: [
+        { s: "done", name: "Store screenshots with the task", who: "Claude, 2h" },
+        { s: "doing", name: "Upload endpoint", who: "Claude, 18m" },
+        { s: "todo", name: "Show screenshots in Evidence", who: "" },
+        { s: "todo", name: "Open a PR", who: "" }
+      ],
+      log: [["14:02", "Claude", "started “Upload endpoint”."], ["12:15", "Claude", "finished “Store screenshots with the task”."]],
+      ev: { finish: "When its PR merges into main. No PR is linked yet.", sessions: [["Claude", "T3 thread “Screenshot proof”", "Running. Seen 3 minutes ago."]], handoffs: [] }
+    },
+    {
+      id: "T-20", project: "Factory", title: "Show T3 thread status beside each task",
+      live: {
+        bucket: "progress", mark: "blocked", label: "Blocked on Codex", age: "reported 2h ago",
+        row: "<span class=lead>Blocked on Codex:</span> the CI runner is offline. Nothing needed from you.",
+        headline: "Waiting for the CI runner to come back.",
+        body: ["Codex reported this 2 hours ago and said it will retry when the runner is back. Nothing is needed from you."],
+        src: "", action: null, link: { thread: "Thread status dots", label: "Thread details" }
+      },
+      stale: { link: null },
+      steps: [
+        { s: "done", name: "Read thread state from T3", who: "Codex, 5h" },
+        { s: "blocked", name: "Run the browser checks", who: "Codex, 2h", why: "CI runner is offline. Codex will retry." }
+      ],
+      log: [["12:18", "Codex", "said it’s blocked: the CI runner is offline. Codex will retry."], ["09:30", "Codex", "finished “Read thread state from T3”."]],
+      ev: { finish: "When its PR merges into main. No PR is linked yet.", sessions: [["Codex", "T3 thread “Thread status dots”", "Idle since 12:18. Seen 1 minute ago."]], handoffs: ["Codex → Codex: retry the browser checks when the CI runner is back. 12:18."] }
+    },
+    {
+      id: "T-112", project: "Grail", title: "Cache album art for offline play", tracker: ["Linear", "GRA-210"],
+      live: {
+        bucket: "progress", mark: "quiet", label: "In progress, waiting for a merge", age: "",
+        // Home uses card counts only; the task page adds what GitHub said and when.
+        row: "Claude reported it finished. Waiting for its required PR to merge.",
+        headline: "Factory can’t see PR #42 right now.",
+        body: ["Claude finished and linked PR #42. GitHub didn’t answer when Factory last checked, so Factory doesn’t know whether PR #42 is open, merged or closed. It will try again."],
+        src: "GitHub, last tried at 14:02: no answer.",
+        action: null, link: { to: "PR #42 on GitHub", label: "Open PR #42 on GitHub" }
+      },
+      steps: [
+        { s: "done", name: "Cache art on first play", who: "Claude, 5h" },
+        { s: "done", name: "Evict old art", who: "Claude, 3h" }
+      ],
+      log: [["11:20", "Claude", "finished: “PR #42 is ready for review.”"], ["11:05", "Claude", "linked PR #42."]],
+      ev: {
+        finish: "When PR #42 merges into main.",
+        prs: [["PR #42", "Cache album art", "State unknown. Required to finish.", "GitHub, last tried at 14:02: no answer. Last known at 11:20: open."]],
+        sessions: [["Claude", "T3 thread “Album art cache”", "Ended at 11:21."]], handoffs: []
+      }
+    },
+    {
+      id: "T-131", project: "Playlister", title: "Import playlists from a shared link", tracker: ["Notion", "Playlist import"],
+      live: {
+        bucket: "progress", mark: "quiet", label: "In progress, no agent working", age: "",
+        row: "No agent is working on it right now.",
+        headline: "No agent is working on it right now.",
+        body: ["Claude’s T3 thread for this task is idle. Its last report to Factory, on 12 Oct: “Parsing shared links works; the import queue is next.”"],
+        src: "", action: null, link: { thread: "Playlist import", label: "Thread details" }
+      },
+      stale: {
+        label: "In progress, not confirmed",
+        row: "T3 isn’t reporting, so Factory can’t see this task’s agent.",
+        headline: "Factory can’t see this task’s agent right now.",
+        body: ["T3 hasn’t reported since 14:14. Last report to Factory, from Claude on 12 Oct: “Parsing shared links works; the import queue is next.”"],
+        link: null
+      },
+      steps: [
+        { s: "done", name: "Parse shared links", who: "Claude, 3d" },
+        { s: "todo", name: "Import queue", who: "" },
+        { s: "todo", name: "Show progress while importing", who: "" }
+      ],
+      log: [["12 Oct 16:10", "Claude", "finished “Parse shared links”."], ["11 Oct 09:00", "Kevin", "created the task from Notion."]],
+      ev: { finish: "When its PR merges into main. No PR is linked yet.", sessions: [["Claude", "T3 thread “Playlist import”", "Ended 12 Oct 16:12."]], handoffs: [] }
+    },
+    {
+      id: "T-88", project: "Factory", title: "Manage agent credentials and project access",
+      live: {
+        bucket: "done", mark: "done", label: "Done", age: "done 11:02", doneSort: 2,
+        row: "PR #16 merged into main.",
+        headline: "PR #16 merged into main.",
+        body: ["Merged today at 11:02 as <span class=mono>b6767e6</span>. Deployment isn’t tracked here."],
+        src: "", action: null, link: { to: "commit b6767e6 on GitHub", label: "View the merge commit" }
+      },
+      steps: [
+        { s: "done", name: "Add the credential form to Connections", who: "Claude, 2d" },
+        { s: "done", name: "Scope tokens to projects", who: "Claude, 2d" },
+        { s: "done", name: "Record changes in the audit log", who: "Codex, 1d" },
+        { s: "todo", name: "Update the Connections help text", who: "", leftOpen: true }
+      ],
+      log: [["11:02", "GitHub", "PR #16 merged into main as b6767e6. The task is done."], ["09:30", "Codex", "finished: “PR #16 is ready.”"], ["12 Oct 10:00", "Kevin", "created the task."]],
+      ev: {
+        finish: "When PR #16 merges into main. It did today at 11:02.",
+        prs: [["PR #16", "Agent credentials and project access", "Merged into main as b6767e6.", "GitHub, today 11:02."]],
+        sessions: [["Claude", "T3 thread “Connections credentials”", "Ended 13 Oct."], ["Codex", "T3 thread “Audit log”", "Ended 14 Oct."]],
+        handoffs: [],
+        earlier: ["Accepted by Kevin on 13 Oct under the earlier review process. Kept as history."]
+      }
+    },
+    {
+      id: "T-126", project: "Grail", title: "Write release notes for Grail 2.3", tracker: ["Notion", "Grail 2.3 release"],
+      live: {
+        bucket: "done", mark: "done", label: "Done", age: "done 10:30", doneSort: 3,
+        row: "Claude finished it.",
+        headline: "Claude finished it.",
+        body: ["This task is done when its agent reports it finished. Claude did today at 10:30: “Release notes drafted in Notion and linked.”"],
+        src: "", action: null
+      },
+      steps: [],
+      log: [["10:30", "Claude", "finished: “Release notes drafted in Notion and linked.” The task is done."], ["09:15", "Claude", "started work."]],
+      ev: { finish: "When the agent reports it finished.", sessions: [["Claude", "T3 thread “Grail 2.3 notes”", "Ended 10:31."]], handoffs: [] }
+    },
+    {
+      id: "T-43", project: "Factory", title: "Fix false T3 warnings for archived work",
+      live: {
+        bucket: "done", mark: "done", label: "Done", age: "done 09:05", doneSort: 4,
+        row: "You marked it done: fixed as part of T-44.",
+        headline: "You marked it done.",
+        body: ["Your reason, today at 09:05: “Fixed as part of T-44.” Its own finish rule wasn’t met; your reason is the record."],
+        src: "", action: null
+      },
+      steps: [],
+      log: [["09:05", "Kevin", "marked it done: “Fixed as part of T-44.”"], ["8 Oct 11:00", "Kevin", "created the task."]],
+      ev: { finish: "When its PR merges into main. Marked done by hand instead.", sessions: [], handoffs: [] }
+    }
+  ];
+  // Queue items with no task on Home (an unlinked T3 thread asking for approval
+  // or input). They are never dropped: each gets its own Needs-you row. Withheld
+  // while T3 is stale, like every T3 request.
+  const REQUESTS = [
+    {
+      id: "approve:src-1:thr-77", project: "Factory", title: "Rotate staging certificates", wait: 40,
+      row: "Claude is waiting for your approval in T3. This thread isn’t linked to a task.",
+      age: "waiting 40m", thread: "Rotate staging certificates"
+    }
+  ];
+  const PLANNED_NOT_STARTED = 6;
+  const TRACKING_NOTES = 2;
+  const PROJECTS = ["Factory", "Grail", "Playlister"];
+
+  /* ---------------- Page state (never persisted) ---------------- */
+  const url = new URL(location.href);
+  const MODES = ["live", "stale", "offline", "clear", "loading", "empty"];
+  let mode = MODES.includes(url.searchParams.get("state")) ? url.searchParams.get("state") : "live";
+  let project = "all";
+  let local = {};           // per-task overrides from prototype actions
+  let lastTaskId = null;    // for focus restore on Back
+
+  const byId = (id) => TASKS.find((t) => t.id === id);
+  const view = (t) => {
+    const v = Object.assign({}, t.live);
+    if (mode === "stale" && t.stale) Object.assign(v, t.stale);
+    if (mode === "clear" && t.clear) Object.assign(v, t.clear);
+    if (local[t.id]) Object.assign(v, local[t.id]);
+    return v;
+  };
+  const writesOff = () => mode === "offline";
+  const requestsShown = () => mode === "live" || mode === "offline";
+
+  /* ---------------- Shared fragments ---------------- */
+  // Accessible name starts with the visible label (label-in-name), then adds context.
+  const extLink = (to, label, cls = "link", context = "") =>
+    `<a class="${cls}" href="#external" data-ext="${esc(to)}" aria-label="${esc(label)}${context ? ", " + esc(context) : ""} (opens outside Factory)">${esc(label)} ${EXT}</a>`;
+  // No supported T3 URL exists, so this opens Factory's own observed-thread
+  // panel. It stays inside Factory: no external icon, no "in T3" claim.
+  const threadBtn = (thread, cls = "link", context = "") =>
+    `<button type="button" class="${cls}" data-thread="${esc(thread)}"${writesOff() ? ' aria-disabled="true"' : ""} aria-label="Thread details${context ? ", " + esc(context) : ""}">Thread details</button>`;
+
+  function rowAction(t, v) {
+    if (!v.action) return "";
+    if (v.action.kind === "thread") return `<div class="row-act">${threadBtn(v.action.thread, "btn btn-row", t.title)}</div>`;
+    if (v.action.kind === "ext") return `<div class="row-act">${extLink(v.action.to, v.action.short || v.action.label, "btn btn-row", t.title)}</div>`;
+    if (v.action.kind === "check") return `<div class="row-act"><a class="btn btn-row" href="#/task/${t.id}/check" aria-label="${esc(v.action.label)}, ${esc(t.title)}">${esc(v.action.label)}</a></div>`;
+    if (v.action.kind === "secondary") return `<div class="row-act"><button type="button" class="btn btn-row" data-secondary="${esc(v.action.to)}" aria-label="${esc(v.action.label)}, ${esc(t.title)}">${esc(v.action.label)}</button></div>`;
+    return "";
+  }
+
+  // Ages say what they measure ("waiting", "seen", "reported", "done") and
+  // appear only when the data carries that time.
+  function row(t) {
+    const v = view(t);
+    const also = v.also || [];
+    return `<li class="row" data-id="${t.id}">
+      <span class="mk">${mark(v.mark)}</span>
+      <a class="row-link" href="#/task/${t.id}">${esc(t.title)}</a>
+      <p class="row-say">${v.row}</p>
+      ${also.length ? `<p class="row-also">Also: ${also.map((a) => esc(a.row)).join(" ")}</p>` : ""}
+      <p class="row-meta"><span>${esc(t.project)}</span><span class="mono">${t.id}</span>${v.age ? `<span>${esc(v.age)}</span>` : ""}</p>
+      ${rowAction(t, v)}
+    </li>`;
+  }
+
+  function requestRow(r) {
+    return `<li class="row" data-id="${esc(r.id)}">
+      <span class="mk">${mark("needs")}</span>
+      <span class="row-title">${esc(r.title)}</span>
+      <p class="row-say">${esc(r.row)}</p>
+      <p class="row-meta"><span>${esc(r.project)}</span><span>T3 thread, no task</span><span>${esc(r.age)}</span></p>
+      <div class="row-act">${threadBtn(r.thread, "btn btn-row", r.title)}</div>
+    </li>`;
+  }
+
+  /* ---------------- Home ---------------- */
+  function loadingView() {
+    return `<h1 class="answer" id="answer" aria-busy="true">Loading what needs you…</h1>
+      <p class="aside">Connecting to Factory. Nothing is shown until the first snapshot arrives, so nothing here is out of date.</p>`;
+  }
+
+  function emptyView() {
+    return `<h1 class="answer" id="answer">Nothing needs you. No tasks yet.</h1>
+      <p class="aside">Tasks appear here once a project has them. Create a project and its first tasks in All tasks, or let an agent add them with the Factory CLI.</p>
+      <p><button type="button" class="btn btn-second" data-secondary="All tasks, by project">Open All tasks</button></p>`;
+  }
+
+  function home() {
+    if (mode === "loading") return loadingView();
+    if (mode === "empty") return emptyView();
+    const inProject = (p) => project === "all" || p === project;
+    const visible = TASKS.filter((t) => inProject(t.project));
+    const requests = requestsShown() ? REQUESTS.filter((r) => inProject(r.project)) : [];
+    // One row per task with requests, plus one row per request that has no task.
+    const needs = [
+      ...visible.filter((t) => view(t).bucket === "needs").map((t) => ({ wait: view(t).wait, html: () => row(t) })),
+      ...requests.map((r) => ({ wait: r.wait, html: () => requestRow(r) }))
+    ].sort((a, b) => b.wait - a.wait);
+    const prog = visible.filter((t) => view(t).bucket === "progress");
+    const done = visible.filter((t) => view(t).bucket === "done").sort((a, b) => view(a).doneSort - view(b).doneSort);
+    const hiddenNeeds = project === "all" ? 0 :
+      TASKS.filter((t) => t.project !== project && view(t).bucket === "needs").length +
+      (requestsShown() ? REQUESTS.filter((r) => r.project !== project).length : 0);
+    const where = project === "all" ? "" : ` in ${project}`;
+
+    // Counts match the rows below: Needs you counts rows, not queue items.
+    const s1 = needs.length === 0 ? `Nothing needs you${where}.` : `${needs.length} ${needs.length === 1 ? "thing needs" : "things need"} you${where}.`;
+    const s2 = prog.length === 0 ? "Nothing is in progress." : `${prog.length} ${prog.length === 1 ? "task is" : "tasks are"} in progress.`;
+    const s3 = done.length === 0 ? "Nothing finished today." : `${done.length} finished today.`;
+
+    // Fail closed: while T3 is stale its requests are withheld, and Home says so.
+    const t3Aside = mode === "stale"
+      ? `<p class="aside warn">T3 hasn’t reported since 14:14, so questions and approvals from agents aren’t shown here. Check T3 directly.</p>` : "";
+    const otherNeeds = hiddenNeeds
+      ? `<p class="aside">${hiddenNeeds} ${hiddenNeeds === 1 ? "thing needs" : "things need"} you in other projects. <button type="button" class="link" data-all>Show all projects</button></p>` : "";
+
+    return `
+      <h1 class="answer" id="answer">${mode === "offline" ? '<span class="asof">As of 14:20, before Factory went offline:</span>' : ""}${s1} ${s2} ${s3}</h1>
+      <div class="filter">
+        <label for="project">Projects</label>
+        <select id="project">
+          <option value="all"${project === "all" ? " selected" : ""}>All projects</option>
+          ${PROJECTS.map((p) => `<option value="${p}"${project === p ? " selected" : ""}>${p}</option>`).join("")}
+        </select>
+      </div>
+
+      <section class="group" id="needs" aria-labelledby="h-needs">
+        <h2 id="h-needs">Needs you <span class="n">${needs.length}</span></h2>
+        ${needs.length ? `<p class="aside">Oldest first.</p>` : ""}
+        ${t3Aside}${otherNeeds}
+        ${needs.length ? `<ol class="rows" data-list>${needs.map((n) => n.html()).join("")}</ol>` : `<p class="empty">Nothing needs you${where}.</p>`}
+      </section>
+
+      <section class="group" id="progress" aria-labelledby="h-progress">
+        <h2 id="h-progress">In progress <span class="n">${prog.length}</span></h2>
+        ${prog.length ? `<ol class="rows" data-list>${prog.map(row).join("")}</ol>` : `<p class="empty">Nothing is in progress${where}.</p>`}
+      </section>
+
+      <section class="group" id="done" aria-labelledby="h-done">
+        <h2 id="h-done">Done today <span class="n">${done.length}</span></h2>
+        ${done.length ? `<ol class="rows" data-list>${done.map(row).join("")}</ol>` : `<p class="empty">Nothing finished${where} today.</p>`}
+      </section>
+
+      <p class="more-line">${project === "all" ? PLANNED_NOT_STARTED : 2} planned tasks haven’t started. <button type="button" class="link" data-secondary="All tasks, by project">See all tasks</button></p>
+      ${project === "all" ? `<p class="more-line next">${TRACKING_NOTES} tracking notes about T3 threads aren’t counted here. <button type="button" class="link" data-secondary="Connections: observations and tracking notes">See Connections</button></p>` : ""}`;
+  }
+
+  /* ---------------- Task detail ---------------- */
+  function stepsPart(t) {
+    if (!t.steps.length) return "";
+    const counted = t.steps.filter((s) => !s.leftOpen);
+    const doneN = t.steps.filter((s) => s.s === "done").length;
+    const leftOpen = t.steps.filter((s) => s.leftOpen);
+    const li = (s) => `<li>
+        <span class="mk">${mark("step-" + s.s, 16)}</span>
+        <span class="${s.s === "done" || s.leftOpen ? "done-name" : ""}">${esc(s.name)}<span class="vh">, ${{ done: "done", doing: "doing", todo: "to do", blocked: "blocked" }[s.s]}</span></span>
+        <span class="who">${esc(s.leftOpen ? "Left open" : s.who || "")}</span>
+        ${s.why ? `<p class="why">Blocked: ${esc(s.why)}</p>` : ""}
+      </li>`;
+    return `<section class="part" aria-labelledby="h-steps">
+      <h2 id="h-steps">Steps <span class="n">${doneN} of ${t.steps.length} done</span></h2>
+      <ul class="steps">${counted.map(li).join("")}${leftOpen.map(li).join("")}</ul>
+      ${leftOpen.length ? `<p class="left-open">${leftOpen.length} step was left open when the task finished. That’s fine; steps don’t decide when a task is done.</p>` : ""}
+    </section>`;
+  }
+
+  function logPart(t, all) {
+    const rows = all ? t.log : t.log.slice(0, 3);
+    return `<section class="part" aria-labelledby="h-log">
+      <h2 id="h-log">What happened</h2>
+      <ol class="log">${rows.map(([when, who, what]) => `<li><time>${esc(when)}</time><span><span class="who">${esc(who)}</span> ${esc(what)}</span></li>`).join("")}</ol>
+      ${t.log.length > 3 ? `<button type="button" class="link" data-log="${all ? "less" : "all"}">${all ? "Show fewer" : `Show all ${t.log.length}`}</button>` : ""}
+    </section>`;
+  }
+
+  function evidencePart(t) {
+    const e = t.ev;
+    const count = (e.prs || []).length + e.sessions.length + e.handoffs.length + (e.earlier || []).length;
+    const block = (label, items) => items && items.length ? `<dt>${label}</dt><dd>${items.join("")}</dd>` : "";
+    return `<details class="ev" id="evidence">
+      <summary>Evidence <span class="n">${count} ${count === 1 ? "record" : "records"}</span></summary>
+      <p class="ev-note">What agents, T3 and GitHub reported, with times. Factory records it; it doesn’t judge the work.</p>
+      <dl class="facts">
+        <dt>How it finishes</dt><dd><p>${esc(e.finish)}</p><p class="sub">To change this, use More, then “Change how this finishes”.</p></dd>
+        ${block("Pull requests", (e.prs || []).map(([n, title, st, gh]) => `<p>${extLink(n + " on GitHub", n + " " + title)}</p><p>${esc(st)}</p><p class="sub">${esc(gh)}</p>`))}
+        ${block("Agent sessions", e.sessions.map(([who, thread, st]) => `<p>${esc(who)}, ${esc(thread)}</p><p class="sub">${esc(st)}</p>`))}
+        ${block("Handoffs", e.handoffs.map((h) => `<p>${esc(h)}</p>`))}
+        ${block("Earlier reviews", (e.earlier || []).map((h) => `<p>${esc(h)}</p>`))}
+        ${t.tracker ? `<dt>Requirements</dt><dd><p>${extLink(t.tracker[0] + " " + t.tracker[1], t.tracker[0] + ": " + t.tracker[1])}</p></dd>` : ""}
+      </dl>
+    </details>`;
+  }
+
+  function checkForm(t, v, sendingBack) {
+    const off = writesOff();
+    const dis = off ? ' aria-disabled="true" aria-describedby="check-off"' : "";
+    if (sendingBack) {
+      return `<form class="check" id="check-form" data-send-back novalidate>
+        <label for="back-reason">What needs to change?</label>
+        <textarea id="back-reason" required aria-describedby="back-hint back-err"></textarea>
+        <p class="hint" id="back-hint">Factory reopens the task with this note. Claude sees it the next time it reads the task. Factory doesn’t message Claude; to tell it now, use T3.</p>
+        <p class="err" id="back-err" hidden></p>
+        <div class="acts">
+          <button type="submit" class="btn btn-primary"${dis}>Send back to Claude</button>
+          <button type="button" class="btn btn-second" data-cancel-back>Cancel</button>
+        </div>
+      </form>`;
+    }
+    return `<form class="check" id="check-form" novalidate>
+      <label for="check-note">What you checked <small>(optional)</small></label>
+      <input id="check-note" autocomplete="off">
+      <div class="acts">
+        <button type="submit" class="btn btn-primary"${dis}>Mark checked</button>
+        <button type="button" class="btn btn-second" data-start-back${dis}>Send back…</button>
+      </div>
+      ${off ? `<p class="hint" id="check-off">Factory is offline. Your check can’t be recorded until it reconnects.</p>` : ""}
+    </form>`;
+  }
+
+  function detail(t, opts) {
+    const v = view(t);
+    const tone = TONE[v.mark];
+    const actions = [];
+    if (v.action && v.action.kind === "ext") actions.push(extLink(v.action.to, v.action.label, "btn btn-primary"));
+    if (v.action && v.action.kind === "thread") actions.push(threadBtn(v.action.thread, "btn btn-primary", "“" + v.action.thread + "”"));
+    if (v.action && v.action.kind === "secondary") actions.push(`<button type="button" class="btn btn-primary" data-secondary="${esc(v.action.to)}">${esc(v.action.label)}</button>`);
+    if (v.link) actions.push(v.link.thread ? threadBtn(v.link.thread, "link", "“" + v.link.thread + "”") : extLink(v.link.to, v.link.label));
+    const isCheck = v.action && v.action.kind === "check";
+    // Every other request on this task, each with its own action.
+    const also = v.also && v.also.length ? `<div class="also">
+        <h3>Also needs you</h3>
+        <ul>${v.also.map((a) => `<li><span>${esc(a.row)} <span class="sub">${esc(a.age)}</span></span>${threadBtn(a.thread, "link", "“" + a.thread + "”")}</li>`).join("")}</ul>
+      </div>` : "";
+    return `
+      <a class="back" href="#/" data-back>${BACK} Home</a>
+      <div class="head">
+        <div class="head-main">
+          <p class="crumbs"><span>${esc(t.project)}</span><span class="mono">${t.id}</span>${t.tracker ? extLink(t.tracker[0] + " " + t.tracker[1], "Requirements in " + t.tracker[0]) : ""}</p>
+          <h1 class="title" id="task-title" tabindex="-1">${esc(t.title)}</h1>
+        </div>
+        <div class="disclose">
+          <button type="button" class="btn-quiet" id="more-btn" aria-expanded="false" aria-controls="more-menu">More</button>
+          <div class="pop" id="more-menu" hidden>
+            <ul>
+              <li><button type="button" data-secondary="Change how this finishes">Change how this finishes…</button></li>
+              <li><button type="button" data-secondary="${v.bucket === "done" ? "Reopen, with a reason" : "Mark done, with a reason"}">${v.bucket === "done" ? "Reopen…" : "Mark done…"}</button></li>
+              <li><button type="button" data-secondary="Set status: Backlog, Planned, Active, Blocked (with a reason), Released or Won’t do. Today’s status menu, unchanged">Set status…</button></li>
+              <li><button type="button" data-secondary="Edit title and steps, including Skip and Delete step">Edit title and steps…</button></li>
+              <li><hr></li>
+              <li><button type="button" data-secondary="Delete task: today’s confirmation, which says it can’t be undone">Delete task…</button></li>
+            </ul>
+            <p class="note">Secondary screens, not part of this prototype. Each keeps today’s reason or confirmation.</p>
+          </div>
+        </div>
+      </div>
+
+      <section class="state" data-tone="${tone}" aria-labelledby="state-h">
+        <p class="state-label">${mark(v.mark)} ${esc(v.label)}</p>
+        <h2 id="state-h">${esc(v.headline)}</h2>
+        ${v.body.map((p) => `<p>${p}</p>`).join("")}
+        ${isCheck ? `<blockquote><p style="margin:0;color:var(--ink)">${esc(v.ask)}</p><footer>What this task asked you to check</footer></blockquote><p class="src">Claude’s report: “${esc(v.report)}”</p>` : ""}
+        ${v.src ? `<p class="src">${v.src}</p>` : ""}
+        ${actions.length ? `<div class="acts">${actions.join("")}</div>` : ""}
+        ${also}
+        ${isCheck ? checkForm(t, v, opts.sendingBack) : ""}
+      </section>
+
+      ${stepsPart(t)}
+      ${logPart(t, opts.allLog)}
+      ${evidencePart(t)}`;
+  }
+
+  /* ---------------- Header freshness ---------------- */
+  function renderFresh() {
+    const el = document.getElementById("fresh");
+    const F = {
+      live:    ["ok",   "Live", " · updated 14:20"],
+      clear:   ["ok",   "Live", " · updated 14:20"],
+      stale:   ["warn", "T3 not reporting", " since 14:14"],
+      offline: ["down", "Offline", " since 14:20"],
+      loading: ["quiet", "Connecting", ""],
+      empty:   ["ok",   "Live", " · updated 14:20"]
+    }[mode];
+    el.dataset.tone = F[0];
+    el.innerHTML = `<span class="dot" aria-hidden="true"></span><span>${F[1]}<span class="long">${F[2]}</span></span>`;
+    document.getElementById("offline").hidden = mode !== "offline";
+  }
+
+  /* ---------------- Router ---------------- */
+  let detailOpts = { sendingBack: false, allLog: false };
+  function parse() {
+    const h = location.hash.replace(/^#/, "") || "/";
+    const m = h.match(/^\/task\/([A-Za-z0-9-]+)(\/check)?$/);
+    return m && byId(m[1]) ? { screen: "task", id: m[1], check: !!m[2] } : { screen: "home" };
+  }
+
+  function render(focus) {
+    // Loading and empty data have no task pages to show.
+    const r = mode === "loading" || mode === "empty" ? { screen: "home" } : parse();
+    const main = document.getElementById("main");
+    renderFresh();
+    if (r.screen === "task") {
+      const t = byId(r.id);
+      main.innerHTML = detail(t, detailOpts);
+      document.title = `${t.id} ${t.title} · Factory prototype`;
+      if (focus) {
+        const target = r.check && document.getElementById("check-note") ? document.getElementById("check-note") : document.getElementById("task-title");
+        target.focus({ preventScroll: false });
+        if (!r.check) window.scrollTo(0, 0);
+      }
+      lastTaskId = t.id;
+    } else {
+      main.innerHTML = home();
+      document.title = "Factory prototype";
+      if (focus && lastTaskId) {
+        const link = main.querySelector(`.row[data-id="${lastTaskId}"] .row-link`);
+        if (link) link.focus(); else main.focus();
+      } else if (focus) {
+        window.scrollTo(0, 0);
+      }
+    }
+    main.classList.remove("enter"); void main.offsetWidth; main.classList.add("enter");
+  }
+
+  /* ---------------- Toast ---------------- */
+  let toastTimer;
+  function toast(html) {
+    const el = document.getElementById("toast");
+    el.innerHTML = html;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 5200);
+  }
+
+  /* ---------------- Disclosure menus ---------------- */
+  function closeMenus(except) {
+    document.querySelectorAll(".disclose > button[aria-expanded='true']").forEach((b) => {
+      if (b === except) return;
+      b.setAttribute("aria-expanded", "false");
+      document.getElementById(b.getAttribute("aria-controls")).hidden = true;
+    });
+  }
+  function toggleMenu(btn) {
+    const open = btn.getAttribute("aria-expanded") === "true";
+    closeMenus(btn);
+    btn.setAttribute("aria-expanded", String(!open));
+    const pop = document.getElementById(btn.getAttribute("aria-controls"));
+    pop.hidden = open;
+    if (!open) pop.querySelector("button, a")?.focus();
+  }
+
+  /* ---------------- Events ---------------- */
+  document.addEventListener("click", (e) => {
+    const t = e.target;
+    const menuBtn = t.closest(".disclose > button");
+    if (menuBtn) { toggleMenu(menuBtn); return; }
+    if (!t.closest(".pop")) closeMenus();
+
+    const ext = t.closest("[data-ext]");
+    if (ext) {
+      e.preventDefault();
+      toast(`<strong>Prototype.</strong> In Factory this opens ${esc(ext.dataset.ext)} in a new tab. Nothing was opened.`);
+      return;
+    }
+    const thr = t.closest("[data-thread]");
+    if (thr) {
+      toast(writesOff()
+        ? `<strong>Factory is offline.</strong> Thread details can’t load until it reconnects.`
+        : `<strong>Prototype.</strong> In Factory this opens the observed-thread panel for “${esc(thr.dataset.thread)}”: its state and when T3 last reported it, without the transcript. Factory can’t open T3 itself yet.`);
+      return;
+    }
+    const sec = t.closest("[data-secondary]");
+    if (sec) {
+      const owner = sec.closest(".disclose")?.querySelector(":scope > button");
+      closeMenus();
+      owner?.focus();
+      toast(`<strong>Secondary screen:</strong> ${esc(sec.dataset.secondary)}. It isn’t part of this prototype, and nothing changed.`);
+      return;
+    }
+    if (t.closest("[data-all]")) { project = "all"; render(false); document.getElementById("project").focus(); return; }
+    const logBtn = t.closest("[data-log]");
+    if (logBtn) { detailOpts.allLog = logBtn.dataset.log === "all"; render(false); document.querySelector("[data-log]")?.focus(); return; }
+    if (t.closest("[data-start-back]")) {
+      if (writesOff()) return;
+      detailOpts.sendingBack = true; render(false); document.getElementById("back-reason").focus(); return;
+    }
+    if (t.closest("[data-cancel-back]")) { detailOpts.sendingBack = false; render(false); document.querySelector("[data-start-back]")?.focus(); return; }
+    if (t.closest("[data-back]")) { e.preventDefault(); if (location.hash !== "#/" && location.hash !== "") location.hash = "#/"; return; }
+  });
+
+  document.addEventListener("submit", (e) => {
+    const form = e.target;
+    if (form.id !== "check-form") return;
+    e.preventDefault();
+    if (writesOff()) return;
+    const id = parse().id;
+    if (form.hasAttribute("data-send-back")) {
+      const reason = form.querySelector("textarea").value.trim();
+      const err = document.getElementById("back-err");
+      if (!reason) { err.textContent = "Say what needs to change so Claude knows what to do."; err.hidden = false; form.querySelector("textarea").focus(); return; }
+      local[id] = {
+        bucket: "progress", mark: "quiet", label: "Sent back", age: "", action: null,
+        row: "You sent it back to Claude.",
+        headline: "Sent back to Claude.",
+        body: [`You asked for: “${esc(reason)}”. Claude sees this the next time it reads the task. Factory doesn’t message Claude; to tell it now, use its T3 thread “M5 mini setup”.`],
+        ask: null, link: { thread: "M5 mini setup", label: "Thread details" }
+      };
+      detailOpts.sendingBack = false;
+      render(false);
+      document.getElementById("state-h").setAttribute("tabindex", "-1");
+      document.getElementById("state-h").focus();
+      toast("<strong>Prototype.</strong> Sent back in this page only. Nothing was sent to Factory or Claude.");
+      return;
+    }
+    const note = form.querySelector("#check-note").value.trim();
+    local[id] = {
+      bucket: "done", mark: "done", label: "Done", age: "done just now", doneSort: -1, action: null, ask: null,
+      row: "You checked it just now.",
+      headline: "You checked it.",
+      body: [note ? `Your note: “${esc(note)}”. Recorded just now.` : "Recorded just now."]
+    };
+    render(false);
+    document.getElementById("state-h").setAttribute("tabindex", "-1");
+    document.getElementById("state-h").focus();
+    toast("<strong>Prototype.</strong> Marked checked in this page only. Nothing was saved to Factory.");
+  });
+
+  document.addEventListener("change", (e) => {
+    if (e.target.id === "project") { project = e.target.value; render(false); document.getElementById("project").focus(); }
+    if (e.target.name === "mode") {
+      mode = e.target.value;
+      const u = new URL(location.href);
+      if (mode === "live") u.searchParams.delete("state"); else u.searchParams.set("state", mode);
+      history.replaceState(null, "", u);
+      render(false);
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      const open = document.querySelector(".disclose > button[aria-expanded='true']");
+      if (open) { closeMenus(); open.focus(); return; }
+      if (detailOpts.sendingBack) { detailOpts.sendingBack = false; render(false); document.querySelector("[data-start-back]")?.focus(); return; }
+      if (parse().screen === "task" && !e.target.closest("input, textarea, select")) { location.hash = "#/"; return; }
+    }
+    // Arrow keys move between tasks when a task link has focus.
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Home" || e.key === "End") && e.target.classList?.contains("row-link")) {
+      const links = Array.from(document.querySelectorAll(".row-link"));
+      const i = links.indexOf(e.target);
+      const n = e.key === "Home" ? 0 : e.key === "End" ? links.length - 1 : i + (e.key === "ArrowDown" ? 1 : -1);
+      if (links[n]) { e.preventDefault(); links[n].focus(); links[n].scrollIntoView({ block: "nearest" }); }
+    }
+  });
+
+  window.addEventListener("hashchange", () => {
+    if (location.hash === "#external" ) return;
+    detailOpts = { sendingBack: false, allLog: false };
+    closeMenus();
+    render(true);
+  });
+
+  document.getElementById("reset").addEventListener("click", () => {
+    local = {}; project = "all"; detailOpts = { sendingBack: false, allLog: false };
+    render(false);
+    toast("<strong>Prototype.</strong> Sample data reset.");
+  });
+
+  document.querySelectorAll("input[name=mode]").forEach((r) => { r.checked = r.value === mode; });
+  render(false);
+})();
+</script>
+</body>
+</html>

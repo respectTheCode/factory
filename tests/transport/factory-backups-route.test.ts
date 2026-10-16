@@ -22,4 +22,23 @@ describe("Factory backup document routes", () => {
       await server.stop();
     }
   });
+
+  test("serves the app shell for direct and trailing-slash All tasks navigations", async () => {
+    const server = createFactoryServer({ databasePath: ":memory:", port: 0 });
+
+    try {
+      const shell = await fetch(new URL("/", server.url));
+      const shellMarkup = await shell.text();
+
+      for (const pathname of ["/tasks", "/tasks/"]) {
+        const response = await fetch(new URL(pathname, server.url));
+
+        expect(response.status).toBe(200);
+        expect(response.headers.get("cache-control")).toBe("no-cache");
+        expect(await response.text()).toBe(shellMarkup);
+      }
+    } finally {
+      await server.stop();
+    }
+  });
 });

@@ -23,6 +23,8 @@ import type {
 import { ConnectionState, type ConnectionSnapshot } from "./connection-state";
 import { BackupsPage } from "./backups";
 import { ConnectionsPage } from "./connections";
+import { AppHeader } from "./app-header";
+import { SimpleTaskDetail } from "./simple-task-detail";
 import {
   AgentTokenBanner,
   AgentTokenProvider,
@@ -40,6 +42,7 @@ import {
   type GitHubActionsSummary,
 } from "./github-status";
 import {
+  allTasksView,
   dashboardPath,
   dashboardViewFromPath,
   backupsView,
@@ -47,8 +50,10 @@ import {
   editProjectView,
   homeView,
   projectView,
+  taskView,
   type DashboardView,
 } from "./navigation";
+import { homeFreshness } from "./home-model";
 import {
   filterArchivedTasks,
   groupSubtasksByStatus,
@@ -176,6 +181,7 @@ type TaskDetail = {
   simpleId: string;
   name: string;
   projectId: string;
+  humanCheckText?: string;
   objective?: string;
   acceptanceCriteria: string[];
   priority?: "low" | "medium" | "high" | "urgent";
@@ -467,7 +473,12 @@ function Dashboard() {
   const [view, setView] = useState<DashboardView>(() =>
     dashboardViewFromPath(window.location.pathname),
   );
+  const [homeFocusTaskId, setHomeFocusTaskId] = useState<string | null>(null);
   const [taskName, setTaskName] = useState("");
+  const [projectNameInput, setProjectNameInput] = useState("");
+  const [projectCreateError, setProjectCreateError] = useState<string | null>(
+    null,
+  );
   const [taskBranchName, setTaskBranchName] = useState("");
   const [taskObjective, setTaskObjective] = useState("");
   const [taskAcceptanceCriteria, setTaskAcceptanceCriteria] = useState("");
@@ -512,6 +523,12 @@ function Dashboard() {
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(
     null,
   );
+  const [projectLoadStates, setProjectLoadStates] = useState<
+    Record<string, "loading" | "loaded" | "error">
+  >({});
+  const [projectLoadErrors, setProjectLoadErrors] = useState<
+    Record<string, string>
+  >({});
   const [taskDetails, setTaskDetails] = useState<Record<string, TaskDetail>>(
     {},
   );
@@ -566,6 +583,8 @@ function Dashboard() {
   const floorRequestPromise = useRef<Promise<
     ReturnType<typeof normalizeFloorSnapshot> | undefined
   > | null>(null);
+  const projectLoadKey = useRef<string | null>(null);
+  const projectLoadGeneration = useRef(0);
   const floorSnapshotRef = useRef<FloorViewSnapshot | null>(null);
   const floorAuthoritativeRef = useRef(false);
   const webSocketGenerationRef = useRef(webSocketGeneration);
@@ -865,6 +884,10 @@ function Dashboard() {
         connection.markDisconnected();
         setProjects(null);
         setPortfolioStatus(null);
+        projectLoadKey.current = null;
+        projectLoadGeneration.current += 1;
+        setProjectLoadStates({});
+        setProjectLoadErrors({});
         setProjectDetail(null);
         setTaskDetails({});
         setTaskEdits({});
@@ -1007,14 +1030,20 @@ function Dashboard() {
     }
   };
 
-  const refreshProject = async (projectId: string) => {
+  const refreshProject = async (
+    projectId: string,
+    isCurrent: () => boolean = () => true,
+  ): Promise<ProjectDetail | null | undefined> => {
     const client = trpc.current;
-    if (!client) return;
+    if (!client) return undefined;
     const dashboard = (await client.projects.snapshot.query({
       projectId,
     })) as DashboardSnapshot;
-    if (trpc.current !== client) return;
+    if (trpc.current !== client || !isCurrent()) return undefined;
     applyDashboardSnapshot(dashboard);
+    return dashboard.projectDetail
+      ? (dashboard.projectDetail as ProjectDetail)
+      : null;
   };
 
   const refreshT3Project = async (projectId: string) => {
@@ -1176,7 +1205,10 @@ function Dashboard() {
     if (!projectDetail) return;
     const projectId = projectDetail.id;
     const refreshInterval = setInterval(() => {
-      void refreshProject(projectId);
+      void refreshProject(
+        projectId,
+        () => projectLoadKey.current === projectId,
+      );
       void refreshT3Project(projectId);
     }, 60_000);
     return () => clearInterval(refreshInterval);
@@ -1496,16 +1528,46 @@ function Dashboard() {
   };
 
   const loadProject = async (projectId: string) => {
+    const generation = ++projectLoadGeneration.current;
+    projectLoadKey.current = projectId;
+    const isCurrent = () =>
+      projectLoadGeneration.current === generation &&
+      projectLoadKey.current === projectId;
+    setProjectLoadStates((current) => ({ ...current, [projectId]: "loading" }));
+    setProjectLoadErrors((current) => {
+      if (!(projectId in current)) return current;
+      const next = { ...current };
+      delete next[projectId];
+      return next;
+    });
     stopProjectSubscription();
     t3RefreshGeneration.current += 1;
     setT3Activity(null);
     setT3ThreadDetails({});
-    await refreshProject(projectId);
+    try {
+      const detail = await refreshProject(projectId, isCurrent);
+      if (!isCurrent() || !trpc.current) return;
+      if (!detail) throw new Error("This project could not be found.");
+      setProjectLoadStates((current) => ({
+        ...current,
+        [projectId]: "loaded",
+      }));
+    } catch (error) {
+      if (!isCurrent() || !trpc.current) return;
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Project details could not be loaded.";
+      setProjectLoadErrors((current) => ({ ...current, [projectId]: message }));
+      setProjectLoadStates((current) => ({ ...current, [projectId]: "error" }));
+      return;
+    }
     void refreshT3Project(projectId);
     const subscription = trpc.current?.projects.updates.subscribe(
       { projectId },
       {
         onData: (dashboard) => {
+          if (!isCurrent()) return;
           if (!dashboard.projectDetail) {
             applyDashboardSnapshot(dashboard);
             if (projectDetail?.id === projectId) openHome();
@@ -1527,9 +1589,39 @@ function Dashboard() {
     void loadProject(projectId);
   };
 
+  const openTaskPage = (projectId: string, taskId: string) => {
+    setHomeFocusTaskId(taskId);
+    setPendingFloorTarget(null);
+    setCheckTaskId(null);
+    navigateToView(taskView(projectId, taskId));
+    void loadProject(projectId);
+  };
+
+  const openAllTasks = (projectId?: string) => {
+    if (projectId) {
+      openProject(projectId);
+      return;
+    }
+    stopProjectSubscription();
+    projectLoadKey.current = null;
+    projectLoadGeneration.current += 1;
+    setProjectLoadStates({});
+    setProjectLoadErrors({});
+    navigateToView(allTasksView());
+  };
+
   const openHome = () => {
     stopProjectSubscription();
+    projectLoadKey.current = null;
+    projectLoadGeneration.current += 1;
+    setProjectLoadStates({});
+    setProjectLoadErrors({});
     navigateToView(homeView());
+  };
+
+  const openHomeFromTask = (taskId: string) => {
+    setHomeFocusTaskId(taskId);
+    openHome();
   };
 
   const [checkTaskId, setCheckTaskId] = useState<string | null>(null);
@@ -1541,13 +1633,34 @@ function Dashboard() {
     openProject(target.projectId);
   };
 
+  const openHomeTarget = (target: FloorTarget) => {
+    if (
+      target.taskId &&
+      !target.threadId &&
+      !target.sessionId &&
+      !target.findingId
+    ) {
+      openTaskPage(target.projectId, target.taskId);
+      return;
+    }
+    openFloorTarget(target);
+  };
+
   const openBackups = () => {
     stopProjectSubscription();
+    projectLoadKey.current = null;
+    projectLoadGeneration.current += 1;
+    setProjectLoadStates({});
+    setProjectLoadErrors({});
     navigateToView(backupsView());
   };
 
   const openConnections = () => {
     stopProjectSubscription();
+    projectLoadKey.current = null;
+    projectLoadGeneration.current += 1;
+    setProjectLoadStates({});
+    setProjectLoadErrors({});
     navigateToView(connectionsView());
   };
 
@@ -1561,10 +1674,15 @@ function Dashboard() {
       setView(nextView);
       if (
         nextView.screen === "home" ||
+        nextView.screen === "all_tasks" ||
         nextView.screen === "backups" ||
         nextView.screen === "connections"
       ) {
         stopProjectSubscription();
+        projectLoadKey.current = null;
+        projectLoadGeneration.current += 1;
+        setProjectLoadStates({});
+        setProjectLoadErrors({});
         return;
       }
       void loadProject(nextView.projectId);
@@ -1578,7 +1696,11 @@ function Dashboard() {
     if (snapshot.state !== "connected") return;
     const nextView = dashboardViewFromPath(window.location.pathname);
     setView(nextView);
-    if (nextView.screen === "project" || nextView.screen === "edit_project") {
+    if (
+      nextView.screen === "project" ||
+      nextView.screen === "edit_project" ||
+      nextView.screen === "task"
+    ) {
       void loadProject(nextView.projectId);
     }
   }, [snapshot.state]);
@@ -1601,14 +1723,25 @@ function Dashboard() {
         .length
     : 0;
 
-  const createProject = async (name: string) => {
+  const createProject = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const name = projectNameInput.trim();
     const client = trpc.current;
-    if (!client || !snapshot.canMutate || busy) return;
+    if (!client || !snapshot.canMutate || busy || !name) return;
+    setProjectCreateError(null);
     setBusy(true);
     try {
       const result = await client.projects.create.mutate({ name });
       applyDashboardSnapshot(result.dashboard);
       await refreshFloor(client);
+      setProjectNameInput("");
+      openProject(result.id);
+    } catch (error) {
+      setProjectCreateError(
+        error instanceof Error
+          ? error.message
+          : "The project could not be created.",
+      );
     } finally {
       setBusy(false);
     }
@@ -1735,6 +1868,168 @@ function Dashboard() {
     }
   };
 
+  const taskPageProject =
+    view.screen === "task" && projectDetail?.id === view.projectId
+      ? projectDetail
+      : null;
+  const taskPageId = view.screen === "task" ? view.taskId : undefined;
+  const taskPageRecord = taskPageProject?.tasks.find(
+    (task) => task.id === taskPageId,
+  );
+  const taskPageDetail = taskPageRecord
+    ? taskDetails[taskPageRecord.id]
+    : undefined;
+  const taskPageStatus = taskPageRecord
+    ? taskStatuses[taskPageRecord.id]
+    : undefined;
+  const taskPageCard = taskPageRecord
+    ? floorSnapshot?.projects
+        .flatMap((project) => [
+          ...(project.tasks ?? []),
+          ...(project.recentlyDone ?? []),
+        ])
+        .find(
+          (card) =>
+            card.projectId === taskPageRecord.projectId &&
+            card.taskId === taskPageRecord.id,
+        )
+    : undefined;
+  const taskPageRequests = taskPageRecord
+    ? (floorSnapshot?.yourTurn.items ?? []).filter((item) => {
+        const directTarget =
+          item.projectId === taskPageRecord.projectId &&
+          (item.taskId === taskPageRecord.id ||
+            Boolean(
+              item.subtaskId &&
+              taskPageRecord.subtasks.some(
+                (step) => step.id === item.subtaskId,
+              ),
+            ));
+        const relatedTarget = item.relatedTargets?.some(
+          (target) =>
+            target.projectId === taskPageRecord.projectId &&
+            (target.taskId === taskPageRecord.id ||
+              Boolean(
+                target.subtaskId &&
+                taskPageRecord.subtasks.some(
+                  (step) => step.id === target.subtaskId,
+                ),
+              )),
+        );
+        return directTarget || relatedTarget;
+      })
+    : [];
+  const taskPageSimpleTask = taskPageRecord
+    ? {
+        ...taskPageRecord,
+        objective: taskPageDetail?.objective,
+        acceptanceCriteria: taskPageDetail?.acceptanceCriteria ?? [],
+        pullRequestUrl:
+          taskPageRecord.pullRequestUrl ?? taskPageDetail?.pullRequestUrl,
+        trackerLinks: taskPageDetail?.trackerLinks ?? [],
+        screenshots: (taskPageDetail?.screenshots ?? []).map((screenshot) => ({
+          id: screenshot.id,
+          caption: screenshot.caption,
+          uploadedAt: screenshot.uploadedAt,
+          testedRevision: screenshot.testedRevision,
+        })),
+        subtasks: taskPageRecord.subtasks.map((step) => ({
+          ...step,
+          screenshots: (step.screenshots ?? []).map((screenshot) => ({
+            id: screenshot.id,
+            caption: screenshot.caption,
+            uploadedAt: screenshot.uploadedAt,
+            testedRevision: screenshot.testedRevision,
+          })),
+        })),
+      }
+    : null;
+  const taskPageEvidence =
+    taskPageRecord && taskPageSimpleTask ? (
+      <>
+        {(taskPageDetail?.screenshots ?? []).length > 0 && (
+          <ScreenshotProof
+            busy={busy}
+            canMutate={false}
+            onGet={getScreenshot}
+            onUpload={async () => {}}
+            ownerLabel={`Task ${taskPageRecord.simpleId}`}
+            anchorPrefix={`task-${taskPageRecord.id}`}
+            screenshots={taskPageDetail?.screenshots ?? []}
+          />
+        )}
+        {taskPageRecord.subtasks.map((step) =>
+          (step.screenshots?.length ?? 0) > 0 ? (
+            <ScreenshotProof
+              key={step.id}
+              busy={busy}
+              canMutate={false}
+              onGet={getScreenshot}
+              onUpload={async () => {}}
+              ownerLabel={`Step ${step.simpleId}`}
+              anchorPrefix={`step-${step.id}`}
+              screenshots={step.screenshots ?? []}
+            />
+          ) : null,
+        )}
+      </>
+    ) : null;
+  const taskPageLoadState =
+    view.screen === "task" ? projectLoadStates[view.projectId] : undefined;
+  const taskPageLoadError =
+    view.screen === "task" ? projectLoadErrors[view.projectId] : undefined;
+  const taskPageRouteMessage =
+    snapshot.state !== "connected"
+      ? {
+          title:
+            snapshot.state === "disconnected"
+              ? "Factory is offline"
+              : "Connecting to Factory",
+          description: "Task information will appear when Factory reconnects.",
+        }
+      : taskPageLoadState === "error"
+        ? {
+            title:
+              taskPageLoadError &&
+              /could not be found|does not exist|not found/i.test(
+                taskPageLoadError,
+              )
+                ? "Project not found"
+                : "Couldn’t load this project",
+            description:
+              taskPageLoadError ?? "Project details could not be loaded.",
+          }
+        : taskPageLoadState === "loaded"
+          ? {
+              title: "Task not found",
+              description:
+                "This task may have been removed or may belong to another project.",
+            }
+          : {
+              title: "Loading task…",
+              description: "Factory is loading the latest task information.",
+            };
+  const taskFreshness = homeFreshness(floorSnapshot);
+  const taskSnapshotTime = taskFreshness.updatedAt;
+  const taskFreshnessLabel =
+    snapshot.state !== "connected"
+      ? `Offline${taskSnapshotTime ? `, ${taskSnapshotTime}` : ""}`
+      : !floorSnapshot
+        ? "Connecting"
+        : taskFreshness.staleT3
+          ? `T3 not reporting${taskFreshness.staleTime ? `, ${taskFreshness.staleTime}` : ""}`
+          : taskFreshness.snapshotAged
+            ? `Snapshot ${taskSnapshotTime ?? "unknown"} may be old`
+            : `Live${taskSnapshotTime ? `, ${taskSnapshotTime}` : ""}`;
+  const taskFreshnessTone =
+    snapshot.state !== "connected"
+      ? "offline"
+      : !floorSnapshot
+        ? "quiet"
+        : taskFreshness.staleT3 || taskFreshness.snapshotAged
+          ? "stale"
+          : "live";
+
   const signInForm = (
     <form className="session-form" onSubmit={signIn}>
       <label>
@@ -1783,112 +2078,77 @@ function Dashboard() {
 
   return (
     <>
-      <div
-        className={`app-shell ${view.screen === "home" ? "app-shell-home" : "app-shell-constrained"}`}
-      >
+      <div className="app-shell">
         <PilotBanner environment={deploymentEnvironment} />
-        <header>
-          <a
-            aria-label="Factory dashboard"
-            className="brand-link"
-            href="/"
-            onClick={(event) => {
-              event.preventDefault();
-              window.location.assign("/");
-            }}
-          >
-            <div className="brand-lockup">
-              <img alt="Factory" className="brand-mark" src="/icon.svg" />
-              <div>
-                <div className="wordmark">FACTORY</div>
-                <p className="eyebrow">Project operations</p>
-              </div>
-            </div>
-          </a>
-          <nav aria-label="Primary" className="global-nav">
-            <a
-              aria-current={view.screen === "home" ? "page" : undefined}
-              className={
-                view.screen === "home"
-                  ? "global-nav-link selected"
-                  : "global-nav-link"
-              }
-              href="/"
-              onClick={(event) => {
-                event.preventDefault();
-                openHome();
-              }}
-            >
-              Floor
-            </a>
-            <a
-              aria-current={view.screen === "backups" ? "page" : undefined}
-              className={
-                view.screen === "backups"
-                  ? "global-nav-link selected"
-                  : "global-nav-link"
-              }
-              href="/backups"
-              onClick={(event) => {
-                event.preventDefault();
-                openBackups();
-              }}
-            >
-              Backups
-            </a>
-          </nav>
-          <div className="header-status">
-            {sessionLoading ? (
-              <span className="status-twin">Checking session…</span>
-            ) : human ? (
-              <div className="session-controls">
-                <span className="status-twin">Signed in as {human.name}</span>
-                {(agentTokenHandoff.pending || agentTokenHandoff.notice) && (
-                  <span
-                    className="session-handoff-hint"
-                    id="session-handoff-hint"
-                  >
-                    {agentTokenHandoff.notice
-                      ? "Save the one-time token, then choose “I’ve saved it” before signing out."
-                      : "Keep this tab open while the one-time token is being issued."}
-                  </span>
-                )}
-                <button
-                  aria-describedby={
-                    agentTokenHandoff.pending || agentTokenHandoff.notice
-                      ? "session-handoff-hint"
-                      : undefined
-                  }
-                  className="secondary"
-                  disabled={
-                    sessionBusy ||
-                    agentTokenHandoff.pending ||
-                    !!agentTokenHandoff.notice
-                  }
-                  onClick={() => void signOut()}
-                  type="button"
+        <AppHeader
+          activePage={
+            view.screen === "home"
+              ? "home"
+              : view.screen === "task" ||
+                  view.screen === "all_tasks" ||
+                  view.screen === "project" ||
+                  view.screen === "edit_project"
+                ? "tasks"
+                : view.screen === "backups"
+                  ? "backups"
+                  : null
+          }
+          onOpenHome={openHome}
+          onOpenAllTasks={() => openAllTasks()}
+          onOpenBackups={openBackups}
+        >
+          {sessionLoading ? (
+            <span className="status-twin">Checking session…</span>
+          ) : human ? (
+            <div className="session-controls">
+              <span className="status-twin">Signed in as {human.name}</span>
+              {(agentTokenHandoff.pending || agentTokenHandoff.notice) && (
+                <span
+                  className="session-handoff-hint"
+                  id="session-handoff-hint"
                 >
-                  Sign out
-                </button>
-              </div>
-            ) : null}
-            <ConnectionIndicator
-              snapshot={snapshot}
-              onOpenConnections={openConnections}
-              floorConnections={
-                view.screen === "home" ? floorConnections : undefined
-              }
-              t3Status={
-                view.screen !== "home" && snapshot.state === "connected"
-                  ? t3Status
-                  : undefined
-              }
-            />
-          </div>
-        </header>
+                  {agentTokenHandoff.notice
+                    ? "Save the one-time token, then choose “I’ve saved it” before signing out."
+                    : "Keep this tab open while the one-time token is being issued."}
+                </span>
+              )}
+              <button
+                aria-describedby={
+                  agentTokenHandoff.pending || agentTokenHandoff.notice
+                    ? "session-handoff-hint"
+                    : undefined
+                }
+                className="secondary"
+                disabled={
+                  sessionBusy ||
+                  agentTokenHandoff.pending ||
+                  !!agentTokenHandoff.notice
+                }
+                onClick={() => void signOut()}
+                type="button"
+              >
+                Sign out
+              </button>
+            </div>
+          ) : null}
+          <ConnectionIndicator
+            snapshot={snapshot}
+            onOpenConnections={openConnections}
+            floorConnections={
+              view.screen === "home" || view.screen === "task"
+                ? floorConnections
+                : undefined
+            }
+            t3Status={snapshot.state === "connected" ? t3Status : undefined}
+          />
+        </AppHeader>
       </div>
 
-      <main className={view.screen === "home" ? "floor-main" : "app-main"}>
+      <main
+        className={view.screen === "home" ? "floor-main" : "app-main"}
+        id="main-content"
+        tabIndex={-1}
+      >
         <AgentTokenBanner />
         {view.screen === "home" && (
           <Floor
@@ -1901,11 +2161,183 @@ function Dashboard() {
             connected={snapshot.state === "connected"}
             error={floorError}
             loading={floorLoading}
-            onCreateProject={createProject}
-            onOpenTarget={openFloorTarget}
+            onOpenAllTasks={openAllTasks}
+            onOpenConnections={openConnections}
+            onOpenTarget={openHomeTarget}
+            focusTaskId={homeFocusTaskId}
+            onTaskFocusRestored={() => setHomeFocusTaskId(null)}
             snapshot={floorSnapshot}
           />
         )}
+
+        {view.screen === "all_tasks" && (
+          <section
+            className="detail all-tasks-page"
+            aria-labelledby="all-tasks-title"
+          >
+            <div className="detail-heading">
+              <div>
+                <p className="eyebrow">Factory</p>
+                <h1 id="all-tasks-title">All tasks</h1>
+                <p className="project-summary">
+                  Choose a project to see its task list, or create a project.
+                </p>
+              </div>
+            </div>
+            {!projects ? (
+              <p className="status-twin" role="status">
+                Loading projects…
+              </p>
+            ) : projects.length > 0 ? (
+              <ul className="all-tasks-project-list">
+                {projects.map((project) => (
+                  <li key={project.id}>
+                    <button
+                      className="secondary"
+                      onClick={() => openProject(project.id)}
+                      type="button"
+                    >
+                      {project.name}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="empty">
+                No projects yet. Create one to add the first task.
+              </p>
+            )}
+            <form
+              className="project-create-form"
+              onSubmit={(event) => void createProject(event)}
+            >
+              <label htmlFor="new-project-name">New project</label>
+              <input
+                id="new-project-name"
+                disabled={
+                  !snapshot.canMutate || snapshot.state !== "connected" || busy
+                }
+                maxLength={200}
+                onChange={(event) => setProjectNameInput(event.target.value)}
+                placeholder="Project name"
+                value={projectNameInput}
+              />
+              <button
+                disabled={
+                  !snapshot.canMutate ||
+                  snapshot.state !== "connected" ||
+                  busy ||
+                  !projectNameInput.trim()
+                }
+                type="submit"
+              >
+                Create project
+              </button>
+              {projectCreateError && <p role="alert">{projectCreateError}</p>}
+            </form>
+          </section>
+        )}
+
+        {view.screen === "task" &&
+          (taskPageProject && taskPageRecord && taskPageSimpleTask ? (
+            <SimpleTaskDetail
+              task={taskPageSimpleTask}
+              status={taskPageStatus}
+              card={taskPageCard}
+              projectName={taskPageProject.name}
+              requests={taskPageRequests}
+              connected={snapshot.state === "connected"}
+              canMutate={snapshot.canMutate && snapshot.state === "connected"}
+              busy={busy}
+              freshnessLabel={taskFreshnessLabel}
+              freshnessTone={taskFreshnessTone}
+              onBack={() => openHomeFromTask(taskPageRecord.id)}
+              onOpenControls={() => {
+                setPendingFloorTarget({
+                  projectId: taskPageProject.id,
+                  taskId: taskPageRecord.id,
+                });
+                openProject(taskPageProject.id);
+              }}
+              onOpenTarget={openFloorTarget}
+              snapshot={floorSnapshot}
+              githubStatus={githubStatuses[`task:${taskPageRecord.id}`]}
+              onCheck={(reason, expectedRevision) => {
+                const client = trpc.current;
+                if (!client)
+                  throw new Error("Factory connection is unavailable.");
+                return mutateAndRefresh(() =>
+                  client.tasks.check.mutate({
+                    taskId: taskPageRecord.id,
+                    reason,
+                    expectedRevision,
+                  }),
+                );
+              }}
+              onSendBack={(reason, expectedRevision) => {
+                const client = trpc.current;
+                if (!client)
+                  throw new Error("Factory connection is unavailable.");
+                return mutateAndRefresh(() =>
+                  client.tasks.reopen.mutate({
+                    taskId: taskPageRecord.id,
+                    reason,
+                    expectedRevision,
+                  }),
+                );
+              }}
+              onLoadHistory={async (limit, cursor) => {
+                const client = trpc.current;
+                if (!client)
+                  throw new Error("Factory connection is unavailable.");
+                const page = await client.tasks.history.query({
+                  taskId: taskPageRecord.id,
+                  limit,
+                  cursor,
+                });
+                return {
+                  items: page.events.map((item: Wire<TaskActivityItem>) => ({
+                    id: item.id,
+                    actor: item.actor,
+                    at: item.createdAt,
+                    text: workflowActivityText(
+                      item,
+                      taskPageRecord.subtasks,
+                      taskPageStatus?.finishRule.kind === "agent_report" &&
+                        taskPageStatus.taskCompleted,
+                    ),
+                  })),
+                  totalCount: page.totalCount,
+                  ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+                };
+              }}
+              evidence={taskPageEvidence}
+            />
+          ) : (
+            <section
+              className="simple-task-route-message"
+              aria-labelledby="simple-task-route-title"
+              aria-live="polite"
+            >
+              <p className="eyebrow">Factory</p>
+              <h1 id="simple-task-route-title">{taskPageRouteMessage.title}</h1>
+              <p>{taskPageRouteMessage.description}</p>
+              <div className="simple-task-route-actions">
+                <button className="secondary" onClick={openHome} type="button">
+                  Back to Home
+                </button>
+                {snapshot.state === "connected" && (
+                  <button
+                    className="secondary"
+                    onClick={() => openAllTasks()}
+                    type="button"
+                  >
+                    Open All tasks
+                  </button>
+                )}
+              </div>
+            </section>
+          ))}
 
         {view.screen === "backups" && (
           <BackupsPage client={trpc.current} connection={snapshot} />
