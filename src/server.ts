@@ -36,6 +36,7 @@ import {
   type GitHubStatusSnapshot,
 } from "./github";
 import { createT3Coordinator } from "./t3-coordinator";
+import { discoverRecentT3Projects } from "./issue-project-discovery";
 import { normalizeT3BaseUrl, type T3ActivityReader } from "./t3";
 import { FLOOR_DEFAULT_TIMEZONE, type FloorSnapshot } from "./floor";
 import { createFloorUpdateBus, type FloorUpdateBus } from "./floor-updates";
@@ -74,6 +75,7 @@ import { canonicalPayloadDigest, createIdempotencyStore } from "./idempotency";
 import {
   createIssueStore,
   type IssuePullRequestObservation,
+  type IssueThreadObservation,
   type IssueStore,
 } from "./issues";
 import {
@@ -508,6 +510,12 @@ function createRouter(
     sourceId?: string;
     timezone?: string;
   }) => Promise<FloorSnapshot>,
+  issueDiscoveryIntervalMs: number,
+  isStopping: () => boolean,
+  registerIssueDiscoveryLifecycle: (lifecycle: {
+    start: () => void;
+    stop: () => void;
+  }) => void,
 ) {
   const sourceAwareCoordinator = t3Coordinator;
   const resolveSourceForContext = (
@@ -603,13 +611,15 @@ function createRouter(
       inFlight?: Promise<IssueActivity | undefined>;
     }
   >();
+  let issueDiscoveryInProgress = false;
+  let issueDiscoveryTimer: ReturnType<typeof setInterval> | undefined;
   const refreshIssueProject = (
     projectId: string,
   ): Promise<IssueActivity | undefined> => {
     const now = Date.now();
     const state = issueRefreshes.get(projectId) ?? { startedAt: 0 };
     if (state.inFlight) return state.inFlight;
-    if (now - state.startedAt < 15_000) return Promise.resolve(state.activity);
+    if (now - state.startedAt < 30_000) return Promise.resolve(state.activity);
     state.startedAt = now;
     issueRefreshes.set(projectId, state);
     state.inFlight = (async () => {
@@ -622,6 +632,7 @@ function createRouter(
           },
         );
         state.activity = activity;
+        if (isStopping()) return activity;
         const freshSourceIds = activity.sources
           .filter(
             (source) =>
@@ -634,31 +645,50 @@ function createRouter(
           .listProjects()
           .find((project) => project.id === projectId)?.gitOriginUrl;
         if (activity.sources.length > 0) {
+          const observations: IssueThreadObservation[] = activity.threads
+            .filter((thread) => freshSources.has(thread.sourceId))
+            .map((thread) => ({
+              ...(thread.branch === undefined ? {} : { branch: thread.branch }),
+              ...(thread.linkedPullRequestUrl === undefined
+                ? {}
+                : { linkedPullRequestUrl: thread.linkedPullRequestUrl }),
+              ...(thread.linkedPullRequestUrls === undefined
+                ? {}
+                : { linkedPullRequestUrls: thread.linkedPullRequestUrls }),
+              ...(thread.parentThreadId === undefined
+                ? {}
+                : { parentThreadId: thread.parentThreadId }),
+              ...(thread.rootThreadId === undefined
+                ? {}
+                : { rootThreadId: thread.rootThreadId }),
+              ...(thread.createdAt === undefined
+                ? {}
+                : { createdAt: thread.createdAt }),
+              ...(repository === undefined ? {} : { repository }),
+              current: thread.sourceCurrent !== false,
+              sourceId: thread.sourceId,
+              state:
+                thread.backgroundLiveness === "working" ||
+                thread.latestSessionState === "running" ||
+                thread.latestTurnState === "running"
+                  ? "working"
+                  : "stopped",
+              threadId: thread.threadId,
+              title: thread.title,
+              updatedAt: thread.sourceUpdatedAt,
+            }));
+          issueStore.discoverThreads({
+            freshSourceIds,
+            projectId,
+            threads: observations,
+            notBefore: new Date(
+              Date.now() - 3 * 24 * 60 * 60 * 1_000,
+            ).toISOString(),
+          });
           issueStore.observeThreads({
             freshSourceIds,
             projectId,
-            threads: activity.threads
-              .filter((thread) => freshSources.has(thread.sourceId))
-              .map((thread) => ({
-                ...(thread.branch === undefined
-                  ? {}
-                  : { branch: thread.branch }),
-                ...(thread.linkedPullRequestUrl === undefined
-                  ? {}
-                  : { linkedPullRequestUrl: thread.linkedPullRequestUrl }),
-                ...(repository === undefined ? {} : { repository }),
-                current: thread.sourceCurrent !== false,
-                sourceId: thread.sourceId,
-                state:
-                  thread.backgroundLiveness === "working" ||
-                  thread.latestSessionState === "running" ||
-                  thread.latestTurnState === "running"
-                    ? "working"
-                    : "stopped",
-                threadId: thread.threadId,
-                title: thread.title,
-                updatedAt: thread.sourceUpdatedAt,
-              })),
+            threads: observations,
           });
         }
 
@@ -686,6 +716,7 @@ function createRouter(
                 try {
                   const snapshot = await githubStatusReader.read(
                     parseGitHubPullRequestUrl(pullRequestUrl),
+                    { pullRequestOnly: true },
                   );
                   const pullRequest = snapshot.pullRequest;
                   pullRequestObservations.push({
@@ -711,6 +742,9 @@ function createRouter(
             },
           ),
         );
+        // Remote reads may finish after shutdown starts. Keep every subsequent
+        // SQLite write on the live side of the server lifecycle boundary.
+        if (isStopping()) return activity;
         issueStore.reconcileProject({
           freshSourceIds,
           projectId,
@@ -741,6 +775,42 @@ function createRouter(
     // the dashboard open.
     void refreshIssues(projectIds).catch(() => undefined);
   };
+  const refreshAllIssueProjects = async (): Promise<void> => {
+    if (issueDiscoveryInProgress || isStopping()) return;
+    issueDiscoveryInProgress = true;
+    try {
+      await discoverRecentT3Projects({
+        application,
+        sources: () => t3ConnectionStore.getSources(),
+        notBeforeISO: new Date(
+          Date.now() - 3 * 24 * 60 * 60 * 1_000,
+        ).toISOString(),
+        isStopped: isStopping,
+      });
+      if (isStopping()) return;
+      await refreshIssues(application.listProjects().map(({ id }) => id));
+    } finally {
+      issueDiscoveryInProgress = false;
+    }
+  };
+  registerIssueDiscoveryLifecycle({
+    start: () => {
+      if (isStopping() || issueDiscoveryIntervalMs <= 0) return;
+      void refreshAllIssueProjects().catch(() => undefined);
+      if (issueDiscoveryTimer === undefined) {
+        issueDiscoveryTimer = setInterval(
+          () => void refreshAllIssueProjects().catch(() => undefined),
+          issueDiscoveryIntervalMs,
+        );
+      }
+    },
+    stop: () => {
+      if (issueDiscoveryTimer !== undefined) {
+        clearInterval(issueDiscoveryTimer);
+        issueDiscoveryTimer = undefined;
+      }
+    },
+  });
 
   const createSerializedMutation = (allowReviewer = false) =>
     trpc.middleware(async ({ ctx, next }) => {
@@ -1302,11 +1372,14 @@ function createRouter(
         )
         .query(({ input }) => {
           const initial = issueStore.list(input);
-          scheduleIssueRefreshes(
-            input?.projectId
-              ? [input.projectId]
-              : [...new Set(initial.map((issue) => issue.projectId))],
-          );
+          if (input?.projectId) {
+            scheduleIssueRefreshes([input.projectId]);
+          } else {
+            // A global issue view is also the lightweight discovery trigger:
+            // provision recent T3 Projects, then refresh every Factory Project
+            // without making remote availability part of the response time.
+            void refreshAllIssueProjects().catch(() => undefined);
+          }
           return initial;
         }),
       detail: humanProcedure()
@@ -3246,6 +3319,7 @@ export function createFactoryServer({
   githubStatusReader,
   githubToken,
   hostname = "127.0.0.1",
+  issueDiscoveryIntervalMs = 30_000,
   operator,
   port,
   requireExistingDatabase: configuredRequireExistingDatabase,
@@ -3271,6 +3345,7 @@ export function createFactoryServer({
   githubStatusReader?: GitHubStatusReader;
   githubToken?: string;
   hostname?: string;
+  issueDiscoveryIntervalMs?: number;
   operator?: FactoryOperator;
   port: number;
   requireExistingDatabase?: boolean;
@@ -3484,6 +3559,12 @@ export function createFactoryServer({
     refresh: () => loadFloorSnapshot({}),
   });
   projectUpdates.onPublish(floorUpdates.invalidate);
+  let issueDiscoveryLifecycle:
+    | {
+        start: () => void;
+        stop: () => void;
+      }
+    | undefined;
   const router = createRouter(
     application,
     issueStore,
@@ -3498,6 +3579,11 @@ export function createFactoryServer({
     projectUpdates,
     floorUpdates,
     loadFloorSnapshot,
+    issueDiscoveryIntervalMs,
+    () => shuttingDown,
+    (lifecycle) => {
+      issueDiscoveryLifecycle = lifecycle;
+    },
   );
   const deploymentIdentity = {
     apiVersion: FACTORY_API_VERSION,
@@ -3896,6 +3982,7 @@ export function createFactoryServer({
   ): Promise<void> => {
     if (!stopPromise) {
       shuttingDown = true;
+      issueDiscoveryLifecycle?.stop();
       if (mergeReconciliationTimer !== undefined) {
         clearInterval(mergeReconciliationTimer);
         mergeReconciliationTimer = undefined;
@@ -3947,6 +4034,7 @@ export function createFactoryServer({
       }`,
     );
   });
+  issueDiscoveryLifecycle?.start();
   return {
     stop: stopServer,
     shutdownTimeoutMs,

@@ -178,6 +178,120 @@ function shellResponse(): Response {
 }
 
 describe("T3 read-only activity transport", () => {
+  test("normalizes modern and legacy pull request links without trusting other hosts", async () => {
+    const modern = createT3ActivityReader({
+      baseUrl: BASE_URL,
+      fetcher: async (input) =>
+        String(input).includes("/.well-known")
+          ? descriptorResponse()
+          : Response.json({
+              projects: [project()],
+              snapshotSequence: 41,
+              threads: [
+                threadShell({
+                  branchPullRequest: {
+                    number: 4,
+                    repository: "app-press/factory",
+                    url: "https://github.com/app-press/factory/pull/4",
+                  },
+                  lineage: {
+                    parentThreadId: "thread-root",
+                    relationshipToParent: "subagent",
+                    rootThreadId: "thread-root",
+                  },
+                  linkedPullRequest: null,
+                  pullRequests: [
+                    {
+                      host: "github.com",
+                      number: 2,
+                      repository: "app-press/factory",
+                      url: "https://github.com/app-press/factory/pull/2",
+                    },
+                    {
+                      host: "evil.example",
+                      number: 3,
+                      repository: "app-press/factory",
+                      url: "https://evil.example/app-press/factory/pull/3",
+                    },
+                  ],
+                }),
+              ],
+              updatedAt: "2026-09-02T17:30:01.000Z",
+            }),
+      token: FIXTURE_TOKEN,
+    });
+
+    const result = await modern.readShell();
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) throw new Error("Expected a valid T3 shell.");
+    expect(result.threads[0]).toMatchObject({
+      linkedPullRequestUrl: "https://github.com/app-press/factory/pull/2",
+      linkedPullRequestUrls: [
+        "https://github.com/app-press/factory/pull/2",
+        "https://github.com/app-press/factory/pull/4",
+      ],
+      parentThreadId: "thread-root",
+      rootThreadId: "thread-root",
+    });
+  });
+
+  test("keeps the legacy singular link and rejects malformed or unbounded modern data", async () => {
+    const legacy = createT3ActivityReader({
+      baseUrl: BASE_URL,
+      fetcher: async (input) =>
+        String(input).includes("/.well-known")
+          ? descriptorResponse()
+          : Response.json({
+              projects: [project()],
+              snapshotSequence: 41,
+              threads: [threadShell()],
+              updatedAt: "2026-09-02T17:30:01.000Z",
+            }),
+      token: FIXTURE_TOKEN,
+    });
+    const legacyResult = await legacy.readShell();
+    expect(legacyResult).toMatchObject({ ok: true });
+    if (!legacyResult.ok) throw new Error("Expected a valid T3 shell.");
+    expect(legacyResult.threads[0]).toMatchObject({
+      linkedPullRequestUrl: "https://github.com/app-press/factory/pull/2",
+    });
+    expect(legacyResult.threads[0]).not.toHaveProperty("linkedPullRequestUrls");
+
+    for (const overrides of [
+      {
+        linkedPullRequest: {
+          number: 2,
+          repository: "app-press/factory",
+          url: "https://evil.example/app-press/factory/pull/2",
+        },
+      },
+      {
+        linkedPullRequest: null,
+        pullRequests: Array.from({ length: 101 }, (_, index) => ({
+          url: `https://github.com/app-press/factory/pull/${index + 1}`,
+        })),
+      },
+    ]) {
+      const reader = createT3ActivityReader({
+        baseUrl: BASE_URL,
+        fetcher: async (input) =>
+          String(input).includes("/.well-known")
+            ? descriptorResponse()
+            : Response.json({
+                projects: [project()],
+                snapshotSequence: 41,
+                threads: [threadShell(overrides)],
+                updatedAt: "2026-09-02T17:30:01.000Z",
+              }),
+        token: FIXTURE_TOKEN,
+      });
+      await expect(reader.readShell()).resolves.toMatchObject({
+        ok: false,
+        status: "invalid_response",
+      });
+    }
+  });
+
   test("accepts a future server version that advertises protocol 1", async () => {
     const reader = createT3ActivityReader({
       baseUrl: BASE_URL,

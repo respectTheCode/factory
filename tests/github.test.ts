@@ -78,6 +78,53 @@ describe("GitHub pull request status adapter", () => {
     expect(unauthenticatedCalls).toBe(0);
   });
 
+  test("reads only pull request metadata for issue discovery reconciliation", async () => {
+    const reference = parseGitHubPullRequestUrl(
+      "https://github.com/acme/repo/pull/31",
+    );
+    const requests: string[] = [];
+    const reader = createGitHubStatusReader({
+      fetcher: async (input) => {
+        requests.push(String(input));
+        return new Response(
+          JSON.stringify({
+            base: { ref: "main" },
+            draft: false,
+            head: { ref: "feature/issue", sha: "abc123" },
+            html_url: reference.url,
+            mergeable: true,
+            number: 31,
+            state: "open",
+            title: "Issue discovery metadata",
+            updated_at: "2026-10-17T10:00:00Z",
+          }),
+          { status: 200 },
+        );
+      },
+      token: "server-token",
+    });
+
+    const snapshot = await reader.read(reference, { pullRequestOnly: true });
+
+    expect(snapshot).toMatchObject({
+      checkRuns: [],
+      checkRunsStatus: "not_requested",
+      pullRequest: {
+        headSha: "abc123",
+        number: 31,
+        state: "open",
+        title: "Issue discovery metadata",
+      },
+      status: "ok",
+      workflowRuns: [],
+      workflowRunsStatus: "not_requested",
+    });
+    expect(snapshot.review).toBeUndefined();
+    expect(requests).toEqual([
+      "https://api.github.com/repos/acme/repo/pulls/31",
+    ]);
+  });
+
   test("fails closed for stacked, unreachable, unavailable, and wrong-repository evidence", async () => {
     const reference = parseGitHubPullRequestUrl(
       "https://github.com/acme/repo/pull/1",

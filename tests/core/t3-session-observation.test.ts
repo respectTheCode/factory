@@ -638,6 +638,84 @@ describe("T3 session observations", () => {
     });
   });
 
+  test("passes modern T3 pull request and subagent metadata into issue activity", async () => {
+    const { app } = createApplication();
+    const project = app.createProject({
+      gitOriginUrl: "git@github.com:app-press/factory.git",
+      name: "Factory",
+    });
+    const createdAt = fixtureDate(-60_000).toISOString();
+    const coordinator = createT3Coordinator({
+      application: app,
+      reader: {
+        async readShell() {
+          return {
+            fetchedAt: fixtureDate().toISOString(),
+            ok: true,
+            projects: [
+              {
+                createdAt,
+                id: "t3-project-factory",
+                repositoryIdentity: {
+                  canonicalKey: "github.com/app-press/factory",
+                },
+                title: "Factory",
+                updatedAt: fixtureDate().toISOString(),
+                workspaceRoot: "/work/factory",
+              },
+            ],
+            sourceDigest: "digest-modern-thread",
+            sourceSequence: 1,
+            sourceStream: "shell",
+            sourceUpdatedAt: fixtureDate().toISOString(),
+            status: "ok",
+            threads: [
+              {
+                branch: "feature/modern-thread",
+                createdAt,
+                hasActionableProposedPlan: false,
+                hasPendingApprovals: false,
+                hasPendingUserInput: false,
+                id: "thread-subagent",
+                linkedPullRequestUrl:
+                  "https://github.com/app-press/factory/pull/286",
+                linkedPullRequestUrls: [
+                  "https://github.com/app-press/factory/pull/286",
+                  "https://github.com/app-press/factory/pull/287",
+                ],
+                parentThreadId: "thread-root",
+                projectId: "t3-project-factory",
+                rootThreadId: "thread-root",
+                title: "Fix issue discovery",
+                updatedAt: fixtureDate().toISOString(),
+              },
+            ],
+          } as unknown as Extract<T3ShellObservation, { ok: true }>;
+        },
+        async readThread() {
+          throw new Error("Issue activity should not request thread detail.");
+        },
+      },
+    });
+
+    const activity = await coordinator.projectActivity(project.id, undefined, {
+      mode: "issues",
+    });
+    expect(activity.threads).toMatchObject([
+      {
+        createdAt,
+        linkedPullRequestUrl: "https://github.com/app-press/factory/pull/286",
+        linkedPullRequestUrls: [
+          "https://github.com/app-press/factory/pull/286",
+          "https://github.com/app-press/factory/pull/287",
+        ],
+        parentThreadId: "thread-root",
+        rootThreadId: "thread-root",
+        threadId: "thread-subagent",
+      },
+    ]);
+  });
+
   test("resolves a transport finding when Project resolution emits its own kind", () => {
     const { app } = createApplication();
     const project = app.createProject({ name: "Beacon" });

@@ -17,6 +17,7 @@ type T3ThreadSuccess = Extract<T3ThreadObservation, { ok: true }>;
 const ISO_DATE_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 const MIN_ISO_DATE = "1970-01-01T00:00:00.000Z";
+const MAX_T3_LINKED_PULL_REQUESTS_PER_THREAD = 100;
 const RUN_STATUSES = new Set([
   "preparing",
   "queued",
@@ -138,6 +139,63 @@ function parsePullRequestUrl(value: unknown): string | undefined | null {
   } catch {
     return null;
   }
+}
+
+function parsePullRequestUrls(
+  pullRequests: unknown,
+  branchPullRequest: unknown,
+  legacyUrl: string | undefined,
+): string[] | undefined | null {
+  const hasModernSource =
+    (pullRequests !== null && pullRequests !== undefined) ||
+    (branchPullRequest !== null && branchPullRequest !== undefined);
+  if (!hasModernSource) return undefined;
+  if (
+    pullRequests !== null &&
+    pullRequests !== undefined &&
+    (!Array.isArray(pullRequests) ||
+      pullRequests.length > MAX_T3_LINKED_PULL_REQUESTS_PER_THREAD)
+  ) {
+    return null;
+  }
+
+  const urls = new Set<string>();
+  const candidates = [
+    ...(Array.isArray(pullRequests) ? pullRequests : []),
+    branchPullRequest,
+  ];
+  for (const candidate of candidates) {
+    const url = parsePullRequestUrl(candidate);
+    if (url) urls.add(url);
+    if (urls.size > MAX_T3_LINKED_PULL_REQUESTS_PER_THREAD) return null;
+  }
+  if (legacyUrl) urls.add(legacyUrl);
+  if (urls.size > MAX_T3_LINKED_PULL_REQUESTS_PER_THREAD) return null;
+  return urls.size > 0 ? [...urls] : undefined;
+}
+
+function parseSubagentLineage(
+  value: unknown,
+): { parentThreadId?: string; rootThreadId?: string } | undefined {
+  if (
+    !isRecord(value) ||
+    value.relationshipToParent !== "subagent" ||
+    (value.parentThreadId !== null &&
+      !boundedIdentifier(value.parentThreadId)) ||
+    !boundedIdentifier(value.rootThreadId)
+  ) {
+    return undefined;
+  }
+  return {
+    ...(value.parentThreadId === null
+      ? {}
+      : { parentThreadId: value.parentThreadId }),
+    rootThreadId: value.rootThreadId,
+  };
+}
+
+function boundedIdentifier(value: unknown): value is string {
+  return nonEmptyString(value) && value.length <= 512;
 }
 
 function classifyPendingRequest(kind: string): {
@@ -355,6 +413,13 @@ function parseThreadShell(
   ) {
     return undefined;
   }
+  const linkedPullRequestUrls = parsePullRequestUrls(
+    value.pullRequests,
+    value.branchPullRequest,
+    linkedPullRequestUrl ?? undefined,
+  );
+  if (linkedPullRequestUrls === null) return undefined;
+  const lineage = parseSubagentLineage(value.lineage);
 
   return {
     ...(archivedAt.value === undefined ? {} : { archivedAt: archivedAt.value }),
@@ -363,6 +428,19 @@ function parseThreadShell(
     ...(latestTurn === undefined ? {} : { latestTurn }),
     ...(session === undefined ? {} : { session }),
     ...(linkedPullRequestUrl === undefined ? {} : { linkedPullRequestUrl }),
+    ...(linkedPullRequestUrls === undefined
+      ? {}
+      : {
+          linkedPullRequestUrl:
+            linkedPullRequestUrl ?? linkedPullRequestUrls[0],
+          linkedPullRequestUrls,
+        }),
+    ...(lineage?.parentThreadId === undefined
+      ? {}
+      : { parentThreadId: lineage.parentThreadId }),
+    ...(lineage?.rootThreadId === undefined
+      ? {}
+      : { rootThreadId: lineage.rootThreadId }),
     ...(latestUserMessageAt.value === undefined
       ? {}
       : { latestUserMessageAt: latestUserMessageAt.value }),

@@ -70,6 +70,7 @@ export type GitHubStatusSnapshot = {
 export type GitHubStatusReader = {
   read: (
     reference: GitHubPullRequestReference,
+    options?: { pullRequestOnly?: boolean },
   ) => Promise<GitHubStatusSnapshot>;
   readMergeEvidence?: (reference: GitHubPullRequestReference) => Promise<
     | {
@@ -330,7 +331,7 @@ export function createGitHubStatusReader({
         return undefined;
       }
     },
-    async read(reference) {
+    async read(reference, { pullRequestOnly = false } = {}) {
       const fetchedAt = now().toISOString();
       if (!configuredToken) {
         return {
@@ -403,6 +404,17 @@ export function createGitHubStatusReader({
           fetchedAt,
           "GitHub returned an invalid pull request response.",
         );
+      }
+      if (pullRequestOnly) {
+        return {
+          checkRuns: [],
+          checkRunsStatus: "not_requested",
+          fetchedAt,
+          pullRequest,
+          status: "ok",
+          workflowRuns: [],
+          workflowRunsStatus: "not_requested",
+        };
       }
 
       const review = await readGitHubReviewStatus({

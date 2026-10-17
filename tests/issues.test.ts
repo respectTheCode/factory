@@ -710,4 +710,289 @@ describe("Factory issue store", () => {
       store.close();
     }
   });
+
+  test("discovers fresh work only and groups recent threads by non-default branch", () => {
+    const store = makeStore();
+    try {
+      expect(store.list({ projectId })).toEqual([]);
+      const created = store.discoverThreads({
+        freshSourceIds: ["source-a", "source-b"],
+        notBefore: "2026-10-15T00:00:00.000Z",
+        projectId,
+        threads: [
+          thread({
+            threadId: "old-thread",
+            branch: "feature/old",
+            updatedAt: "2026-10-14T23:59:59.999Z",
+          }),
+          thread({
+            threadId: "stale-source-thread",
+            sourceId: "source-stale",
+            branch: "feature/stale",
+          }),
+          thread({
+            threadId: "archived-thread",
+            sourceId: "source-a",
+            branch: "feature/archived",
+            current: false,
+          }),
+          thread({
+            threadId: "thread-a",
+            sourceId: "source-a",
+            branch: "feature/shared",
+            title: "Older shared thread",
+            updatedAt: "2026-10-16T09:00:00.000Z",
+          }),
+          thread({
+            threadId: "thread-b",
+            sourceId: "source-b",
+            branch: "feature/shared",
+            linkedPullRequestUrl: prOne,
+            title: "Most recent shared thread",
+            updatedAt: "2026-10-16T11:00:00.000Z",
+          }),
+        ],
+      });
+
+      expect(created).toHaveLength(1);
+      const issue = store.detail(created[0]!)!;
+      expect(issue.issue).toMatchObject({
+        branches: ["feature/shared"],
+        pullRequestUrls: [prOne],
+        title: "Most recent shared thread",
+      });
+      expect(
+        issue.threads.map(({ sourceId, threadId }) => [sourceId, threadId]),
+      ).toEqual([
+        ["source-a", "thread-a"],
+        ["source-b", "thread-b"],
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("reuses a manual issue with the same branch", () => {
+    const store = makeStore();
+    try {
+      const manual = store.create({
+        projectId,
+        title: "Manually planned work",
+        branches: ["feature/shared"],
+      });
+
+      expect(
+        store.discoverThreads({
+          freshSourceIds: ["source-a"],
+          notBefore: "2026-10-15T00:00:00.000Z",
+          projectId,
+          threads: [thread({ threadId: "thread-a", branch: "feature/shared" })],
+        }),
+      ).toEqual([]);
+      expect(store.detail(manual.id)?.threads).toEqual([
+        expect.objectContaining({ threadId: "thread-a", sourceId: "source-a" }),
+      ]);
+      expect(store.list({ projectId })).toHaveLength(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("reuses a done branch issue without reopening it for a new thread", () => {
+    const store = makeStore();
+    try {
+      const done = store.create({
+        projectId,
+        title: "Completed branch work",
+        branches: ["feature/shared"],
+      });
+      store.move({ id: done.id, status: "done" });
+      const discoveredThread = thread({
+        threadId: "new-thread",
+        branch: "feature/shared",
+        updatedAt: "2026-10-16T11:00:00.000Z",
+      });
+
+      expect(
+        store.discoverThreads({
+          freshSourceIds: ["source-a"],
+          notBefore: "2026-10-15T00:00:00.000Z",
+          projectId,
+          threads: [discoveredThread],
+        }),
+      ).toEqual([]);
+      store.observeThreads({
+        freshSourceIds: ["source-a"],
+        projectId,
+        threads: [discoveredThread],
+      });
+      reconcile(store, [], true, ["source-a"]);
+
+      expect(store.detail(done.id)?.issue.status).toBe("done");
+      expect(store.detail(done.id)?.threads).toContainEqual(
+        expect.objectContaining({ threadId: "new-thread" }),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("creates separate default-branch and branchless issues with stable links", () => {
+    const store = makeStore();
+    try {
+      const created = store.discoverThreads({
+        freshSourceIds: ["source-a", "source-b"],
+        notBefore: "2026-10-15T00:00:00.000Z",
+        projectId,
+        threads: [
+          thread({
+            threadId: "main-a",
+            sourceId: "source-a",
+            branch: "main",
+            title: "Main A",
+          }),
+          thread({
+            threadId: "main-b",
+            sourceId: "source-b",
+            branch: "main",
+            title: "Main B",
+          }),
+          thread({
+            threadId: "develop-a",
+            branch: "develop",
+            title: "Develop A",
+          }),
+          thread({
+            threadId: "develop-b",
+            branch: "develop",
+            title: "Develop B",
+          }),
+          thread({ threadId: "trunk", branch: "trunk", title: "Trunk" }),
+          thread({ threadId: "master", branch: "master", title: "Master" }),
+          thread({
+            threadId: "branchless",
+            branch: undefined,
+            title: "Branchless",
+          }),
+        ],
+      });
+
+      expect(created).toHaveLength(7);
+      expect(new Set(created).size).toBe(7);
+      for (const id of created) {
+        expect(store.detail(id)?.issue.branches).toEqual([]);
+        expect(store.detail(id)?.threads).toHaveLength(1);
+      }
+      const issuesByTitle = new Map(
+        created.map((id) => [store.detail(id)?.issue.title, store.detail(id)]),
+      );
+      expect(issuesByTitle.get("Main A")?.threads[0]?.threadId).toBe("main-a");
+      expect(issuesByTitle.get("Main B")?.threads[0]?.threadId).toBe("main-b");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("groups fresh default-branch children under their root and unions PR links", () => {
+    const store = makeStore();
+    try {
+      const root = thread({
+        threadId: "root-thread",
+        rootThreadId: "root-thread",
+        branch: "main",
+        title: "Root work title",
+        linkedPullRequestUrl: prOne,
+        updatedAt: "2026-10-10T10:00:00.000Z",
+      });
+      const child = thread({
+        threadId: "child-thread",
+        parentThreadId: "root-thread",
+        rootThreadId: "root-thread",
+        branch: undefined,
+        title: "Subagent work title",
+        linkedPullRequestUrls: [prTwo],
+        updatedAt: "2026-10-16T10:00:00.000Z",
+      });
+      const created = store.discoverThreads({
+        freshSourceIds: ["source-a"],
+        notBefore: "2026-10-15T00:00:00.000Z",
+        projectId,
+        threads: [root, child],
+      });
+
+      expect(created).toHaveLength(1);
+      const issueId = created[0]!;
+      const issue = store.detail(issueId)?.issue;
+      expect(issue).toMatchObject({ branches: [], title: "Root work title" });
+      expect([...issue!.pullRequestUrls].sort()).toEqual([prOne, prTwo].sort());
+      expect(
+        issue!.pullRequests.every(
+          ({ state, merged }) => state === "unavailable" && !merged,
+        ),
+      ).toBe(true);
+      expect(
+        store.detail(issueId)?.threads.map(({ threadId }) => threadId),
+      ).toEqual(["child-thread", "root-thread"]);
+
+      const thirdPr = "https://github.com/acme/app/pull/3";
+      expect(
+        store.observeThreads({
+          freshSourceIds: ["source-a"],
+          projectId,
+          threads: [
+            root,
+            { ...child, linkedPullRequestUrls: [prTwo, thirdPr] },
+          ],
+        }),
+      ).toEqual([thirdPr]);
+      expect([...store.detail(issueId)!.issue.pullRequestUrls].sort()).toEqual(
+        [prOne, prTwo, thirdPr].sort(),
+      );
+
+      store.remove(issueId);
+      expect(
+        store.discoverThreads({
+          freshSourceIds: ["source-a"],
+          notBefore: "2026-10-15T00:00:00.000Z",
+          projectId,
+          threads: [
+            {
+              ...child,
+              threadId: "another-child",
+              title: "Later child",
+              updatedAt: "2026-10-16T12:00:00.000Z",
+            },
+          ],
+        }),
+      ).toEqual([]);
+      expect(store.list({ projectId })).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("keeps discovery receipts across restarts and issue deletion", () => {
+    const directory = mkdtempSync(join(tmpdir(), "factory-issues-discovery-"));
+    directories.push(directory);
+    const databasePath = join(directory, "factory.sqlite");
+    let store = createIssueStore({ databasePath });
+    const input = {
+      freshSourceIds: ["source-a"],
+      notBefore: "2026-10-15T00:00:00.000Z",
+      projectId,
+      threads: [thread({ threadId: "thread-a", branch: "feature/a" })],
+    };
+    try {
+      const [issueId] = store.discoverThreads(input);
+      expect(issueId).toBeDefined();
+      store.close();
+      store = createIssueStore({ databasePath });
+      expect(store.discoverThreads(input)).toEqual([]);
+      store.remove(issueId!);
+      expect(store.discoverThreads(input)).toEqual([]);
+      expect(store.list({ projectId })).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
 });

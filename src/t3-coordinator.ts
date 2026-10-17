@@ -111,6 +111,10 @@ export type T3ObservedThread = {
   branch?: string;
   worktreePath?: string;
   linkedPullRequestUrl?: string;
+  linkedPullRequestUrls?: string[];
+  parentThreadId?: string;
+  rootThreadId?: string;
+  createdAt?: string;
   backgroundLiveness?: "working" | "monitoring";
   latestSessionState?:
     | "idle"
@@ -1380,9 +1384,18 @@ export function createT3Coordinator(input: {
         threadCount += 1;
         const mapped = {
           ...(thread.branch === undefined ? {} : { branch: thread.branch }),
+          ...(thread.linkedPullRequestUrls === undefined
+            ? {}
+            : { linkedPullRequestUrls: thread.linkedPullRequestUrls }),
           ...(thread.linkedPullRequestUrl === undefined
             ? {}
             : { linkedPullRequestUrl: thread.linkedPullRequestUrl }),
+          ...(thread.parentThreadId === undefined
+            ? {}
+            : { parentThreadId: thread.parentThreadId }),
+          ...(thread.rootThreadId === undefined
+            ? {}
+            : { rootThreadId: thread.rootThreadId }),
           ...(thread.latestTurn === undefined
             ? {}
             : { latestTurnState: thread.latestTurn.state }),
@@ -1658,9 +1671,18 @@ export function createT3Coordinator(input: {
           ...(thread.backgroundLiveness === undefined
             ? {}
             : { backgroundLiveness: thread.backgroundLiveness }),
+          ...(thread.linkedPullRequestUrls === undefined
+            ? {}
+            : { linkedPullRequestUrls: thread.linkedPullRequestUrls }),
           ...(thread.linkedPullRequestUrl === undefined
             ? {}
             : { linkedPullRequestUrl: thread.linkedPullRequestUrl }),
+          ...(thread.parentThreadId === undefined
+            ? {}
+            : { parentThreadId: thread.parentThreadId }),
+          ...(thread.rootThreadId === undefined
+            ? {}
+            : { rootThreadId: thread.rootThreadId }),
           ...(latestSessionState === undefined ? {} : { latestSessionState }),
           ...(latestTurnState === undefined ? {} : { latestTurnState }),
           ...(thread.latestTurn?.completedAt === undefined
@@ -1674,6 +1696,7 @@ export function createT3Coordinator(input: {
             : { worktreePath: thread.worktreePath }),
           association: { links: [], state: "unmatched" },
           externalProjectId: t3Project.id,
+          createdAt: thread.createdAt,
           hasPendingApprovals: thread.hasPendingApprovals,
           hasPendingUserInput: thread.hasPendingUserInput,
           observedAt: shell.fetchedAt,

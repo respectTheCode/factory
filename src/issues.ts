@@ -99,6 +99,10 @@ export type IssueThreadObservation = {
   title: string;
   branch?: string;
   linkedPullRequestUrl?: string;
+  linkedPullRequestUrls?: string[];
+  parentThreadId?: string;
+  rootThreadId?: string;
+  createdAt?: string;
   repository?: string;
   state: "working" | "stopped";
   current: boolean;
@@ -160,6 +164,12 @@ export type IssueStore = {
   update(input: IssueUpdateInput): Issue;
   move(input: IssueMoveInput): Issue;
   remove(id: string): { id: string };
+  discoverThreads(input: {
+    projectId: string;
+    threads: IssueThreadObservation[];
+    freshSourceIds: string[];
+    notBefore: string;
+  }): string[];
   observeThreads(input: {
     projectId: string;
     threads: IssueThreadObservation[];
@@ -191,6 +201,20 @@ function cleanList(values: string[] | undefined): string[] {
 
 function cleanPullRequestUrls(values: string[] | undefined): string[] {
   return cleanList(values).map((value) => parseGitHubPullRequestUrl(value).url);
+}
+
+function threadPullRequestUrls(thread: IssueThreadObservation): string[] {
+  return cleanPullRequestUrls([
+    ...(thread.linkedPullRequestUrl ? [thread.linkedPullRequestUrl] : []),
+    ...(thread.linkedPullRequestUrls ?? []),
+  ]);
+}
+
+function isDefaultOrEmptyBranch(branch: string | null): boolean {
+  return (
+    branch === null ||
+    ["main", "master", "develop", "trunk"].includes(branch.toLowerCase())
+  );
 }
 
 function parseJsonList(value: string): string[] {
@@ -484,6 +508,15 @@ export function createIssueStore({
       event_fingerprint TEXT,
       PRIMARY KEY (issue_id, source_id, thread_id)
     );
+    CREATE TABLE IF NOT EXISTS factory_issue_discovery_receipts (
+      project_id TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      issue_id TEXT NOT NULL,
+      branch TEXT,
+      discovered_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, source_id, thread_id)
+    );
     CREATE INDEX IF NOT EXISTS factory_issue_threads_lookup_idx
       ON factory_issue_threads(source_id, thread_id);
     CREATE TABLE IF NOT EXISTS factory_issue_pull_requests (
@@ -534,6 +567,57 @@ export function createIssueStore({
     return mapIssue(database, row);
   };
 
+  const createInTransaction = (input: IssueCreateInput): string => {
+    const projectId = input.projectId.trim();
+    const title = input.title.trim();
+    if (!projectId) throw new Error("An issue requires a project.");
+    if (!title) throw new Error("An issue title is required.");
+    const createdAt = clock().toISOString();
+    const id = randomUUID();
+    const counter = database
+      .query(
+        "SELECT next_number AS nextNumber FROM factory_issue_counter WHERE id = 1",
+      )
+      .get() as { nextNumber: number } | null;
+    if (!counter) throw new Error("Factory issue counter is unavailable.");
+    const number = counter.nextNumber;
+    const orderRow = database
+      .query(
+        "SELECT COALESCE(MAX(order_index), -1) + 1 AS orderIndex FROM factory_issues WHERE status = 'todo'",
+      )
+      .get() as { orderIndex: number };
+    database
+      .query(
+        "UPDATE factory_issue_counter SET next_number = $nextNumber WHERE id = 1",
+      )
+      .run({ $nextNumber: number + 1 });
+    database
+      .query(
+        `INSERT INTO factory_issues
+          (id, simple_id, project_id, title, description, labels_json,
+           branches_json, pull_request_urls_json, status, order_index,
+           created_at, updated_at)
+         VALUES ($id, $simpleId, $projectId, $title, $description, $labels,
+           $branches, $pullRequests, 'todo', $orderIndex, $createdAt, $updatedAt)`,
+      )
+      .run({
+        $branches: JSON.stringify(cleanList(input.branches)),
+        $createdAt: createdAt,
+        $description: input.description?.trim() ?? "",
+        $id: id,
+        $labels: JSON.stringify(cleanList(input.labels)),
+        $projectId: projectId,
+        $pullRequests: JSON.stringify(
+          cleanPullRequestUrls(input.pullRequestUrls),
+        ),
+        $orderIndex: orderRow.orderIndex,
+        $simpleId: `F-${number}`,
+        $title: title,
+        $updatedAt: createdAt,
+      });
+    return id;
+  };
+
   return {
     close() {
       database.close();
@@ -561,58 +645,7 @@ export function createIssueStore({
     },
 
     create(input) {
-      const projectId = input.projectId.trim();
-      const title = input.title.trim();
-      if (!projectId) throw new Error("An issue requires a project.");
-      if (!title) throw new Error("An issue title is required.");
-      const createdAt = clock().toISOString();
-      const id = randomUUID();
-      const simpleId = withTransaction(database, () => {
-        const counter = database
-          .query(
-            "SELECT next_number AS nextNumber FROM factory_issue_counter WHERE id = 1",
-          )
-          .get() as { nextNumber: number } | null;
-        if (!counter) throw new Error("Factory issue counter is unavailable.");
-        const number = counter.nextNumber;
-        const orderRow = database
-          .query(
-            "SELECT COALESCE(MAX(order_index), -1) + 1 AS orderIndex FROM factory_issues WHERE status = 'todo'",
-          )
-          .get() as { orderIndex: number };
-        database
-          .query(
-            "UPDATE factory_issue_counter SET next_number = $nextNumber WHERE id = 1",
-          )
-          .run({ $nextNumber: number + 1 });
-        const simple = `F-${number}`;
-        database
-          .query(
-            `INSERT INTO factory_issues
-              (id, simple_id, project_id, title, description, labels_json,
-               branches_json, pull_request_urls_json, status, order_index,
-               created_at, updated_at)
-             VALUES ($id, $simpleId, $projectId, $title, $description, $labels,
-               $branches, $pullRequests, 'todo', $orderIndex, $createdAt, $updatedAt)`,
-          )
-          .run({
-            $branches: JSON.stringify(cleanList(input.branches)),
-            $createdAt: createdAt,
-            $description: input.description?.trim() ?? "",
-            $id: id,
-            $labels: JSON.stringify(cleanList(input.labels)),
-            $projectId: projectId,
-            $pullRequests: JSON.stringify(
-              cleanPullRequestUrls(input.pullRequestUrls),
-            ),
-            $orderIndex: orderRow.orderIndex,
-            $simpleId: simple,
-            $title: title,
-            $updatedAt: createdAt,
-          });
-        return simple;
-      });
-      void simpleId;
+      const id = withTransaction(database, () => createInTransaction(input));
       return get(id);
     },
 
@@ -809,6 +842,320 @@ export function createIssueStore({
       return { id };
     },
 
+    discoverThreads({ projectId, threads, freshSourceIds, notBefore }) {
+      const normalizedProjectId = projectId.trim();
+      if (!normalizedProjectId)
+        throw new Error("Thread discovery requires a project.");
+      const cutoff = Date.parse(notBefore);
+      if (!Number.isFinite(cutoff)) {
+        throw new Error("Thread discovery requires a valid ISO cutoff.");
+      }
+      const freshSources = new Set(cleanList(freshSourceIds));
+      const currentFreshThreads = threads
+        .filter((thread) => {
+          const updatedAt = Date.parse(thread.updatedAt);
+          return (
+            freshSources.has(thread.sourceId) &&
+            thread.current &&
+            thread.sourceId.trim().length > 0 &&
+            thread.threadId.trim().length > 0 &&
+            thread.title.trim().length > 0 &&
+            Number.isFinite(updatedAt)
+          );
+        })
+        .sort((left, right) => {
+          const byRecency =
+            Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+          if (byRecency !== 0) return byRecency;
+          if (left.sourceId !== right.sourceId) {
+            return left.sourceId < right.sourceId ? -1 : 1;
+          }
+          if (left.threadId !== right.threadId) {
+            return left.threadId < right.threadId ? -1 : 1;
+          }
+          return 0;
+        });
+      const latestByThread = new Map<string, IssueThreadObservation>();
+      for (const thread of currentFreshThreads) {
+        const identity = JSON.stringify([thread.sourceId, thread.threadId]);
+        if (!latestByThread.has(identity)) latestByThread.set(identity, thread);
+      }
+      const recentThreads = [...latestByThread.values()].filter(
+        (thread) => Date.parse(thread.updatedAt) >= cutoff,
+      );
+      if (recentThreads.length === 0) return [];
+
+      const rootIdForThread = (thread: IssueThreadObservation): string =>
+        thread.rootThreadId?.trim() ||
+        thread.parentThreadId?.trim() ||
+        thread.threadId;
+      const isRootGroupedThread = (thread: IssueThreadObservation): boolean =>
+        isDefaultOrEmptyBranch(thread.branch?.trim() || null);
+      const rootGroupKey = (thread: IssueThreadObservation): string =>
+        JSON.stringify([thread.sourceId, rootIdForThread(thread)]);
+      const recentRootGroups = new Set(
+        recentThreads
+          .filter(isRootGroupedThread)
+          .map((thread) => rootGroupKey(thread)),
+      );
+      const rootThreads = new Map<string, IssueThreadObservation>();
+      for (const thread of currentFreshThreads) {
+        if (
+          thread.threadId !== rootIdForThread(thread) ||
+          !recentRootGroups.has(rootGroupKey(thread))
+        ) {
+          continue;
+        }
+        const groupKey = rootGroupKey(thread);
+        if (!rootThreads.has(groupKey)) rootThreads.set(groupKey, thread);
+      }
+      const titleByRootGroup = new Map<string, string>();
+      for (const thread of recentThreads) {
+        if (!isRootGroupedThread(thread)) continue;
+        const groupKey = rootGroupKey(thread);
+        if (rootThreads.has(groupKey)) continue;
+        if (!titleByRootGroup.has(groupKey)) {
+          titleByRootGroup.set(groupKey, thread.title.trim());
+        }
+      }
+      for (const [groupKey, root] of rootThreads) {
+        titleByRootGroup.set(groupKey, root.title.trim());
+      }
+
+      const candidatesByIdentity = new Map<string, IssueThreadObservation>();
+      for (const thread of recentThreads) {
+        candidatesByIdentity.set(
+          JSON.stringify([thread.sourceId, thread.threadId]),
+          thread,
+        );
+      }
+      for (const root of rootThreads.values()) {
+        candidatesByIdentity.set(
+          JSON.stringify([root.sourceId, root.threadId]),
+          root,
+        );
+      }
+      const candidates = [...candidatesByIdentity.values()];
+
+      return withTransaction(database, () => {
+        const createdIds: string[] = [];
+        const issueByRootGroup = new Map<string, string | null>();
+        const issues = readIssueRows(database, normalizedProjectId);
+        const issueByBranch = new Map<string, string>();
+        for (const issue of issues) {
+          for (const branch of parseJsonList(issue.branchesJson)) {
+            if (!issueByBranch.has(branch)) issueByBranch.set(branch, issue.id);
+          }
+        }
+
+        const readReceipt = (
+          sourceId: string,
+          threadId: string,
+        ): { issueId: string } | null =>
+          database
+            .query(
+              `SELECT issue_id AS issueId FROM factory_issue_discovery_receipts
+                WHERE project_id = $projectId AND source_id = $sourceId
+                  AND thread_id = $threadId`,
+            )
+            .get({
+              $projectId: normalizedProjectId,
+              $sourceId: sourceId,
+              $threadId: threadId,
+            }) as { issueId: string } | null;
+
+        const readStableLink = (
+          sourceId: string,
+          threadId: string,
+        ): { issueId: string } | null =>
+          database
+            .query(
+              `SELECT threads.issue_id AS issueId
+                 FROM factory_issue_threads AS threads
+                 JOIN factory_issues AS issues ON issues.id = threads.issue_id
+                WHERE issues.project_id = $projectId
+                  AND threads.source_id = $sourceId
+                  AND threads.thread_id = $threadId
+                ORDER BY threads.issue_id LIMIT 1`,
+            )
+            .get({
+              $projectId: normalizedProjectId,
+              $sourceId: sourceId,
+              $threadId: threadId,
+            }) as { issueId: string } | null;
+
+        const attachPullRequestUrls = (
+          issueId: string,
+          urls: string[],
+          updatedAt: string,
+        ) => {
+          if (urls.length === 0) return;
+          const issue = readIssueRow(database, issueId);
+          if (!issue) return;
+          const existing = parseJsonList(issue.pullRequestUrlsJson);
+          const next = [...existing];
+          for (const url of urls) {
+            if (!next.includes(url)) next.push(url);
+          }
+          if (next.length === existing.length) return;
+          database
+            .query(
+              `UPDATE factory_issues SET pull_request_urls_json = $urls,
+                 updated_at = $updatedAt WHERE id = $id`,
+            )
+            .run({
+              $id: issueId,
+              $updatedAt: updatedAt,
+              $urls: JSON.stringify(next),
+            });
+        };
+
+        const recordReceipt = (
+          sourceId: string,
+          threadId: string,
+          issueId: string,
+          branch: string | null,
+          discoveredAt: string,
+        ) => {
+          database
+            .query(
+              `INSERT OR IGNORE INTO factory_issue_discovery_receipts
+                 (project_id, source_id, thread_id, issue_id, branch, discovered_at)
+               VALUES ($projectId, $sourceId, $threadId, $issueId, $branch, $discoveredAt)`,
+            )
+            .run({
+              $branch: branch,
+              $discoveredAt: discoveredAt,
+              $issueId: issueId,
+              $projectId: normalizedProjectId,
+              $sourceId: sourceId,
+              $threadId: threadId,
+            });
+        };
+
+        for (const thread of candidates) {
+          const branch = thread.branch?.trim() || null;
+          const rootGrouped = isRootGroupedThread(thread);
+          const rootGroup = rootGrouped ? rootGroupKey(thread) : undefined;
+          const rootId = rootGrouped ? rootIdForThread(thread) : undefined;
+          const receipt = readReceipt(thread.sourceId, thread.threadId);
+          const rootReceipt =
+            rootGrouped && rootId ? readReceipt(thread.sourceId, rootId) : null;
+          let issueId: string | null | undefined;
+          let newlyCreated = false;
+          if (rootGrouped && rootGroup && issueByRootGroup.has(rootGroup)) {
+            issueId = issueByRootGroup.get(rootGroup);
+          } else if (rootGrouped) {
+            const groupKey = rootGroup!;
+            const rememberedReceipt = rootReceipt ?? receipt;
+            if (rememberedReceipt) {
+              issueId = readIssueRow(database, rememberedReceipt.issueId)
+                ? rememberedReceipt.issueId
+                : null;
+            } else {
+              const stableLink =
+                (rootId ? readStableLink(thread.sourceId, rootId) : null) ??
+                readStableLink(thread.sourceId, thread.threadId);
+              issueId = stableLink?.issueId;
+            }
+            if (issueId === undefined) {
+              const title =
+                titleByRootGroup.get(groupKey) ?? thread.title.trim();
+              issueId = createInTransaction({
+                projectId: normalizedProjectId,
+                title,
+                branches: [],
+              });
+              newlyCreated = true;
+            }
+            issueByRootGroup.set(groupKey, issueId);
+          } else {
+            if (receipt) continue;
+            issueId = readStableLink(thread.sourceId, thread.threadId)?.issueId;
+            if (!issueId && branch) issueId = issueByBranch.get(branch);
+            if (!issueId) {
+              issueId = createInTransaction({
+                projectId: normalizedProjectId,
+                title: thread.title,
+                branches: branch ? [branch] : [],
+              });
+              newlyCreated = true;
+            }
+            if (branch && !issueByBranch.has(branch)) {
+              issueByBranch.set(branch, issueId);
+            }
+          }
+          if (!issueId) continue;
+          if (newlyCreated) createdIds.push(issueId);
+
+          const now = clock().toISOString();
+          database
+            .query(
+              `INSERT INTO factory_issue_threads
+                 (issue_id, source_id, thread_id, title, branch, repository,
+                  state, current, updated_at)
+               VALUES ($issueId, $sourceId, $threadId, $title, $branch,
+                  $repository, $state, 1, $updatedAt)
+               ON CONFLICT(issue_id, source_id, thread_id) DO UPDATE SET
+                  title = excluded.title, branch = excluded.branch,
+                  repository = excluded.repository, state = excluded.state,
+                  current = excluded.current, updated_at = excluded.updated_at`,
+            )
+            .run({
+              $branch: branch,
+              $issueId: issueId,
+              $repository: thread.repository?.trim() || null,
+              $sourceId: thread.sourceId,
+              $state: thread.state,
+              $threadId: thread.threadId,
+              $title: thread.title.trim(),
+              $updatedAt: thread.updatedAt,
+            });
+
+          attachPullRequestUrls(issueId, threadPullRequestUrls(thread), now);
+          recordReceipt(thread.sourceId, thread.threadId, issueId, branch, now);
+          if (rootGrouped && rootId && rootGroup) {
+            recordReceipt(thread.sourceId, rootId, issueId, null, now);
+            const root = rootThreads.get(rootGroup);
+            if (root && root.threadId !== thread.threadId) {
+              const rootBranch = root.branch?.trim() || null;
+              database
+                .query(
+                  `INSERT INTO factory_issue_threads
+                     (issue_id, source_id, thread_id, title, branch, repository,
+                      state, current, updated_at)
+                   VALUES ($issueId, $sourceId, $threadId, $title, $branch,
+                      $repository, $state, 1, $updatedAt)
+                   ON CONFLICT(issue_id, source_id, thread_id) DO UPDATE SET
+                      title = excluded.title, branch = excluded.branch,
+                      repository = excluded.repository, state = excluded.state,
+                      current = excluded.current, updated_at = excluded.updated_at`,
+                )
+                .run({
+                  $branch: rootBranch,
+                  $issueId: issueId,
+                  $repository: root.repository?.trim() || null,
+                  $sourceId: root.sourceId,
+                  $state: root.state,
+                  $threadId: root.threadId,
+                  $title: root.title.trim(),
+                  $updatedAt: root.updatedAt,
+                });
+              attachPullRequestUrls(issueId, threadPullRequestUrls(root), now);
+              recordReceipt(
+                root.sourceId,
+                root.threadId,
+                issueId,
+                rootBranch,
+                now,
+              );
+            }
+          }
+        }
+        return createdIds;
+      });
+    },
+
     observeThreads({ projectId, threads, freshSourceIds }) {
       const issues = readIssueRows(database, projectId);
       if (issues.length === 0) return [];
@@ -874,9 +1221,7 @@ export function createIssueStore({
             ...stableLinks.map((link) => link.issueId),
             ...matchedByBranch.map((issue) => issue.id),
           ]);
-          const linkedUrl = thread.linkedPullRequestUrl
-            ? parseGitHubPullRequestUrl(thread.linkedPullRequestUrl).url
-            : undefined;
+          const linkedUrls = threadPullRequestUrls(thread);
           for (const issueId of issueIds) {
             database
               .query(
@@ -901,7 +1246,7 @@ export function createIssueStore({
                 $title: thread.title,
                 $updatedAt: thread.updatedAt || now,
               });
-            if (linkedUrl) {
+            for (const linkedUrl of linkedUrls) {
               const issue = readIssueRow(database, issueId);
               if (!issue) continue;
               const urls = parseJsonList(issue.pullRequestUrlsJson);

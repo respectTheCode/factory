@@ -900,6 +900,35 @@ function Dashboard() {
     };
   }, [human, sessionLoading, snapshot.state, view.screen, webSocketGeneration]);
 
+  useEffect(() => {
+    if (!human || snapshot.state !== "connected" || view.screen !== "home")
+      return;
+    const client = trpc.current;
+    if (!client) return;
+    let active = true;
+    let inFlight = false;
+    const refreshProjects = async () => {
+      if (inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      try {
+        const nextProjects = await client.projects.list.query();
+        if (active && trpc.current === client) setProjects(nextProjects);
+      } catch {
+        // Retain the last project list while the connection recovers.
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refreshProjects();
+    const interval = window.setInterval(() => void refreshProjects(), 15_000);
+    window.addEventListener("focus", refreshProjects);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshProjects);
+    };
+  }, [human, snapshot.state, view.screen, webSocketGeneration]);
+
   const refreshGitHubStatuses = async (detail: ProjectDetail) => {
     const client = trpc.current;
     if (!client) return;

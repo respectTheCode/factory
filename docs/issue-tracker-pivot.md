@@ -17,7 +17,17 @@ rules below, including the merged-PR guard.
 
 Show saved issues immediately while refreshing T3 and GitHub observations in the background.
 Remote source latency must not block the initial list. Polling displays refreshed activity
-without requiring a page reload. The issue dashboard and global connection indicator read
+without requiring a page reload. Discovery runs at startup and every 30 seconds while the
+server is running, including when the dashboard is closed. It backfills T3 threads updated
+in the last three days and keeps finding new work across configured sources. Previously
+unmatched T3 projects with recent work become Factory projects; ambiguous identity matches
+are left unresolved. Feature-branch threads share an issue within a project. Default-branch
+and branchless work is grouped by its parent T3 thread, with explicit links for delegated
+threads. T3 PR lists and branch PR links are combined; GitHub remains the source of confirmed
+merge evidence. Discovery receipts
+prevent duplicate issues across refreshes/restarts and preserve deliberate issue deletions.
+
+The issue dashboard and global connection indicator read
 T3 shell observations without matching threads against historical Tasks or writing legacy
 reconciliation state. Deployment environment metadata arrives in the HTML so the review
 banner does not depend on an additional request.

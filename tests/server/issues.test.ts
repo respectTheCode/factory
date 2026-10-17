@@ -101,6 +101,40 @@ function persistedFactoryState(databasePath: string): string {
   }
 }
 
+function persistedIssues(databasePath: string): Array<{
+  id: string;
+  projectId: string;
+  pullRequestUrls: string[];
+  title: string;
+}> {
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    return database
+      .query(
+        `SELECT id, project_id AS projectId,
+                pull_request_urls_json AS pullRequestUrlsJson, title
+         FROM factory_issues ORDER BY id`,
+      )
+      .all()
+      .map((row) => {
+        const issue = row as {
+          id: string;
+          projectId: string;
+          pullRequestUrlsJson: string;
+          title: string;
+        };
+        return {
+          id: issue.id,
+          projectId: issue.projectId,
+          pullRequestUrls: JSON.parse(issue.pullRequestUrlsJson) as string[],
+          title: issue.title,
+        };
+      });
+  } finally {
+    database.close();
+  }
+}
+
 function issueReader() {
   const thread = {
     branch,
@@ -248,6 +282,9 @@ function sourceActivityReader(input: {
   threads: Array<{
     id: string;
     branch: string;
+    linkedPullRequestUrls?: string[];
+    parentThreadId?: string;
+    rootThreadId?: string;
     state: "working" | "stopped";
     title: string;
   }>;
@@ -285,7 +322,16 @@ function sourceActivityReader(input: {
             turnId: `turn-${thread.id}`,
           },
           latestUserMessageAt: "2026-10-16T11:00:00.000Z",
+          ...(thread.linkedPullRequestUrls === undefined
+            ? {}
+            : { linkedPullRequestUrls: thread.linkedPullRequestUrls }),
+          ...(thread.parentThreadId === undefined
+            ? {}
+            : { parentThreadId: thread.parentThreadId }),
           projectId: input.projectId,
+          ...(thread.rootThreadId === undefined
+            ? {}
+            : { rootThreadId: thread.rootThreadId }),
           session: {
             activeTurnId:
               thread.state === "working" ? `turn-${thread.id}` : undefined,
@@ -324,6 +370,129 @@ afterEach(() => {
 });
 
 describe("Factory issue routes", () => {
+  test("discovers recent T3 work in the background without an issue-list request", async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "factory-issues-autodiscovery-"),
+    );
+    directories.push(directory);
+    const databasePath = join(directory, "factory.sqlite");
+    const server = createFactoryServer({
+      databasePath,
+      issueDiscoveryIntervalMs: 20,
+      port: 0,
+      t3Sources: [
+        source(
+          "auto-discovery",
+          sourceActivityReader({
+            projectId: "t3-project-auto-discovery",
+            threads: [
+              {
+                id: "thread-issue-auto-discovery-root",
+                branch: "main",
+                rootThreadId: "thread-issue-auto-discovery-root",
+                state: "working",
+                title: "Background-discovered issue",
+              },
+              {
+                id: "thread-issue-auto-discovery-child",
+                branch: "main",
+                linkedPullRequestUrls: [
+                  "https://github.com/acme/app/pull/31",
+                  "https://github.com/acme/app/pull/32",
+                ],
+                parentThreadId: "thread-issue-auto-discovery-root",
+                rootThreadId: "thread-issue-auto-discovery-root",
+                state: "working",
+                title: "Background-discovered child work",
+              },
+            ],
+          }),
+        ),
+      ],
+      operator: { name: "test-operator", secret: "test-operator-secret" },
+    });
+
+    try {
+      const discovered = await pollUntil(
+        async () => persistedIssues(databasePath),
+        (issues) =>
+          issues.some(({ title }) => title === "Background-discovered issue"),
+      );
+      expect(discovered).toHaveLength(1);
+      expect(discovered[0]).toMatchObject({
+        projectId: expect.any(String),
+        pullRequestUrls: [
+          "https://github.com/acme/app/pull/31",
+          "https://github.com/acme/app/pull/32",
+        ],
+        title: "Background-discovered issue",
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("does not write discovered issues after shutdown closes the database", async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "factory-issues-discovery-shutdown-"),
+    );
+    directories.push(directory);
+    const databasePath = join(directory, "factory.sqlite");
+    let releaseActivity!: () => void;
+    let markActivityStarted!: () => void;
+    let readShellCalls = 0;
+    const activityGate = new Promise<void>((resolve) => {
+      releaseActivity = resolve;
+    });
+    const activityStarted = new Promise<void>((resolve) => {
+      markActivityStarted = resolve;
+    });
+    const baseReader = sourceActivityReader({
+      projectId: "t3-project-discovery-shutdown",
+      threads: [
+        {
+          id: "thread-issue-discovery-shutdown",
+          branch,
+          state: "working",
+          title: "Must not persist after shutdown",
+        },
+      ],
+    });
+    const gatedReader: T3ActivityReader = {
+      ...baseReader,
+      async readShell() {
+        readShellCalls += 1;
+        if (readShellCalls === 2) {
+          markActivityStarted();
+          await activityGate;
+        }
+        return baseReader.readShell();
+      },
+    };
+    const server = createFactoryServer({
+      databasePath,
+      issueDiscoveryIntervalMs: 20,
+      port: 0,
+      t3Sources: [source("discovery-shutdown", gatedReader)],
+      operator: { name: "test-operator", secret: "test-operator-secret" },
+    });
+
+    try {
+      await withTimeout(
+        activityStarted,
+        2_000,
+        "Background discovery did not reach the gated issue refresh.",
+      );
+      await server.stop();
+      releaseActivity();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(persistedIssues(databasePath)).toEqual([]);
+    } finally {
+      releaseActivity();
+      await server.stop();
+    }
+  });
+
   test("returns persisted issues before a deduped remote refresh and exposes refreshed status on later polls", async () => {
     const directory = mkdtempSync(join(tmpdir(), "factory-issues-refresh-"));
     directories.push(directory);
@@ -887,6 +1056,7 @@ describe("Factory issue routes", () => {
     ];
     const firstServer = createFactoryServer({
       databasePath,
+      issueDiscoveryIntervalMs: 0,
       port: 0,
       t3Sources: sources(m5InitialReader),
       operator: { name: "test-operator", secret: "test-operator-secret" },
@@ -1007,6 +1177,7 @@ describe("Factory issue routes", () => {
     });
     const secondServer = createFactoryServer({
       databasePath,
+      issueDiscoveryIntervalMs: 0,
       port: 0,
       t3Sources: sources(unmatchedM5Reader),
       operator: { name: "test-operator", secret: "test-operator-secret" },

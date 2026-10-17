@@ -284,6 +284,95 @@ function detailPayload(overrides: Record<string, unknown> = {}) {
 }
 
 describe("T3 orchestration protocol 2 compatibility", () => {
+  test("normalizes modern PR links and subagent lineage through readShell", async () => {
+    const reader = createT3ActivityReader({
+      baseUrl: BASE_URL,
+      fetcher: async (input) => {
+        const url = String(input);
+        if (url.endsWith("/.well-known/t3/environment")) return descriptor();
+        if (url.endsWith("/api/orchestration/shell")) {
+          return Response.json(
+            shellPayload({
+              archivedThreads: [],
+              threads: [
+                shellThread({
+                  branchPullRequest: {
+                    number: 286,
+                    repository: "app-press/factory",
+                    url: "https://github.com/app-press/factory/pull/286",
+                  },
+                  lineage: {
+                    parentThreadId: "thread-root",
+                    relationshipToParent: "subagent",
+                    rootThreadId: "thread-root",
+                  },
+                  linkedPullRequest: null,
+                  pullRequests: [
+                    {
+                      number: 286,
+                      repository: "app-press/factory",
+                      snapshot: {
+                        mergedAt: "2026-10-03T12:00:00.000Z",
+                        state: "merged",
+                      },
+                      url: "https://github.com/app-press/factory/pull/286",
+                    },
+                    {
+                      number: 287,
+                      repository: "app-press/factory",
+                      snapshot: { state: "open" },
+                      url: "https://github.com/app-press/factory/pull/287",
+                    },
+                    {
+                      url: "https://evil.example/app-press/factory/pull/288",
+                    },
+                  ],
+                }),
+              ],
+            }),
+          );
+        }
+        return new Response("not found", { status: 404 });
+      },
+      now: () => new Date(TIME),
+      token: TOKEN,
+    });
+
+    const shell = await reader.readShell();
+    expect(shell).toMatchObject({
+      ok: true,
+      threads: [
+        {
+          linkedPullRequestUrl: "https://github.com/app-press/factory/pull/286",
+          linkedPullRequestUrls: [
+            "https://github.com/app-press/factory/pull/286",
+            "https://github.com/app-press/factory/pull/287",
+          ],
+          parentThreadId: "thread-root",
+          rootThreadId: "thread-root",
+        },
+      ],
+    });
+    expect(JSON.stringify(shell)).not.toContain("snapshot");
+  });
+
+  test("rejects oversized protocol 2 pull request lists", () => {
+    const parsed = parseT3V2ShellPayload(
+      shellPayload({
+        archivedThreads: [],
+        threads: [
+          shellThread({
+            linkedPullRequest: null,
+            pullRequests: Array.from({ length: 101 }, (_, index) => ({
+              url: `https://github.com/example/app/pull/${index + 1}`,
+            })),
+          }),
+        ],
+      }),
+    );
+    expect(parsed).toBeUndefined();
+  });
+
   test("uses the v2 header and bounded route, with one cached descriptor", async () => {
     const requests: Array<{ headers: Headers; method: string; url: string }> =
       [];

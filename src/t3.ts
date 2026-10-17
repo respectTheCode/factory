@@ -81,6 +81,9 @@ export type T3ThreadShellObservation = {
   branch?: string;
   worktreePath?: string;
   linkedPullRequestUrl?: string;
+  linkedPullRequestUrls?: string[];
+  parentThreadId?: string;
+  rootThreadId?: string;
   latestTurn?: T3LatestTurnObservation;
   session?: T3SessionObservation;
   createdAt: string;
@@ -187,6 +190,7 @@ export const DEFAULT_T3_SERVER_VERSION = "0.0.42";
 export const SUPPORTED_T3_ORCHESTRATION_PROTOCOL_VERSION = 1;
 export const SUPPORTED_T3_ORCHESTRATION_PROTOCOL_VERSIONS = [1, 2] as const;
 export const MAX_T3_THREAD_TURN_LIMIT = 10;
+const MAX_T3_LINKED_PULL_REQUESTS_PER_THREAD = 100;
 
 const DESCRIPTOR_PATH = "/.well-known/t3/environment";
 const SHELL_PATH = "/api/orchestration/shell";
@@ -444,6 +448,14 @@ function parseThreadShell(
     return undefined;
   }
 
+  const linkedPullRequestUrls = parseLinkedPullRequestUrls(
+    value.pullRequests,
+    value.branchPullRequest,
+    linkedPullRequestUrl,
+  );
+  if (linkedPullRequestUrls === null) return undefined;
+  const lineage = parseSubagentLineage(value.lineage);
+
   const archivedAt = archivedDate(value.archivedAt);
   const settledAt = settledDate(value.settledAt);
   const latestUserMessageAt = latestMessageDate(value.latestUserMessageAt);
@@ -454,6 +466,19 @@ function parseThreadShell(
     ...(branch === undefined ? {} : { branch }),
     ...(latestTurn === undefined ? {} : { latestTurn }),
     ...(linkedPullRequestUrl === undefined ? {} : { linkedPullRequestUrl }),
+    ...(linkedPullRequestUrls === undefined
+      ? {}
+      : {
+          linkedPullRequestUrl:
+            linkedPullRequestUrl ?? linkedPullRequestUrls[0],
+          linkedPullRequestUrls,
+        }),
+    ...(lineage?.parentThreadId === undefined
+      ? {}
+      : { parentThreadId: lineage.parentThreadId }),
+    ...(lineage?.rootThreadId === undefined
+      ? {}
+      : { rootThreadId: lineage.rootThreadId }),
     ...(planProgress === undefined ? {} : { planProgress }),
     ...(session === undefined ? {} : { session }),
     ...(settledAt === undefined ? {} : { settledAt }),
@@ -502,6 +527,63 @@ function parseLinkedPullRequestUrl(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function parseLinkedPullRequestUrls(
+  pullRequests: unknown,
+  branchPullRequest: unknown,
+  legacyUrl: string | undefined,
+): string[] | undefined | null {
+  const hasModernSource =
+    (pullRequests !== null && pullRequests !== undefined) ||
+    (branchPullRequest !== null && branchPullRequest !== undefined);
+  if (!hasModernSource) return undefined;
+  if (
+    pullRequests !== null &&
+    pullRequests !== undefined &&
+    (!Array.isArray(pullRequests) ||
+      pullRequests.length > MAX_T3_LINKED_PULL_REQUESTS_PER_THREAD)
+  ) {
+    return null;
+  }
+
+  const urls = new Set<string>();
+  const candidates = [
+    ...(Array.isArray(pullRequests) ? pullRequests : []),
+    branchPullRequest,
+  ];
+  for (const candidate of candidates) {
+    const url = parseLinkedPullRequestUrl(candidate);
+    if (url) urls.add(url);
+    if (urls.size > MAX_T3_LINKED_PULL_REQUESTS_PER_THREAD) return null;
+  }
+  if (legacyUrl) urls.add(legacyUrl);
+  if (urls.size > MAX_T3_LINKED_PULL_REQUESTS_PER_THREAD) return null;
+  return urls.size > 0 ? [...urls] : undefined;
+}
+
+function parseSubagentLineage(
+  value: unknown,
+): { parentThreadId?: string; rootThreadId?: string } | undefined {
+  if (
+    !isRecord(value) ||
+    value.relationshipToParent !== "subagent" ||
+    (value.parentThreadId !== null &&
+      !boundedIdentifier(value.parentThreadId)) ||
+    !boundedIdentifier(value.rootThreadId)
+  ) {
+    return undefined;
+  }
+  return {
+    ...(value.parentThreadId === null
+      ? {}
+      : { parentThreadId: value.parentThreadId }),
+    rootThreadId: value.rootThreadId,
+  };
+}
+
+function boundedIdentifier(value: unknown): value is string {
+  return nonEmptyString(value) && value.length <= 512;
 }
 
 function parseRepositoryIdentity(
