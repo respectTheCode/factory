@@ -29,6 +29,7 @@ import {
 } from "./agent-token-handoff";
 import { normalizeFloorSnapshot, type FloorTarget } from "./floor";
 import { IssuesPage } from "./issues";
+import type { ProjectIconSummary } from "./project-icon";
 import {
   formatHistoryReportAttribution,
   historyThreadsForTarget,
@@ -90,7 +91,7 @@ type Wire<T> = T extends Date
       ? { [K in keyof T]: Wire<T[K]> }
       : T;
 type DashboardSnapshot = Wire<ApplicationDashboardSnapshot>;
-type ProjectSummary = { id: string; name: string };
+type ProjectSummary = ProjectIconSummary;
 type FloorViewSnapshot = ReturnType<typeof normalizeFloorSnapshot>;
 type WorkCounts = {
   backlog: number;

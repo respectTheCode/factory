@@ -1,6 +1,7 @@
 import type { FactoryApplication } from "./application";
 import { resolveT3Project } from "./t3-coordinator";
 import { T3_SOURCE_HAS_TOKEN, type T3Source } from "./t3-sources";
+import type { T3ShellObservation } from "./t3";
 
 type ProjectDiscoveryApplication = Pick<
   FactoryApplication,
@@ -15,6 +16,10 @@ export type DiscoverRecentT3ProjectsInput = {
   notBeforeISO: string;
   signal?: AbortSignal;
   isStopped?: () => boolean;
+  onShell?: (
+    source: T3Source,
+    shell: Extract<T3ShellObservation, { ok: true }>,
+  ) => void;
 };
 
 /**
@@ -27,6 +32,7 @@ export async function discoverRecentT3Projects({
   notBeforeISO,
   signal,
   isStopped,
+  onShell,
 }: DiscoverRecentT3ProjectsInput): Promise<string[]> {
   const cutoff = Date.parse(notBeforeISO);
   if (!Number.isFinite(cutoff) || isStoppedNow(signal, isStopped)) return [];
@@ -60,6 +66,8 @@ export async function discoverRecentT3Projects({
     ) {
       continue;
     }
+
+    onShell?.(source, shell);
 
     const recentProjectIds = new Set(
       shell.threads

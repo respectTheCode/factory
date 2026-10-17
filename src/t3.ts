@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
 
 import { parseGitHubPullRequestUrl } from "./github";
+import {
+  parseT3ProjectFaviconPath,
+  parseT3ProjectIcon,
+  type T3ProjectIcon,
+} from "./t3-project-icon";
 import { parseT3V2ShellPayload, parseT3V2ThreadPayload } from "./t3-v2";
 import { createT3Messaging, type T3Messaging } from "./t3-messages";
 
@@ -13,6 +19,10 @@ export type T3ActivityReader = {
   readMessages?: T3Messaging["readMessages"];
   sendMessage?: T3Messaging["sendMessage"];
   readShell: () => Promise<T3ShellObservation>;
+  readProjectFavicon?: (input: {
+    workspaceRoot: string;
+    faviconPath?: string;
+  }) => Promise<T3ProjectFavicon | null>;
   readThread: (input: {
     threadId: string;
     turnLimit: number;
@@ -43,11 +53,18 @@ export type T3RepositoryIdentity = {
   name?: string;
 };
 
+export type T3ProjectFavicon = {
+  mimeType: string;
+  data: string;
+};
+
 export type T3ProjectObservation = {
   id: string;
   title: string;
   workspaceRoot: string;
   repositoryIdentity?: T3RepositoryIdentity;
+  projectIcon?: T3ProjectIcon;
+  faviconPath?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -171,6 +188,13 @@ type Fetcher = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+type T3AssetSocket = Pick<WebSocket, "addEventListener" | "send" | "close">;
+
+export type T3AssetSocketFactory = (
+  url: string,
+  headers: Record<string, string>,
+) => T3AssetSocket;
+
 export type T3ActivityReaderOptions = {
   baseUrl?: string;
   token?: string;
@@ -179,6 +203,7 @@ export type T3ActivityReaderOptions = {
   now?: () => Date;
   timeoutMs?: number;
   maxResponseBytes?: number;
+  socketFactory?: T3AssetSocketFactory;
 };
 
 export const DEFAULT_T3_BASE_URL = "http://127.0.0.1:3773";
@@ -196,6 +221,17 @@ const DESCRIPTOR_PATH = "/.well-known/t3/environment";
 const SHELL_PATH = "/api/orchestration/shell";
 const THREAD_PATH = "/api/orchestration/threads/";
 const T3_V2_PROTOCOL_HEADER = "x-t3-orchestration-protocol";
+const MAX_T3_PROJECT_FAVICON_BYTES = 1_000_000;
+const T3_IMAGE_MIME_TYPES = new Set([
+  "image/avif",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/svg+xml",
+  "image/vnd.microsoft.icon",
+  "image/webp",
+  "image/x-icon",
+]);
 
 const ISO_DATE_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -624,7 +660,11 @@ function parseProject(value: unknown): T3ProjectObservation | undefined {
   ) {
     return undefined;
   }
+  const faviconPath = parseT3ProjectFaviconPath(value.faviconPath);
+  const projectIcon = parseT3ProjectIcon(value.projectIcon);
   return {
+    ...(faviconPath === undefined ? {} : { faviconPath }),
+    ...(projectIcon === undefined ? {} : { projectIcon }),
     ...(repositoryIdentity === undefined ? {} : { repositoryIdentity }),
     createdAt: value.createdAt,
     id: value.id,
@@ -990,12 +1030,48 @@ function requestWithTimeout(
     .finally(() => clearTimeout(timeout));
 }
 
+async function readBoundedImage(
+  response: Response,
+): Promise<Buffer | undefined> {
+  if (!response.body) return undefined;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > MAX_T3_PROJECT_FAVICON_BYTES) {
+        await reader.cancel();
+        return undefined;
+      }
+      chunks.push(chunk.value);
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks);
+}
+
+function defaultAssetSocketFactory(
+  url: string,
+  headers: Record<string, string>,
+): T3AssetSocket {
+  const Socket = WebSocket as unknown as new (
+    url: string,
+    options: { headers: Record<string, string> },
+  ) => WebSocket;
+  return new Socket(url, { headers });
+}
+
 export function createT3ActivityReader({
   baseUrl,
   expectedServerVersion,
   fetcher = fetch,
   maxResponseBytes = DEFAULT_T3_MAX_RESPONSE_BYTES,
   now = () => new Date(),
+  socketFactory = defaultAssetSocketFactory,
   timeoutMs = DEFAULT_T3_TIMEOUT_MS,
   token,
 }: T3ActivityReaderOptions = {}): T3ActivityReader {
@@ -1192,6 +1268,173 @@ export function createT3ActivityReader({
     return { payload: result.payload };
   };
 
+  const requestProjectFaviconUrl = async (input: {
+    workspaceRoot: string;
+    faviconPath?: string;
+  }): Promise<string | undefined> => {
+    if (
+      configurationError ||
+      !normalizedBaseUrl ||
+      !configuredToken ||
+      !nonEmptyString(input.workspaceRoot) ||
+      (input.faviconPath !== undefined &&
+        !parseT3ProjectFaviconPath(input.faviconPath))
+    ) {
+      return undefined;
+    }
+
+    const endpoint = new URL(`${normalizedBaseUrl}/ws`);
+    endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
+    endpoint.searchParams.set("orchestrationProtocol", "2");
+
+    return await new Promise<string | undefined>((resolve) => {
+      let settled = false;
+      let socket: T3AssetSocket | undefined;
+      const finish = (value?: string) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          socket?.close();
+        } catch {
+          /* The socket may already be closed. */
+        }
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(), timeoutMs);
+
+      try {
+        socket = socketFactory(endpoint.toString(), {
+          Authorization: `Bearer ${configuredToken}`,
+        });
+        socket.addEventListener("open", () => {
+          try {
+            socket!.send(
+              JSON.stringify({
+                _tag: "Request",
+                id: "1",
+                tag: "assets.createUrl",
+                payload: {
+                  resource: {
+                    _tag: "project-favicon",
+                    cwd: input.workspaceRoot,
+                    ...(input.faviconPath === undefined
+                      ? {}
+                      : { path: input.faviconPath }),
+                  },
+                },
+                headers: [],
+              }),
+            );
+          } catch {
+            finish();
+          }
+        });
+        socket.addEventListener("message", (event) => {
+          try {
+            const raw = String((event as MessageEvent).data);
+            if (Buffer.byteLength(raw) > maxResponseBytes) {
+              finish();
+              return;
+            }
+            const decoded: unknown = JSON.parse(raw);
+            for (const response of Array.isArray(decoded)
+              ? decoded
+              : [decoded]) {
+              if (
+                typeof response !== "object" ||
+                response === null ||
+                (response as Record<string, unknown>)._tag !== "Exit" ||
+                (response as Record<string, unknown>).requestId !== "1"
+              ) {
+                continue;
+              }
+              const exit = (response as Record<string, unknown>).exit;
+              if (
+                typeof exit !== "object" ||
+                exit === null ||
+                (exit as Record<string, unknown>)._tag !== "Success"
+              ) {
+                finish();
+                return;
+              }
+              const result = (exit as Record<string, unknown>).value;
+              const relativeUrl =
+                typeof result === "object" && result !== null
+                  ? (result as Record<string, unknown>).relativeUrl
+                  : undefined;
+              finish(typeof relativeUrl === "string" ? relativeUrl : undefined);
+              return;
+            }
+          } catch {
+            finish();
+          }
+        });
+        socket.addEventListener("error", () => finish());
+        socket.addEventListener("close", () => finish());
+      } catch {
+        finish();
+      }
+    });
+  };
+
+  const readProjectFavicon = async (input: {
+    workspaceRoot: string;
+    faviconPath?: string;
+  }): Promise<T3ProjectFavicon | null> => {
+    if (!normalizedBaseUrl || !configuredToken) return null;
+    const relativeUrl = await requestProjectFaviconUrl(input);
+    if (!relativeUrl) return null;
+
+    let assetUrl: URL;
+    try {
+      assetUrl = new URL(relativeUrl, `${normalizedBaseUrl}/`);
+      const baseUrl = new URL(normalizedBaseUrl);
+      if (
+        assetUrl.origin !== baseUrl.origin ||
+        !assetUrl.pathname.startsWith("/api/assets/") ||
+        assetUrl.username ||
+        assetUrl.password ||
+        assetUrl.hash
+      ) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetcher(assetUrl, {
+        headers: { Authorization: `Bearer ${configuredToken}` },
+        method: "GET",
+        redirect: "error",
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        await response.body?.cancel();
+        return null;
+      }
+      const mimeType = response.headers
+        .get("content-type")
+        ?.split(";", 1)[0]
+        ?.trim()
+        .toLowerCase();
+      if (!mimeType || !T3_IMAGE_MIME_TYPES.has(mimeType)) {
+        await response.body?.cancel();
+        return null;
+      }
+      const image = await readBoundedImage(response);
+      if (!image?.byteLength) return null;
+      return { data: image.toString("base64"), mimeType };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   return {
     ...createT3Messaging({
       baseUrl: configurationError ? undefined : normalizedBaseUrl,
@@ -1200,6 +1443,7 @@ export function createT3ActivityReader({
       timeoutMs,
       maxResponseBytes,
     }),
+    readProjectFavicon,
     async readShell() {
       const time = fetchedAt(now);
       const descriptor = await readDescriptor();

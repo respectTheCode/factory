@@ -1,4 +1,8 @@
 import { parseGitHubPullRequestUrl } from "./github";
+import {
+  parseT3ProjectFaviconPath,
+  parseT3ProjectIcon,
+} from "./t3-project-icon";
 import type {
   T3ActivityObservation,
   T3CheckpointObservation,
@@ -121,7 +125,11 @@ function parseProject(value: unknown): T3ProjectObservation | undefined {
   ) {
     return undefined;
   }
+  const faviconPath = parseT3ProjectFaviconPath(value.faviconPath);
+  const projectIcon = parseT3ProjectIcon(value.projectIcon);
   return {
+    ...(faviconPath === undefined ? {} : { faviconPath }),
+    ...(projectIcon === undefined ? {} : { projectIcon }),
     ...(repositoryIdentity === undefined ? {} : { repositoryIdentity }),
     createdAt: value.createdAt,
     id: value.id,

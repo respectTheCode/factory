@@ -8,10 +8,15 @@ references, not integrations or sources of truth.
 The main screen is a compact issue list grouped by status, with project filtering, search,
 labels, and zero or more GitHub pull requests. An issue contains a title and description,
 labels, branch names, linked PRs, and matching T3 threads. Show the recent messages from each
-thread and allow the human to send a reply to that thread.
+thread and allow the human to send a reply to that thread. Use the matching T3 project
+icon beside project names: preserve explicit emoji, monogram, and Lucide overrides, or
+load the project favicon through Factory. Icon loading must not delay the issue list.
 
-Keep all four status groups visible, including empty groups. Drag an issue to reorder it
-within a group or move it to another status; persist the order across reloads. Filtered
+Show status groups in order: Done, Needs attention, In progress, To do. Each header toggles
+its issue rows and shows the visible issue count; remember collapsed groups in this browser
+across reloads. Keep all four headers visible, including empty and collapsed groups. Drag
+an issue to reorder it within a group or drop onto any status, including collapsed groups;
+persist issue order across reloads. Filtered
 views preserve the relative order of hidden issues. Status moves retain the completion
 rules below, including the merged-PR guard.
 

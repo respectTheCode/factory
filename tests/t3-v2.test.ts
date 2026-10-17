@@ -284,6 +284,47 @@ function detailPayload(overrides: Record<string, unknown> = {}) {
 }
 
 describe("T3 orchestration protocol 2 compatibility", () => {
+  test("preserves project icon and favicon metadata from v2 shells", async () => {
+    const reader = createT3ActivityReader({
+      baseUrl: BASE_URL,
+      fetcher: async (input) => {
+        const url = String(input);
+        if (url.endsWith("/.well-known/t3/environment")) return descriptor();
+        if (url.endsWith("/api/orchestration/shell")) {
+          return Response.json(
+            shellPayload({
+              archivedThreads: [],
+              projects: [
+                project({
+                  faviconPath: "apps/web/public/favicon.ico",
+                  projectIcon: {
+                    color: "red",
+                    kind: "monogram",
+                    text: "TD",
+                  },
+                }),
+              ],
+              threads: [],
+            }),
+          );
+        }
+        return new Response("not found", { status: 404 });
+      },
+      now: () => new Date(TIME),
+      token: TOKEN,
+    });
+
+    await expect(reader.readShell()).resolves.toMatchObject({
+      ok: true,
+      projects: [
+        {
+          faviconPath: "apps/web/public/favicon.ico",
+          projectIcon: { color: "red", kind: "monogram", text: "TD" },
+        },
+      ],
+    });
+  });
+
   test("normalizes modern PR links and subagent lineage through readShell", async () => {
     const reader = createT3ActivityReader({
       baseUrl: BASE_URL,

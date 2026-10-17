@@ -7,6 +7,7 @@ import {
   useState,
   type FormEvent,
   type PointerEvent,
+  type ReactNode,
 } from "react";
 
 import type {
@@ -19,11 +20,17 @@ import type {
 } from "../issues";
 import type { FactoryRouter } from "../server";
 import { issueNeedsMergedPullRequestsForDone } from "./issue-completion";
-import { groupIssues, ISSUE_STATUSES } from "./issue-board";
+import {
+  groupIssues,
+  ISSUE_STATUSES,
+  readCollapsedStatuses,
+  writeCollapsedStatuses,
+} from "./issue-board";
+import { ProjectIcon, type ProjectIconSummary } from "./project-icon";
 import "./issues.css";
 
 type IssuesClient = ReturnType<typeof createTRPCProxyClient<FactoryRouter>>;
-type ProjectSummary = { id: string; name: string };
+type ProjectSummary = ProjectIconSummary;
 type IssuesPageProps = {
   canMutate: boolean;
   client: IssuesClient | null;
@@ -167,6 +174,9 @@ export function IssuesPage({
   const [selectedProjectId, setSelectedProjectId] = useState("all");
   const [selectedLabel, setSelectedLabel] = useState("all");
   const [search, setSearch] = useState("");
+  const [collapsedStatuses, setCollapsedStatuses] = useState<IssueStatus[]>(
+    () => readCollapsedStatuses(),
+  );
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
   const [detail, setDetail] = useState<IssueDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -364,6 +374,14 @@ export function IssuesPage({
     () => groupIssues(visibleIssues),
     [visibleIssues],
   );
+
+  const toggleStatusGroup = (status: IssueStatus) => {
+    const next = collapsedStatuses.includes(status)
+      ? collapsedStatuses.filter((collapsed) => collapsed !== status)
+      : [...collapsedStatuses, status];
+    setCollapsedStatuses(next);
+    writeCollapsedStatuses(next);
+  };
 
   const moveIssue = async (
     id: string,
@@ -696,9 +714,9 @@ export function IssuesPage({
 
   const issueForPanel = detailIssue;
   const detailForPanel = detail?.issue.id === issueForPanel?.id ? detail : null;
-  const selectedProjectName = projects.find(
+  const selectedProject = projects.find(
     (project) => project.id === issueForPanel?.projectId,
-  )?.name;
+  );
   const panelOpen = editorMode !== null || activeIssueId !== null;
 
   return (
@@ -946,10 +964,27 @@ export function IssuesPage({
                     className={`issue-group-heading ${statusTone(status)}`}
                     id={`issue-group-${status}`}
                   >
-                    <span aria-hidden="true" className="issue-status-dot" />
-                    {STATUS_LABEL[status]}
+                    <button
+                      aria-controls={`issue-group-rows-${status}`}
+                      aria-expanded={!collapsedStatuses.includes(status)}
+                      className="issue-group-toggle"
+                      onClick={() => toggleStatusGroup(status)}
+                      type="button"
+                    >
+                      <span aria-hidden="true" className="issue-status-dot" />
+                      <span>{STATUS_LABEL[status]}</span>
+                      <span className="issue-group-count">{items.length}</span>
+                      <span
+                        aria-hidden="true"
+                        className="issue-group-chevron"
+                      />
+                    </button>
                   </h2>
-                  <div className="issue-group-rows">
+                  <div
+                    className="issue-group-rows"
+                    hidden={collapsedStatuses.includes(status)}
+                    id={`issue-group-rows-${status}`}
+                  >
                     {items.map((issue) => (
                       <IssueRow
                         active={issue.id === activeIssueId}
@@ -970,6 +1005,14 @@ export function IssuesPage({
                         onReorder={(direction) =>
                           reorderIssue(status, issue.id, direction)
                         }
+                        projectIcon={(() => {
+                          const project = projects.find(
+                            (p) => p.id === issue.projectId,
+                          );
+                          return project ? (
+                            <ProjectIcon client={client} project={project} />
+                          ) : null;
+                        })()}
                         projectName={
                           projects.find(
                             (project) => project.id === issue.projectId,
@@ -1037,7 +1080,10 @@ export function IssuesPage({
                   </div>
                   <h2 id="issue-panel-title">{issueForPanel.title}</h2>
                   <p className="issue-project-name">
-                    {selectedProjectName ?? "Project unavailable"}
+                    {selectedProject && (
+                      <ProjectIcon client={client} project={selectedProject} />
+                    )}
+                    {selectedProject?.name ?? "Project unavailable"}
                   </p>
                 </div>
                 <div className="issue-detail-actions">
@@ -1178,6 +1224,7 @@ function IssueRow({
   onReorder,
   onSelect,
   projectName,
+  projectIcon,
 }: {
   active: boolean;
   busy: boolean;
@@ -1193,6 +1240,7 @@ function IssueRow({
   onReorder: (direction: "up" | "down") => void;
   onSelect: () => void;
   projectName?: string;
+  projectIcon?: ReactNode;
 }) {
   const pullRequests = issue.pullRequests;
   return (
@@ -1216,7 +1264,10 @@ function IssueRow({
           <span className="issue-row-ident">
             <span className="issue-id">{issue.simpleId}</span>
             {projectName && (
-              <span className="issue-row-project">{projectName}</span>
+              <span className="issue-row-project">
+                {projectIcon}
+                {projectName}
+              </span>
             )}
           </span>
           <span className="issue-row-title">{issue.title}</span>

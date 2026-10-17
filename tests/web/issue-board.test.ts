@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
 import type { Issue } from "../../src/issues";
-import { groupIssues, ISSUE_STATUSES } from "../../src/web/issue-board";
+import {
+  groupIssues,
+  ISSUE_STATUSES,
+  readCollapsedStatuses,
+  writeCollapsedStatuses,
+} from "../../src/web/issue-board";
 
 function issue(id: string, status: Issue["status"]): Issue {
   return {
@@ -22,9 +27,12 @@ function issue(id: string, status: Issue["status"]): Issue {
 
 describe("issue status groups", () => {
   test("keeps all four groups present when the board is empty", () => {
-    expect(groupIssues([])).toEqual(
-      ISSUE_STATUSES.map((status) => [status, []]),
-    );
+    expect(groupIssues([])).toEqual([
+      ["done", []],
+      ["needs_attention", []],
+      ["in_progress", []],
+      ["todo", []],
+    ]);
   });
 
   test("places visible issues into their status while retaining empty groups", () => {
@@ -32,10 +40,59 @@ describe("issue status groups", () => {
     const done = issue("done-1", "done");
 
     expect(groupIssues([todo, done])).toEqual([
-      ["todo", [todo]],
-      ["in_progress", []],
-      ["needs_attention", []],
       ["done", [done]],
+      ["needs_attention", []],
+      ["in_progress", []],
+      ["todo", [todo]],
     ]);
+    expect(ISSUE_STATUSES).toEqual([
+      "done",
+      "needs_attention",
+      "in_progress",
+      "todo",
+    ]);
+  });
+
+  test("loads only valid saved collapsed statuses", () => {
+    const storage = {
+      getItem: () => JSON.stringify(["todo", "done", "todo", "unknown"]),
+    };
+
+    expect(readCollapsedStatuses(storage)).toEqual(["todo", "done"]);
+  });
+
+  test("treats malformed or unavailable storage as all groups expanded", () => {
+    expect(readCollapsedStatuses({ getItem: () => "{" })).toEqual([]);
+    expect(
+      readCollapsedStatuses({ getItem: () => JSON.stringify({}) }),
+    ).toEqual([]);
+    expect(readCollapsedStatuses(null)).toEqual([]);
+    expect(
+      readCollapsedStatuses({
+        getItem: () => {
+          throw new Error("storage blocked");
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  test("saves collapsed statuses and tolerates blocked storage", () => {
+    let saved: string | null = null;
+    writeCollapsedStatuses(["todo", "done"], {
+      setItem: (_key, value) => {
+        saved = value;
+      },
+    });
+
+    expect(saved).not.toBeNull();
+    expect(JSON.parse(saved!)).toEqual(["done", "todo"]);
+    expect(() => writeCollapsedStatuses(["done"], null)).not.toThrow();
+    expect(() =>
+      writeCollapsedStatuses(["done"], {
+        setItem: () => {
+          throw new Error("storage blocked");
+        },
+      }),
+    ).not.toThrow();
   });
 });

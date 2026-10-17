@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Buffer } from "node:buffer";
 
 import {
   createT3ActivityReader,
@@ -70,7 +71,7 @@ function threadShell(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function project() {
+function project(overrides: Record<string, unknown> = {}) {
   return {
     createdAt: "2026-09-01T17:00:00.000Z",
     id: "project-1",
@@ -89,6 +90,7 @@ function project() {
     title: "Factory",
     updatedAt: "2026-09-02T17:30:01.000Z",
     workspaceRoot: "/Users/agent/Projects/factory",
+    ...overrides,
   };
 }
 
@@ -178,6 +180,207 @@ function shellResponse(): Response {
 }
 
 describe("T3 read-only activity transport", () => {
+  test("preserves supported project icon metadata from protocol 1 shells", async () => {
+    const reader = createT3ActivityReader({
+      baseUrl: BASE_URL,
+      fetcher: async (input) =>
+        String(input).includes("/.well-known")
+          ? descriptorResponse()
+          : Response.json({
+              projects: [
+                project({
+                  faviconPath: "apps/web/public/favicon.svg",
+                  projectIcon: {
+                    color: "teal",
+                    kind: "lucide",
+                    name: "brain-cog",
+                  },
+                }),
+              ],
+              snapshotSequence: 41,
+              threads: [threadShell()],
+              updatedAt: "2026-09-02T17:30:01.000Z",
+            }),
+      token: FIXTURE_TOKEN,
+    });
+
+    await expect(reader.readShell()).resolves.toMatchObject({
+      ok: true,
+      projects: [
+        {
+          faviconPath: "apps/web/public/favicon.svg",
+          projectIcon: { color: "teal", kind: "lucide", name: "brain-cog" },
+        },
+      ],
+    });
+  });
+
+  test("ignores unsupported optional icon metadata without rejecting a shell", async () => {
+    const reader = createT3ActivityReader({
+      baseUrl: BASE_URL,
+      fetcher: async (input) =>
+        String(input).includes("/.well-known")
+          ? descriptorResponse()
+          : Response.json({
+              projects: [
+                project({
+                  faviconPath: `public/${"x".repeat(1025)}.svg`,
+                  projectIcon: { kind: "future-icon", value: "unknown" },
+                }),
+              ],
+              snapshotSequence: 41,
+              threads: [threadShell()],
+              updatedAt: "2026-09-02T17:30:01.000Z",
+            }),
+      token: FIXTURE_TOKEN,
+    });
+
+    await expect(reader.readShell()).resolves.toMatchObject({
+      ok: true,
+      projects: [{ id: "project-1" }],
+    });
+    const shell = await reader.readShell();
+    if (!shell.ok) throw new Error("Expected a valid T3 shell.");
+    expect(shell.projects[0]).not.toHaveProperty("faviconPath");
+    expect(shell.projects[0]).not.toHaveProperty("projectIcon");
+  });
+
+  test("reads a signed T3 project favicon through the authenticated asset API", async () => {
+    let requestedSocketUrl = "";
+    let socketHeaders: Record<string, string> = {};
+    let rpcRequest: Record<string, unknown> | undefined;
+    const reader = createT3ActivityReader({
+      baseUrl: "https://t3.example.test",
+      fetcher: async (input, init) => {
+        expect(String(input)).toBe(
+          "https://t3.example.test/api/assets/signed-token",
+        );
+        expect(init?.headers).toEqual({
+          Authorization: `Bearer ${FIXTURE_TOKEN}`,
+        });
+        expect(init?.redirect).toBe("error");
+        return new Response("<svg></svg>", {
+          headers: { "content-type": "image/svg+xml; charset=utf-8" },
+        });
+      },
+      socketFactory: (url, headers) => {
+        requestedSocketUrl = url;
+        socketHeaders = headers;
+        const listeners = new Map<string, Array<(event: unknown) => void>>();
+        const emit = (type: string, event: unknown) => {
+          for (const listener of listeners.get(type) ?? []) listener(event);
+        };
+        return {
+          addEventListener(
+            type: string,
+            listener: EventListenerOrEventListenerObject,
+          ) {
+            const registered = listeners.get(type) ?? [];
+            registered.push(listener as unknown as (event: unknown) => void);
+            listeners.set(type, registered);
+            if (type === "open") queueMicrotask(() => emit("open", {}));
+          },
+          send(raw) {
+            rpcRequest = JSON.parse(String(raw)) as Record<string, unknown>;
+            queueMicrotask(() =>
+              emit("message", {
+                data: JSON.stringify({
+                  _tag: "Exit",
+                  exit: {
+                    _tag: "Success",
+                    value: {
+                      expiresAt: Date.now() + 60_000,
+                      relativeUrl: "/api/assets/signed-token",
+                    },
+                  },
+                  requestId: "1",
+                }),
+              }),
+            );
+          },
+          close() {},
+        };
+      },
+      token: FIXTURE_TOKEN,
+    });
+
+    const favicon = await reader.readProjectFavicon!({
+      faviconPath: "public/favicon.svg",
+      workspaceRoot: "/work/project",
+    });
+    expect(requestedSocketUrl).toBe(
+      "wss://t3.example.test/ws?orchestrationProtocol=2",
+    );
+    expect(socketHeaders).toEqual({ Authorization: `Bearer ${FIXTURE_TOKEN}` });
+    expect(rpcRequest).toMatchObject({
+      _tag: "Request",
+      id: "1",
+      tag: "assets.createUrl",
+      payload: {
+        resource: {
+          _tag: "project-favicon",
+          cwd: "/work/project",
+          path: "public/favicon.svg",
+        },
+      },
+    });
+    expect(favicon).toEqual({
+      data: Buffer.from("<svg></svg>").toString("base64"),
+      mimeType: "image/svg+xml",
+    });
+    expect(JSON.stringify(favicon)).not.toContain("signed-token");
+    expect(JSON.stringify(favicon)).not.toContain(FIXTURE_TOKEN);
+  });
+
+  test("rejects signed favicon URLs outside the T3 asset route", async () => {
+    let imageFetches = 0;
+    const reader = createT3ActivityReader({
+      baseUrl: "https://t3.example.test",
+      fetcher: async () => {
+        imageFetches += 1;
+        return new Response("should not be fetched");
+      },
+      socketFactory: (_url, _headers) => {
+        const listeners = new Map<string, Array<(event: unknown) => void>>();
+        const emit = (type: string, event: unknown) => {
+          for (const listener of listeners.get(type) ?? []) listener(event);
+        };
+        return {
+          addEventListener(
+            type: string,
+            listener: EventListenerOrEventListenerObject,
+          ) {
+            const registered = listeners.get(type) ?? [];
+            registered.push(listener as unknown as (event: unknown) => void);
+            listeners.set(type, registered);
+            if (type === "open") queueMicrotask(() => emit("open", {}));
+          },
+          send() {
+            queueMicrotask(() =>
+              emit("message", {
+                data: JSON.stringify({
+                  _tag: "Exit",
+                  exit: {
+                    _tag: "Success",
+                    value: { relativeUrl: "https://evil.example/image.svg" },
+                  },
+                  requestId: "1",
+                }),
+              }),
+            );
+          },
+          close() {},
+        };
+      },
+      token: FIXTURE_TOKEN,
+    });
+
+    await expect(
+      reader.readProjectFavicon!({ workspaceRoot: "/work/project" }),
+    ).resolves.toBeNull();
+    expect(imageFetches).toBe(0);
+  });
+
   test("normalizes modern and legacy pull request links without trusting other hosts", async () => {
     const modern = createT3ActivityReader({
       baseUrl: BASE_URL,

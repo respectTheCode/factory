@@ -262,13 +262,58 @@
   color: var(--ink-dim);
   display: flex;
   font: 600 12px/1.2 var(--sans);
-  gap: 8px;
   margin: 0;
+  padding: 0;
+}
+
+.issue-group-toggle {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 8px;
+  min-height: 42px;
   padding: 12px 14px 7px;
+  text-align: left;
+  width: 100%;
+}
+
+.issue-group-toggle:hover {
+  color: var(--ink);
+}
+
+.issue-group-count {
+  color: var(--ink-dim);
+  font: 400 11px/1.5 var(--mono);
+  margin-left: auto;
+  min-width: 1.5em;
+  text-align: right;
+}
+
+.issue-group-chevron {
+  border-bottom: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  flex: 0 0 8px;
+  height: 8px;
+  margin: 0 2px 4px 4px;
+  transform: rotate(45deg);
+  transition: transform 120ms ease;
+}
+
+.issue-group-toggle[aria-expanded="false"] .issue-group-chevron {
+  margin-bottom: 0;
+  transform: rotate(-45deg);
 }
 
 .issue-group-rows {
   min-height: 42px;
+}
+
+.issue-group-rows[hidden] {
+  display: none;
 }
 
 .issue-group-empty {
@@ -1331,4 +1376,92 @@
   .issue-row-status.issue-status-done {
     filter: none;
   }
+}
+
+.issue-row-project,
+.issue-project-name {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.project-icon {
+  border-radius: 3px;
+  display: inline-block;
+  flex: 0 0 16px;
+  height: 16px;
+  object-fit: contain;
+  vertical-align: middle;
+  width: 16px;
+}
+
+.project-icon-monogram,
+.project-icon-fallback {
+  align-items: center;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  display: inline-flex;
+  font: 600 9px/1 var(--sans);
+  justify-content: center;
+  letter-spacing: -0.04em;
+  overflow: hidden;
+}
+
+.project-icon-emoji {
+  font-size: 14px;
+  line-height: 16px;
+}
+
+.project-icon[data-color="gray"] {
+  color: #9ca3af;
+}
+.project-icon[data-color="red"] {
+  color: #f87171;
+}
+.project-icon[data-color="orange"] {
+  color: #fb923c;
+}
+.project-icon[data-color="amber"] {
+  color: #fbbf24;
+}
+.project-icon[data-color="yellow"] {
+  color: #facc15;
+}
+.project-icon[data-color="lime"] {
+  color: #a3e635;
+}
+.project-icon[data-color="green"] {
+  color: #4ade80;
+}
+.project-icon[data-color="emerald"] {
+  color: #34d399;
+}
+.project-icon[data-color="teal"] {
+  color: #2dd4bf;
+}
+.project-icon[data-color="cyan"] {
+  color: #22d3ee;
+}
+.project-icon[data-color="sky"] {
+  color: #38bdf8;
+}
+.project-icon[data-color="blue"] {
+  color: #60a5fa;
+}
+.project-icon[data-color="indigo"] {
+  color: #818cf8;
+}
+.project-icon[data-color="violet"] {
+  color: #a78bfa;
+}
+.project-icon[data-color="purple"] {
+  color: #c084fc;
+}
+.project-icon[data-color="fuchsia"] {
+  color: #e879f9;
+}
+.project-icon[data-color="pink"] {
+  color: #f472b6;
+}
+.project-icon[data-color="rose"] {
+  color: #fb7185;
 }

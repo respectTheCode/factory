@@ -31,6 +31,7 @@ import {
   normalizeT3SourceId,
   type T3ProjectMapping,
 } from "./t3-source-identity";
+import type { T3ProjectIcon } from "./t3-project-icon";
 import {
   normalizeScreenshotEvidence,
   screenshotSummary,
@@ -1096,6 +1097,8 @@ export type ProjectSummary = {
   t3ProjectId?: string;
   workspaceRoot?: string;
   t3Mappings?: T3ProjectMapping[];
+  t3ProjectIcon?: T3ProjectIcon;
+  t3FaviconAvailable?: boolean;
 };
 
 export type PortfolioStatus = {

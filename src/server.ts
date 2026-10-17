@@ -35,9 +35,15 @@ import {
   type GitHubStatusReader,
   type GitHubStatusSnapshot,
 } from "./github";
-import { createT3Coordinator } from "./t3-coordinator";
+import { createT3Coordinator, resolveT3Project } from "./t3-coordinator";
+import { readLucideProjectIcon } from "./project-icons";
 import { discoverRecentT3Projects } from "./issue-project-discovery";
-import { normalizeT3BaseUrl, type T3ActivityReader } from "./t3";
+import {
+  normalizeT3BaseUrl,
+  type T3ActivityReader,
+  type T3ProjectObservation,
+  type T3ProjectFavicon,
+} from "./t3";
 import { FLOOR_DEFAULT_TIMEZONE, type FloorSnapshot } from "./floor";
 import { createFloorUpdateBus, type FloorUpdateBus } from "./floor-updates";
 import { resolveT3AccessToken } from "./t3-credential";
@@ -611,6 +617,49 @@ function createRouter(
       inFlight?: Promise<IssueActivity | undefined>;
     }
   >();
+  // Cosmetic metadata follows the existing background shell scan. Project lists
+  // never wait for a remote T3 source or an icon file.
+  const projectIconShells = new Map<
+    string,
+    { source: T3Source; projects: T3ProjectObservation[] }
+  >();
+  const iconContext = (
+    projectId: string,
+    machineId?: string,
+    projects = application.listProjects(),
+  ) => {
+    return t3ConnectionStore
+      .getSources()
+      .flatMap((source) => {
+        if (machineId && source.machineId !== machineId) return [];
+        const cached = projectIconShells.get(source.sourceId);
+        if (!cached || cached.source.reader !== source.reader) return [];
+        return cached.projects.flatMap((project) => {
+          const match = resolveT3Project(project, projects, source.sourceId);
+          return match.status === "matched" && match.project.id === projectId
+            ? [
+                {
+                  source,
+                  project,
+                  score:
+                    (project.projectIcon ? 8 : 0) +
+                    (project.faviconPath ? 4 : 0) +
+                    (match.basis.includes("t3ProjectId") ? 2 : 0),
+                },
+              ]
+            : [];
+        });
+      })
+      .sort((a, b) => b.score - a.score)[0];
+  };
+  const projectFaviconCache = new Map<
+    string,
+    {
+      reader: T3ActivityReader;
+      expires: number;
+      result: Promise<T3ProjectFavicon | null>;
+    }
+  >();
   let issueDiscoveryInProgress = false;
   let issueDiscoveryTimer: ReturnType<typeof setInterval> | undefined;
   const refreshIssueProject = (
@@ -786,6 +835,11 @@ function createRouter(
           Date.now() - 3 * 24 * 60 * 60 * 1_000,
         ).toISOString(),
         isStopped: isStopping,
+        onShell: (source, shell) =>
+          projectIconShells.set(source.sourceId, {
+            source,
+            projects: shell.projects,
+          }),
       });
       if (isStopping()) return;
       await refreshIssues(application.listProjects().map(({ id }) => id));
@@ -1729,13 +1783,66 @@ function createRouter(
           );
         }),
       list: scopedProcedure().query(({ ctx }) => {
-        const projects = application.listProjects();
-        return ctx.machine
-          ? projects.filter(({ id }) =>
-              machineCanAccessProject(ctx.machine!, id),
-            )
-          : projects;
+        const allProjects = application.listProjects();
+        const projects = allProjects.filter(
+          ({ id }) => !ctx.machine || machineCanAccessProject(ctx.machine, id),
+        );
+        return projects.map((project) => {
+          const match = iconContext(
+            project.id,
+            ctx.machine?.role === "reviewer"
+              ? undefined
+              : ctx.machine?.machineId,
+            allProjects,
+          );
+          return {
+            ...project,
+            ...(match?.project.projectIcon
+              ? { t3ProjectIcon: match.project.projectIcon }
+              : {}),
+            t3FaviconAvailable: !!match,
+          };
+        });
       }),
+      favicon: scopedProcedure(fieldProjectId("projectId"))
+        .input(z.object({ projectId: z.string().min(1) }))
+        .query(async ({ ctx, input }): Promise<T3ProjectFavicon | null> => {
+          const match = iconContext(
+            input.projectId,
+            ctx.machine?.role === "reviewer"
+              ? undefined
+              : ctx.machine?.machineId,
+          );
+          if (!match) return null;
+          const icon = match.project.projectIcon;
+          if (icon?.kind === "lucide") return readLucideProjectIcon(icon);
+          if (icon) return null;
+          const key = `${match.source.sourceId}:${match.project.id}:${match.project.faviconPath ?? ""}`;
+          const cached = projectFaviconCache.get(key);
+          if (
+            cached &&
+            cached.reader === match.source.reader &&
+            cached.expires > Date.now()
+          )
+            return cached.result;
+          const result =
+            match.source.reader
+              .readProjectFavicon?.({
+                workspaceRoot: match.project.workspaceRoot,
+                faviconPath: match.project.faviconPath,
+              })
+              .catch(() => null) ?? Promise.resolve(null);
+          projectFaviconCache.set(key, {
+            reader: match.source.reader,
+            expires: Date.now() + 60_000,
+            result,
+          });
+          if (projectFaviconCache.size > 200)
+            projectFaviconCache.delete(
+              projectFaviconCache.keys().next().value!,
+            );
+          return result;
+        }),
       floor: scopedProcedure()
         .input(
           z.object({
