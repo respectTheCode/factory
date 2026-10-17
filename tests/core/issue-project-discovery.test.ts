@@ -99,12 +99,15 @@ describe("recent T3 project discovery", () => {
   test("waits for missing repository identity rather than duplicating a known checkout", async () => {
     const application = createApplication();
     application.createProject({
-      name: "Existing app",
-      gitOriginUrl: "git@github.com:example/app.git",
+      name: "Playlister",
+      gitOriginUrl: "git@github.com:example/playlister.git",
     });
-    let project = observedProject({
+    application.createProject({ name: "Bitsy" });
+    const project = observedProject({
+      id: "nested-worktree-project",
       repositoryIdentity: undefined,
-      workspaceRoot: "/work/app",
+      title: "main",
+      workspaceRoot: "/Users/kevin/work/playlister/main",
     });
     const source = makeSource("agent-m4", async () =>
       successfulShell([project]),
@@ -116,15 +119,25 @@ describe("recent T3 project discovery", () => {
         notBeforeISO: cutoff,
       }),
     ).toEqual([]);
-    project = observedProject({ workspaceRoot: "/work/app" });
+
+    const sameNameProject = observedProject({
+      id: "same-title-project",
+      repositoryIdentity: undefined,
+      title: "  BITSY ",
+      workspaceRoot: "/work/another-checkout",
+    });
     expect(
       await discoverRecentT3Projects({
         application,
-        sources: [source],
+        sources: [
+          makeSource("agent-m4", async () =>
+            successfulShell([sameNameProject]),
+          ),
+        ],
         notBeforeISO: cutoff,
       }),
     ).toEqual([]);
-    expect(application.listProjects()).toHaveLength(1);
+    expect(application.listProjects()).toHaveLength(2);
   });
 
   test("reuses a project matched by repository identity", async () => {
@@ -144,6 +157,42 @@ describe("recent T3 project discovery", () => {
     expect(created).toEqual([]);
     expect(application.listProjects()).toHaveLength(1);
     expect(application.listProjects()[0]?.id).toBe(existing.id);
+    expect(application.listProjects()[0]?.t3Mappings).toEqual([
+      {
+        sourceId: "agent-m4",
+        t3ProjectId: "t3-project-1",
+        workspaceRoot: "/work/example-app",
+      },
+    ]);
+
+    const shellWithoutRepository = successfulShell([
+      observedProject({ repositoryIdentity: undefined }),
+    ]);
+    expect(
+      await discoverRecentT3Projects({
+        application,
+        notBeforeISO: cutoff,
+        sources: [makeSource("agent-m4", async () => shellWithoutRepository)],
+      }),
+    ).toEqual([]);
+    expect(application.listProjects()).toHaveLength(1);
+  });
+
+  test("does not add a mapping when an existing workspace identity already matches", async () => {
+    const application = createApplication();
+    application.createProject({
+      gitOriginUrl: "https://github.com/example/app.git",
+      name: "Existing Example app",
+      workspaceRoot: "/work/example-app",
+    });
+
+    await discoverRecentT3Projects({
+      application,
+      notBeforeISO: cutoff,
+      sources: [makeSource("legacy", async () => successfulShell())],
+    });
+
+    expect(application.listProjects()[0]?.t3Mappings).toBeUndefined();
   });
 
   test("skips an ambiguous project instead of creating a duplicate", async () => {
@@ -208,6 +257,11 @@ describe("recent T3 project discovery", () => {
             sourceId: "agent-m4",
             t3ProjectId: "t3-project-1",
             workspaceRoot: "/work/example-app",
+          },
+          {
+            sourceId: "agent-m5",
+            t3ProjectId: "t3-project-m5",
+            workspaceRoot: "/work/m5/example-app",
           },
         ],
       },

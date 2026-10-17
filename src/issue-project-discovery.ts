@@ -4,7 +4,7 @@ import { T3_SOURCE_HAS_TOKEN, type T3Source } from "./t3-sources";
 
 type ProjectDiscoveryApplication = Pick<
   FactoryApplication,
-  "createProject" | "listProjects"
+  "createProject" | "listProjects" | "updateProject"
 >;
 
 type SourceProvider = readonly T3Source[] | (() => readonly T3Source[]);
@@ -76,26 +76,42 @@ export async function discoverRecentT3Projects({
       if (isStoppedNow(signal, isStopped)) break;
       if (!recentProjectIds.has(t3Project.id)) continue;
 
+      const factoryProjects = application.listProjects();
       const resolution = resolveT3Project(
         t3Project,
-        application.listProjects(),
+        factoryProjects,
         source.sourceId,
       );
-      if (resolution.status !== "unmatched") continue;
+      if (resolution.status === "matched") {
+        if (
+          resolution.basis.includes("repositoryIdentity") &&
+          !resolution.basis.includes("t3ProjectId") &&
+          !resolution.basis.includes("workspaceRoot") &&
+          !resolution.project.t3Mappings?.some(
+            (mapping) => mapping.sourceId === source.sourceId,
+          )
+        ) {
+          application.updateProject({
+            gitOriginUrl: resolution.project.gitOriginUrl ?? null,
+            projectId: resolution.project.id,
+            t3Mappings: [
+              ...(resolution.project.t3Mappings ?? []),
+              {
+                sourceId: source.sourceId,
+                t3ProjectId: t3Project.id,
+                workspaceRoot: t3Project.workspaceRoot,
+              },
+            ],
+          });
+        }
+        continue;
+      }
+      if (resolution.status === "ambiguous") continue;
       // Repository metadata can temporarily disappear from a T3 shell. A
       // matching checkout/repository name is a reason to wait for identity,
       // never a sufficient basis to attach work or create a duplicate Project.
       if (!t3Project.repositoryIdentity) {
-        const checkoutName = identityBasename(t3Project.workspaceRoot);
-        if (
-          application
-            .listProjects()
-            .some(
-              (project) =>
-                project.gitOriginUrl &&
-                identityBasename(project.gitOriginUrl) === checkoutName,
-            )
-        )
+        if (shouldDeferCreationWithoutRepository(t3Project, factoryProjects))
           continue;
       }
 
@@ -176,5 +192,32 @@ function identityBasename(value: string): string {
       .at(-1) ?? ""
   )
     .replace(/\.git$/i, "")
+    .trim()
     .toLowerCase();
+}
+
+function normalizeProjectName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function shouldDeferCreationWithoutRepository(
+  t3Project: { title: string; workspaceRoot: string },
+  factoryProjects: ReturnType<FactoryApplication["listProjects"]>,
+): boolean {
+  const observedName = normalizeProjectName(t3Project.title);
+  const workspaceSegments = new Set(
+    t3Project.workspaceRoot
+      .split(/[\\/:]/)
+      .map((segment) => segment.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  return factoryProjects.some((project) => {
+    if (normalizeProjectName(project.name) === observedName) return true;
+    const knownRepositoryName = project.gitOriginUrl
+      ? identityBasename(project.gitOriginUrl)
+      : "";
+    return (
+      knownRepositoryName !== "" && workspaceSegments.has(knownRepositoryName)
+    );
+  });
 }
