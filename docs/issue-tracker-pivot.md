@@ -82,4 +82,20 @@ reply and response through Factory.
 is seeded from a verified online snapshot and receives a private copy of the T3 registry.
 It retains existing Projects and history but starts with no Issues. It uses a separate backup
 directory on the existing backup share. It does not mount the production database for writes.
-The current production deployment continues independently until the pivot is accepted.
+The owner authorized production promotion on 2026-10-17. Production retains its existing
+private HTTPS endpoint, production data volume, operator login, Projects and historical
+records, and `/backups/production` backup schedule. The review database is not substituted
+for the production database.
+
+Before promotion, take verified application backups of both instances and freeze the review
+writer. Import only the four issue tables using `scripts/import-review-issues.ts`, preserving
+issue IDs, numbering, ordering, thread links and PR evidence. The importer requires an empty
+production issue store and matching production Project IDs, and does not overwrite legacy
+state, credentials, sessions or backup settings. Transfer the reviewed T3 credentials through
+the authenticated Connections API.
+
+Production deployments use the `deploy/factory-production` release branch in Dokploy, with
+automatic GitHub deployment disabled so the explicit backup gate runs before promotion.
+Verify `/version`, `/readyz`, both T3 connections, preserved issue identity and ordering, the
+production banner state, and a new verified production backup. Stop the independent review
+instance after the cutover to keep subsequent issue edits on the production store.
