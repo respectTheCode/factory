@@ -232,6 +232,13 @@ const T3_IMAGE_MIME_TYPES = new Set([
   "image/webp",
   "image/x-icon",
 ]);
+const T3_GENERIC_IMAGE_MIME_TYPES = new Set([
+  "application/octet-stream",
+  "image/ico",
+]);
+const PNG_SIGNATURE = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 
 const ISO_DATE_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -1054,6 +1061,24 @@ async function readBoundedImage(
   return Buffer.concat(chunks);
 }
 
+function classifyGenericImage(image: Buffer): string | undefined {
+  if (
+    image.length >= 6 &&
+    image.readUInt16LE(0) === 0 &&
+    image.readUInt16LE(2) === 1 &&
+    image.readUInt16LE(4) > 0
+  ) {
+    return "image/vnd.microsoft.icon";
+  }
+  if (
+    image.length >= PNG_SIGNATURE.length &&
+    image.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)
+  ) {
+    return "image/png";
+  }
+  return undefined;
+}
+
 function defaultAssetSocketFactory(
   url: string,
   headers: Record<string, string>,
@@ -1421,13 +1446,21 @@ export function createT3ActivityReader({
         ?.split(";", 1)[0]
         ?.trim()
         .toLowerCase();
-      if (!mimeType || !T3_IMAGE_MIME_TYPES.has(mimeType)) {
+      if (
+        !mimeType ||
+        (!T3_IMAGE_MIME_TYPES.has(mimeType) &&
+          !T3_GENERIC_IMAGE_MIME_TYPES.has(mimeType))
+      ) {
         await response.body?.cancel();
         return null;
       }
       const image = await readBoundedImage(response);
       if (!image?.byteLength) return null;
-      return { data: image.toString("base64"), mimeType };
+      const classifiedMimeType = T3_GENERIC_IMAGE_MIME_TYPES.has(mimeType)
+        ? classifyGenericImage(image)
+        : mimeType;
+      if (!classifiedMimeType) return null;
+      return { data: image.toString("base64"), mimeType: classifiedMimeType };
     } catch {
       return null;
     } finally {

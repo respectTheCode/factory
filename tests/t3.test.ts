@@ -6,6 +6,7 @@ import {
   DEFAULT_T3_SERVER_VERSION,
   MAX_T3_THREAD_TURN_LIMIT,
   normalizeT3BaseUrl,
+  type T3AssetSocketFactory,
 } from "../src/t3";
 
 const BASE_URL = "http://127.0.0.1:3773";
@@ -26,6 +27,41 @@ function descriptorResponse(
     platform: { arch: "arm64", os: "darwin" },
     serverVersion: version,
   });
+}
+
+function assetSocketFactory(relativeUrl: string): T3AssetSocketFactory {
+  return (_url, _headers) => {
+    const listeners = new Map<string, Array<(event: unknown) => void>>();
+    const emit = (type: string, event: unknown) => {
+      for (const listener of listeners.get(type) ?? []) listener(event);
+    };
+    return {
+      addEventListener(
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+      ) {
+        const registered = listeners.get(type) ?? [];
+        registered.push(listener as unknown as (event: unknown) => void);
+        listeners.set(type, registered);
+        if (type === "open") queueMicrotask(() => emit("open", {}));
+      },
+      send() {
+        queueMicrotask(() =>
+          emit("message", {
+            data: JSON.stringify({
+              _tag: "Exit",
+              exit: {
+                _tag: "Success",
+                value: { relativeUrl },
+              },
+              requestId: "1",
+            }),
+          }),
+        );
+      },
+      close() {},
+    };
+  };
 }
 
 function threadShell(overrides: Record<string, unknown> = {}) {
@@ -330,6 +366,42 @@ describe("T3 read-only activity transport", () => {
     });
     expect(JSON.stringify(favicon)).not.toContain("signed-token");
     expect(JSON.stringify(favicon)).not.toContain(FIXTURE_TOKEN);
+  });
+
+  test("classifies an ICO response served as generic binary data", async () => {
+    const icon = new Uint8Array([0, 0, 1, 0, 1, 0]);
+    const reader = createT3ActivityReader({
+      baseUrl: "https://t3.example.test",
+      fetcher: async () =>
+        new Response(icon, {
+          headers: { "content-type": "application/octet-stream" },
+        }),
+      socketFactory: assetSocketFactory("/api/assets/signed-token"),
+      token: FIXTURE_TOKEN,
+    });
+
+    await expect(
+      reader.readProjectFavicon!({ workspaceRoot: "/work/project" }),
+    ).resolves.toEqual({
+      data: Buffer.from(icon).toString("base64"),
+      mimeType: "image/vnd.microsoft.icon",
+    });
+  });
+
+  test("rejects generic binary favicon data without a supported image signature", async () => {
+    const reader = createT3ActivityReader({
+      baseUrl: "https://t3.example.test",
+      fetcher: async () =>
+        new Response("not an image", {
+          headers: { "content-type": "application/octet-stream" },
+        }),
+      socketFactory: assetSocketFactory("/api/assets/signed-token"),
+      token: FIXTURE_TOKEN,
+    });
+
+    await expect(
+      reader.readProjectFavicon!({ workspaceRoot: "/work/project" }),
+    ).resolves.toBeNull();
   });
 
   test("rejects signed favicon URLs outside the T3 asset route", async () => {
