@@ -1249,7 +1249,7 @@ describe("Factory issue routes", () => {
     }
   });
 
-  test("rejects manually marking a PR-backed issue done without merged evidence", async () => {
+  test("requires confirmed closed PRs for manual terminal status changes", async () => {
     const directory = mkdtempSync(join(tmpdir(), "factory-issues-done-rpc-"));
     directories.push(directory);
     const server = createFactoryServer({
@@ -1309,19 +1309,82 @@ describe("Factory issue routes", () => {
         method: "query",
         params: { input: { id: openIssue.id }, path: "issues.detail" },
       });
-      for (const id of [openIssue.id, closedUnmergedIssue.id]) {
-        const result = await request(socket, {
+      for (const status of ["done", "wont_do"] as const) {
+        const updateResult = await request(socket, {
           id: requestId++,
           method: "mutation",
           params: {
-            input: { id, status: "done" },
+            input: { id: openIssue.id, status },
             path: "issues.update",
           },
         });
-        expect(result.error?.data?.code).toBe("BAD_REQUEST");
-        expect(result.error?.message).toContain(
-          "every Pull Request is confirmed merged",
+        expect(updateResult.error?.data?.code).toBe("BAD_REQUEST");
+        expect(updateResult.error?.message).toContain(
+          "every Pull Request is confirmed closed or merged",
         );
+        const moveResult = await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { id: openIssue.id, status },
+            path: "issues.move",
+          },
+        });
+        expect(moveResult.error?.data?.code).toBe("BAD_REQUEST");
+        expect(moveResult.error?.message).toContain(
+          "every Pull Request is confirmed closed or merged",
+        );
+      }
+
+      const closedDone = data<{ status: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { id: closedUnmergedIssue.id, status: "done" },
+            path: "issues.update",
+          },
+        }),
+      );
+      expect(closedDone.status).toBe("done");
+      const closedWontDo = data<{ status: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { id: closedUnmergedIssue.id, status: "wont_do" },
+            path: "issues.update",
+          },
+        }),
+      );
+      expect(closedWontDo.status).toBe("wont_do");
+
+      const unresolvedIssue = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: {
+              projectId: project.id,
+              pullRequestUrls: ["https://github.com/acme/app/pull/33"],
+              title: "Unresolved PR issue",
+            },
+            path: "issues.create",
+          },
+        }),
+      );
+      for (const status of ["done", "wont_do"] as const) {
+        for (const path of ["issues.update", "issues.move"] as const) {
+          const result = await request(socket, {
+            id: requestId++,
+            method: "mutation",
+            params: { input: { id: unresolvedIssue.id, status }, path },
+          });
+          expect(result.error?.data?.code).toBe("BAD_REQUEST");
+          expect(result.error?.message).toContain(
+            "every Pull Request is confirmed closed or merged",
+          );
+        }
       }
     } finally {
       socket.close();
@@ -1569,7 +1632,19 @@ describe("Factory issue routes", () => {
       });
       expect(unconfirmedDone.error?.data?.code).toBe("BAD_REQUEST");
       expect(unconfirmedDone.error?.message).toContain(
-        "every Pull Request is confirmed merged",
+        "every Pull Request is confirmed closed or merged",
+      );
+      const unconfirmedWontDo = await request(socket, {
+        id: requestId++,
+        method: "mutation",
+        params: {
+          input: { id: linked.id, status: "wont_do" },
+          path: "issues.move",
+        },
+      });
+      expect(unconfirmedWontDo.error?.data?.code).toBe("BAD_REQUEST");
+      expect(unconfirmedWontDo.error?.message).toContain(
+        "every Pull Request is confirmed closed or merged",
       );
 
       const after = data<Array<{ id: string; status: string }>>(

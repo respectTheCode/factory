@@ -1,10 +1,14 @@
 import type { IssuePullRequest } from "../issues";
 
-function isConfirmedMerged(pullRequest: IssuePullRequest): boolean {
-  return pullRequest.merged || pullRequest.state === "merged";
+function isConfirmedResolved(pullRequest: IssuePullRequest): boolean {
+  return (
+    pullRequest.merged ||
+    pullRequest.state === "merged" ||
+    pullRequest.state === "closed"
+  );
 }
 
-export function issueNeedsMergedPullRequestsForDone(
+export function issueHasUnresolvedPullRequests(
   currentUrls: readonly string[],
   existingPullRequests: readonly IssuePullRequest[],
 ): boolean {
@@ -13,11 +17,11 @@ export function issueNeedsMergedPullRequestsForDone(
   );
   return (
     existingPullRequests.some(
-      (pullRequest) => !isConfirmedMerged(pullRequest),
+      (pullRequest) => !isConfirmedResolved(pullRequest),
     ) ||
     currentUrls.some((url) => {
       const pullRequest = pullRequestsByUrl.get(url);
-      return !pullRequest || !isConfirmedMerged(pullRequest);
+      return !pullRequest || !isConfirmedResolved(pullRequest);
     })
   );
 }

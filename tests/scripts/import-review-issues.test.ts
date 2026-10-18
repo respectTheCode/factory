@@ -132,7 +132,7 @@ function createReviewSnapshot(
         {
           url: prUrl,
           ok: true,
-          state: "open",
+          state: wontDo ? "closed" : "open",
           updatedAt: "2026-10-16T18:31:00.000Z",
         },
       ],

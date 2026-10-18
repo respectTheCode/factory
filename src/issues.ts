@@ -316,15 +316,15 @@ function appendToStatusOrder(
   writeStatusOrder(database, nextStatus, nextIds);
 }
 
-function assertDoneStatusAllowed(
+function assertTerminalStatusAllowed(
   database: Database,
   issueId: string,
   pullRequestUrls: string[],
 ): void {
   if (pullRequestUrls.length === 0) return;
-  const mergedRows = database
+  const observedRows = database
     .query(
-      `SELECT url, merged FROM factory_issue_pull_requests
+      `SELECT url, state, merged FROM factory_issue_pull_requests
         WHERE issue_id = $issueId AND url IN (${pullRequestUrls
           .map((_, index) => `$url${index}`)
           .join(", ")})`,
@@ -334,13 +334,16 @@ function assertDoneStatusAllowed(
         ["$issueId", issueId],
         ...pullRequestUrls.map((url, index) => [`$url${index}`, url]),
       ]),
-    ) as Array<{ url: string; merged: number }>;
+    ) as Array<{ url: string; state: "open" | "closed"; merged: number }>;
   if (
-    mergedRows.length !== pullRequestUrls.length ||
-    mergedRows.some((pullRequest) => pullRequest.merged !== 1)
+    observedRows.length !== pullRequestUrls.length ||
+    observedRows.some(
+      (pullRequest) =>
+        pullRequest.state !== "closed" && pullRequest.merged !== 1,
+    )
   ) {
     throw new Error(
-      "An issue with linked Pull Requests can be marked done only after every Pull Request is confirmed merged.",
+      "An issue with linked Pull Requests can be marked done or won't do only after every Pull Request is confirmed closed or merged.",
     );
   }
 }
@@ -719,28 +722,32 @@ export function createIssueStore({
     },
 
     update(input) {
-      const row = readIssueRow(database, input.id);
-      if (!row) throw new Error(`Issue ${input.id} does not exist.`);
-      const title = input.title?.trim();
-      if (input.title !== undefined && !title)
-        throw new Error("An issue title is required.");
-      const previousUrls = parseJsonList(row.pullRequestUrlsJson);
-      const nextUrls =
-        input.pullRequestUrls === undefined
-          ? previousUrls
-          : cleanPullRequestUrls(input.pullRequestUrls);
-      if (input.status === "done") {
-        assertDoneStatusAllowed(database, input.id, nextUrls);
-      }
-      const removedUrls = previousUrls.filter((url) => !nextUrls.includes(url));
-      const addedUrls = nextUrls.filter((url) => !previousUrls.includes(url));
-      const now = clock().toISOString();
-      const nextStatus =
-        input.status ??
-        (row.status === "done" && addedUrls.length
-          ? "in_progress"
-          : row.status);
       withTransaction(database, () => {
+        const row = readIssueRow(database, input.id);
+        if (!row) throw new Error(`Issue ${input.id} does not exist.`);
+        const title = input.title?.trim();
+        if (input.title !== undefined && !title)
+          throw new Error("An issue title is required.");
+        const previousUrls = parseJsonList(row.pullRequestUrlsJson);
+        const nextUrls =
+          input.pullRequestUrls === undefined
+            ? previousUrls
+            : cleanPullRequestUrls(input.pullRequestUrls);
+        if (input.status === "done" || input.status === "wont_do") {
+          assertTerminalStatusAllowed(database, input.id, [
+            ...new Set([...previousUrls, ...nextUrls]),
+          ]);
+        }
+        const removedUrls = previousUrls.filter(
+          (url) => !nextUrls.includes(url),
+        );
+        const addedUrls = nextUrls.filter((url) => !previousUrls.includes(url));
+        const now = clock().toISOString();
+        const nextStatus =
+          input.status ??
+          (row.status === "done" && addedUrls.length
+            ? "in_progress"
+            : row.status);
         database
           .query(
             `UPDATE factory_issues SET
@@ -831,8 +838,11 @@ export function createIssueStore({
 
         const changesStatus = row.status !== input.status;
         const pullRequestUrls = parseJsonList(row.pullRequestUrlsJson);
-        if (changesStatus && input.status === "done") {
-          assertDoneStatusAllowed(database, input.id, pullRequestUrls);
+        if (
+          changesStatus &&
+          (input.status === "done" || input.status === "wont_do")
+        ) {
+          assertTerminalStatusAllowed(database, input.id, pullRequestUrls);
         }
 
         const targetIds = readIssueIdsForStatus(

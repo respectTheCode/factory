@@ -19,7 +19,7 @@ import type {
   IssueThread,
 } from "../issues";
 import type { FactoryRouter } from "../server";
-import { issueNeedsMergedPullRequestsForDone } from "./issue-completion";
+import { issueHasUnresolvedPullRequests } from "./issue-completion";
 import {
   groupIssues,
   ISSUE_STATUSES,
@@ -58,6 +58,14 @@ const STATUS_LABEL: Record<IssueStatus, string> = {
 };
 const REFRESH_INTERVAL_MS = 15_000;
 const THREAD_MESSAGE_LIMIT = 5;
+
+function isManualTerminalStatus(status: IssueStatus): boolean {
+  return status === "done" || status === "wont_do";
+}
+
+function terminalStatusEvidenceError(status: IssueStatus): string {
+  return `All linked pull requests must be confirmed closed or merged before this issue can be marked ${STATUS_LABEL[status]}.`;
+}
 
 function statusTone(status: IssueStatus): string {
   return `issue-status-${status}`;
@@ -393,16 +401,11 @@ export function IssuesPage({
     const issue = issues?.find((item) => item.id === id);
     if (!issue) return;
     if (
-      issue.status !== "done" &&
-      status === "done" &&
-      issueNeedsMergedPullRequestsForDone(
-        issue.pullRequestUrls,
-        issue.pullRequests,
-      )
+      issue.status !== status &&
+      isManualTerminalStatus(status) &&
+      issueHasUnresolvedPullRequests(issue.pullRequestUrls, issue.pullRequests)
     ) {
-      setMoveError(
-        "All linked pull requests must be confirmed merged before this issue can be marked done.",
-      );
+      setMoveError(terminalStatusEvidenceError(status));
       return;
     }
     if (status === issue.status && beforeId === id) return;
@@ -611,15 +614,13 @@ export function IssuesPage({
     }
     if (
       editorMode === "edit" &&
-      editValues.status === "done" &&
-      issueNeedsMergedPullRequestsForDone(
+      isManualTerminalStatus(editValues.status) &&
+      issueHasUnresolvedPullRequests(
         parseEntries(editValues.pullRequestUrls),
         detailIssue?.pullRequests ?? [],
       )
     ) {
-      setSaveError(
-        "All linked pull requests must be confirmed merged before this issue can be marked done.",
-      );
+      setSaveError(terminalStatusEvidenceError(editValues.status));
       return;
     }
     setSaveBusy(true);
@@ -1415,7 +1416,7 @@ function IssueEditor({
   };
   const pullRequestUrls = parseEntries(editValues.pullRequestUrls);
   const hasPullRequests = pullRequestUrls.length > 0 || pullRequests.length > 0;
-  const doneNeedsMergedEvidence = issueNeedsMergedPullRequestsForDone(
+  const hasUnresolvedPullRequests = issueHasUnresolvedPullRequests(
     pullRequestUrls,
     pullRequests,
   );
@@ -1508,23 +1509,27 @@ function IssueEditor({
           }
           value={editValues.status}
         >
-          {ISSUE_STATUSES.map((status) => (
-            <option
-              disabled={status === "done" && doneNeedsMergedEvidence}
-              key={status}
-              value={status}
-            >
-              {STATUS_LABEL[status]}
-              {status === "done" && doneNeedsMergedEvidence
-                ? " · merge all PRs first"
-                : ""}
-            </option>
-          ))}
+          {ISSUE_STATUSES.map((status) => {
+            const needsResolvedPullRequests =
+              isManualTerminalStatus(status) && hasUnresolvedPullRequests;
+            return (
+              <option
+                disabled={needsResolvedPullRequests}
+                key={status}
+                value={status}
+              >
+                {STATUS_LABEL[status]}
+                {needsResolvedPullRequests ? " · resolve linked PRs first" : ""}
+              </option>
+            );
+          })}
         </select>
         <small>
           {hasPullRequests
-            ? "All linked pull requests must be confirmed merged before marking this issue done."
-            : "Issues without pull requests can be marked done manually."}
+            ? hasUnresolvedPullRequests
+              ? "Confirm every linked pull request is closed or merged before marking this issue Done or Won’t do."
+              : "All linked pull requests are confirmed closed or merged. This issue can be marked Done or Won’t do."
+            : "Issues without linked pull requests can be marked Done or Won’t do manually."}
         </small>
       </label>
       {error && (

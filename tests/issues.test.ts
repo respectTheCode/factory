@@ -396,7 +396,7 @@ describe("Factory issue store", () => {
       }));
 
       expect(() => store.move({ id: linked.id, status: "done" })).toThrow(
-        "every Pull Request is confirmed merged",
+        "every Pull Request is confirmed closed or merged",
       );
       expect(
         store.list({ projectId }).map(({ id, status }) => ({ id, status })),
@@ -661,7 +661,7 @@ describe("Factory issue store", () => {
       branch: "feature/wont-do",
     });
     store.observeThreads({ projectId, threads: [firstThread] });
-    reconcile(store, [pullRequest(prOne, "open")]);
+    reconcile(store, [pullRequest(prOne, "closed")]);
     store.move({ id: issue.id, status: "wont_do" });
     store.close();
 
@@ -769,48 +769,129 @@ describe("Factory issue store", () => {
     }
   });
 
-  test("allows manual done for PR-backed issues only with merged evidence", () => {
+  test("blocks terminal transitions until every linked PR is confirmed closed", () => {
     const store = makeStore();
     try {
       const issue = store.create({
         projectId,
         title: "PR-backed manual completion",
-        pullRequestUrls: [prOne, prTwo],
+        pullRequestUrls: [prOne],
       });
 
-      expect(() => store.update({ id: issue.id, status: "done" })).toThrow(
-        "every Pull Request is confirmed merged",
-      );
-      reconcile(store, [
-        pullRequest(prOne, "open"),
-        pullRequest(prTwo, "closed"),
+      const expectBlocked = () => {
+        for (const status of ["done", "wont_do"] as const) {
+          expect(() => store.update({ id: issue.id, status })).toThrow(
+            "every Pull Request is confirmed closed or merged",
+          );
+          expect(() => store.move({ id: issue.id, status })).toThrow(
+            "every Pull Request is confirmed closed or merged",
+          );
+        }
+      };
+
+      expectBlocked();
+      expect(store.detail(issue.id)?.issue.pullRequests).toEqual([
+        expect.objectContaining({ url: prOne, state: "unavailable" }),
       ]);
-      expect(() => store.update({ id: issue.id, status: "done" })).toThrow(
-        "every Pull Request is confirmed merged",
-      );
+
       expect(() =>
         store.update({
           id: issue.id,
-          pullRequestUrls: [prOne, prTwo, "https://github.com/acme/app/pull/3"],
+          title: "Must roll back",
+          pullRequestUrls: [],
           status: "done",
         }),
-      ).toThrow("every Pull Request is confirmed merged");
-      expect(store.detail(issue.id)?.issue.pullRequestUrls).toEqual([
-        prOne,
-        prTwo,
-      ]);
+      ).toThrow("every Pull Request is confirmed closed or merged");
+      expect(() =>
+        store.update({
+          id: issue.id,
+          title: "Must also roll back",
+          pullRequestUrls: [],
+          status: "wont_do",
+        }),
+      ).toThrow("every Pull Request is confirmed closed or merged");
+      expect(store.detail(issue.id)?.issue).toMatchObject({
+        pullRequestUrls: [prOne],
+        status: "todo",
+        title: "PR-backed manual completion",
+      });
 
       reconcile(store, [
-        pullRequest(prOne, "closed", {
-          mergedAt: "2026-10-16T11:00:00.000Z",
+        {
+          url: prOne,
+          ok: true,
+          state: "open",
+          updatedAt: "2026-10-16T11:00:00.000Z",
+        },
+      ]);
+      const before = store.list({ projectId }).map(({ id, status }) => ({
+        id,
+        status,
+      }));
+      expectBlocked();
+      expect(
+        store.list({ projectId }).map(({ id, status }) => ({ id, status })),
+      ).toEqual(before);
+      for (const status of ["done", "wont_do"] as const) {
+        expect(() =>
+          store.update({ id: issue.id, pullRequestUrls: [], status }),
+        ).toThrow("every Pull Request is confirmed closed or merged");
+      }
+      expect(store.detail(issue.id)?.issue).toMatchObject({
+        pullRequestUrls: [prOne],
+        status: "in_progress",
+      });
+
+      reconcile(store, [pullRequest(prOne, "closed")]);
+      expect(() =>
+        store.update({
+          id: issue.id,
+          pullRequestUrls: [prOne, prTwo],
+          status: "done",
         }),
+      ).toThrow("every Pull Request is confirmed closed or merged");
+      expect(store.detail(issue.id)?.issue).toMatchObject({
+        pullRequestUrls: [prOne],
+        status: "in_progress",
+      });
+
+      const mixedDoneIssue = store.create({
+        projectId,
+        title: "Mixed closed and merged PRs",
+        pullRequestUrls: [prOne, prTwo],
+      });
+      const mixedMoveIssue = store.create({
+        projectId,
+        title: "Move to Done after closed PRs",
+        pullRequestUrls: [prOne, prTwo],
+      });
+      const mixedWontDoIssue = store.create({
+        projectId,
+        title: "Move to Won't do after closed PRs",
+        pullRequestUrls: [prOne, prTwo],
+      });
+      reconcile(store, [
+        pullRequest(prOne, "closed"),
         pullRequest(prTwo, "closed", {
           mergedAt: "2026-10-16T11:05:00.000Z",
         }),
       ]);
-      expect(store.update({ id: issue.id, status: "done" }).status).toBe(
+      for (const mixedIssue of [
+        mixedDoneIssue,
+        mixedMoveIssue,
+        mixedWontDoIssue,
+      ]) {
+        expect(store.detail(mixedIssue.id)?.issue.status).not.toBe("done");
+      }
+      expect(
+        store.update({ id: mixedDoneIssue.id, status: "done" }).status,
+      ).toBe("done");
+      expect(store.move({ id: mixedMoveIssue.id, status: "done" }).status).toBe(
         "done",
       );
+      expect(
+        store.move({ id: mixedWontDoIssue.id, status: "wont_do" }).status,
+      ).toBe("wont_do");
     } finally {
       store.close();
     }
@@ -941,7 +1022,7 @@ describe("Factory issue store", () => {
       ]);
 
       expect(() => store.update({ id: issue.id, status: "done" })).toThrow(
-        "every Pull Request is confirmed merged",
+        "every Pull Request is confirmed closed or merged",
       );
       reconcile(store, [
         pullRequest(prOne, "closed", { mergedAt: "2026-10-16T11:00:00.000Z" }),
