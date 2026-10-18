@@ -24,6 +24,10 @@ test("the existing online backup captures issue records and their thread associa
       branches: ["feature/backup"],
       labels: ["backup"],
     });
+    const wontDoIssue = issues.create({
+      projectId: project.id,
+      title: "Retain terminal issue status",
+    });
     issues.observeThreads({
       projectId: project.id,
       threads: [
@@ -39,17 +43,21 @@ test("the existing online backup captures issue records and their thread associa
       ],
     });
     issues.update({ id: issue.id, status: "done" });
-    const before = issues.detail(issue.id);
+    issues.update({ id: wontDoIssue.id, status: "wont_do" });
+    const before = [issues.detail(issue.id), issues.detail(wontDoIssue.id)];
     backupFactorySnapshot({ databasePath, outputPath });
     verifyFactorySnapshot({
       databasePath: outputPath,
       manifestPath: `${outputPath}.manifest.json`,
     });
     restored = createIssueStore({ databasePath: outputPath });
-    expect(restored.detail(issue.id)).toEqual(before);
+    expect([
+      restored.detail(issue.id),
+      restored.detail(wontDoIssue.id),
+    ]).toEqual(before);
     expect(
       restored.create({ projectId: project.id, title: "Next issue" }).simpleId,
-    ).toBe("F-2");
+    ).toBe("F-3");
   } finally {
     restored?.close();
     issues.close();

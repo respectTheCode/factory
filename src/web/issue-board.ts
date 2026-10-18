@@ -2,6 +2,7 @@ import type { Issue, IssueStatus } from "../issues";
 
 export const ISSUE_STATUSES: IssueStatus[] = [
   "done",
+  "wont_do",
   "needs_attention",
   "in_progress",
   "todo",

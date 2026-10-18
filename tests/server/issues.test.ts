@@ -1407,6 +1407,76 @@ describe("Factory issue routes", () => {
     }
   });
 
+  test("accepts Won't do through issue update and move endpoints", async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "factory-issues-wont-do-rpc-"),
+    );
+    directories.push(directory);
+    const server = createFactoryServer({
+      databasePath: join(directory, "factory.sqlite"),
+      port: 0,
+      operator: { name: "test-operator", secret: "test-operator-secret" },
+    });
+    const socket = await openAuthenticatedSocket(server);
+    let requestId = 1;
+    try {
+      const project = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: { input: { name: "Won't do app" }, path: "projects.create" },
+        }),
+      );
+      const issue = data<{ id: string; status: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { projectId: project.id, title: "Deferred indefinitely" },
+            path: "issues.create",
+          },
+        }),
+      );
+      const updated = data<{ id: string; status: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { id: issue.id, status: "wont_do" },
+            path: "issues.update",
+          },
+        }),
+      );
+      expect(updated).toMatchObject({ id: issue.id, status: "wont_do" });
+
+      const moved = data<{ id: string; status: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { id: issue.id, status: "todo" },
+            path: "issues.move",
+          },
+        }),
+      );
+      expect(moved).toMatchObject({ id: issue.id, status: "todo" });
+      const movedBack = data<{ id: string; status: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { id: issue.id, status: "wont_do" },
+            path: "issues.move",
+          },
+        }),
+      );
+      expect(movedBack).toMatchObject({ id: issue.id, status: "wont_do" });
+    } finally {
+      socket.close();
+      await server.stop();
+    }
+  });
+
   test("rejects invalid move anchors and unconfirmed Done moves atomically", async () => {
     const directory = mkdtempSync(
       join(tmpdir(), "factory-issues-move-guard-rpc-"),

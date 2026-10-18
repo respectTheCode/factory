@@ -9,6 +9,7 @@ export const ISSUE_STATUSES = [
   "in_progress",
   "needs_attention",
   "done",
+  "wont_do",
 ] as const;
 
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
@@ -248,7 +249,8 @@ function readIssueRows(database: Database, projectId?: string): IssueRow[] {
                 WHEN 'todo' THEN 0
                 WHEN 'in_progress' THEN 1
                 WHEN 'needs_attention' THEN 2
-                ELSE 3 END,
+                WHEN 'done' THEN 3
+                ELSE 4 END,
                 order_index, created_at, simple_id`,
           )
           .all()
@@ -259,7 +261,8 @@ function readIssueRows(database: Database, projectId?: string): IssueRow[] {
                 WHEN 'todo' THEN 0
                 WHEN 'in_progress' THEN 1
                 WHEN 'needs_attention' THEN 2
-                ELSE 3 END,
+                WHEN 'done' THEN 3
+                ELSE 4 END,
                 order_index, created_at, simple_id`,
           )
           .all({ $projectId: projectId });
@@ -463,6 +466,71 @@ function withTransaction<T>(database: Database, operation: () => T): T {
   }
 }
 
+function migrateIssueStatusConstraints(database: Database): void {
+  const schema = database
+    .query(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'factory_issues'",
+    )
+    .get() as { sql: string | null } | null;
+  if (!schema?.sql) throw new Error("Factory issue schema is unavailable.");
+  if ((schema.sql.match(/'wont_do'/g) ?? []).length >= 2) return;
+
+  const replacementTable = "factory_issues_status_migration";
+  const replacementExists = database
+    .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $name")
+    .get({ $name: replacementTable });
+  if (replacementExists) {
+    throw new Error("Factory issue status migration is already in progress.");
+  }
+
+  // SQLite has no ALTER CHECK constraint operation. Keep child-table FK text
+  // pointed at factory_issues while rebuilding its rows, then validate every
+  // relationship before re-enabling enforcement.
+  database.exec("PRAGMA foreign_keys = OFF");
+  try {
+    withTransaction(database, () => {
+      database.exec(`
+        CREATE TABLE ${replacementTable} (
+          id TEXT PRIMARY KEY,
+          simple_id TEXT NOT NULL UNIQUE,
+          project_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL,
+          labels_json TEXT NOT NULL,
+          branches_json TEXT NOT NULL,
+          pull_request_urls_json TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('todo', 'in_progress', 'needs_attention', 'done', 'wont_do')),
+          manual_status TEXT CHECK (manual_status IS NULL OR manual_status IN ('todo', 'in_progress', 'needs_attention', 'done', 'wont_do')),
+          order_index INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO ${replacementTable}
+          (id, simple_id, project_id, title, description, labels_json,
+           branches_json, pull_request_urls_json, status, manual_status,
+           order_index, created_at, updated_at)
+        SELECT id, simple_id, project_id, title, description, labels_json,
+               branches_json, pull_request_urls_json, status, manual_status,
+               order_index, created_at, updated_at
+          FROM factory_issues;
+        DROP TABLE factory_issues;
+        ALTER TABLE ${replacementTable} RENAME TO factory_issues;
+        CREATE INDEX factory_issues_project_idx
+          ON factory_issues(project_id, created_at, simple_id);
+        CREATE INDEX factory_issues_status_order_idx
+          ON factory_issues(status, order_index, created_at, simple_id);
+      `);
+
+      const foreignKeyErrors = database.query("PRAGMA foreign_key_check").all();
+      if (foreignKeyErrors.length) {
+        throw new Error("Factory issue migration found broken references.");
+      }
+    });
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
 export function createIssueStore({
   clock = () => new Date(),
   databasePath,
@@ -482,8 +550,8 @@ export function createIssueStore({
       labels_json TEXT NOT NULL,
       branches_json TEXT NOT NULL,
       pull_request_urls_json TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('todo', 'in_progress', 'needs_attention', 'done')),
-      manual_status TEXT CHECK (manual_status IS NULL OR manual_status IN ('todo', 'in_progress', 'needs_attention', 'done')),
+      status TEXT NOT NULL CHECK (status IN ('todo', 'in_progress', 'needs_attention', 'done', 'wont_do')),
+      manual_status TEXT CHECK (manual_status IS NULL OR manual_status IN ('todo', 'in_progress', 'needs_attention', 'done', 'wont_do')),
       order_index INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -556,6 +624,7 @@ export function createIssueStore({
       }
     });
   }
+  migrateIssueStatusConstraints(database);
   database.exec(`
     CREATE INDEX IF NOT EXISTS factory_issues_status_order_idx
       ON factory_issues(status, order_index, created_at, simple_id);
@@ -1411,14 +1480,20 @@ export function createIssueStore({
           }
 
           const linkedPullRequestEvent = newPullRequest || reopenedPullRequest;
+          const isWontDo =
+            issue.status === "wont_do" || issue.manualStatus === "wont_do";
           const manualExpired =
+            !isWontDo &&
             issue.manualStatus !== null &&
             (pullRequestChanged ||
               (issue.manualStatus !== "done" && newThreadEvent));
           const wasDone = issue.status === "done";
           let nextStatus = issue.status;
           let nextManualStatus = manualExpired ? null : issue.manualStatus;
-          if (wasDone) {
+          if (isWontDo) {
+            nextStatus = "wont_do";
+            nextManualStatus = "wont_do";
+          } else if (wasDone) {
             if (linkedPullRequestEvent) {
               nextStatus = allPullRequestsMerged ? "done" : "in_progress";
               if (!allPullRequestsMerged) nextManualStatus = null;

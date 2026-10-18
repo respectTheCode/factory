@@ -378,7 +378,7 @@
   box-shadow: var(--edge-machined);
   display: grid;
   gap: 6px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   padding: 6px;
   position: fixed;
   left: max(24px, calc((100vw - var(--shell)) / 2 + 24px));
@@ -427,6 +427,18 @@
 .issue-status-todo .issue-status-dot,
 .issue-row-status.issue-status-todo {
   background: var(--ink-dim);
+}
+
+.issue-status-wont_do .issue-status-dot,
+.issue-row-status.issue-status-wont_do {
+  background: color-mix(in srgb, var(--ink-dim) 68%, var(--rule));
+  filter: none;
+}
+
+.issue-status-chip.issue-status-wont_do {
+  background: color-mix(in srgb, var(--raised) 78%, var(--rule));
+  border-color: color-mix(in srgb, var(--rule) 72%, var(--ink-dim));
+  color: var(--ink-dim);
 }
 
 .issue-status-in_progress .issue-status-dot,

@@ -26,9 +26,10 @@ function issue(id: string, status: Issue["status"]): Issue {
 }
 
 describe("issue status groups", () => {
-  test("keeps all four groups present when the board is empty", () => {
+  test("keeps all five groups present when the board is empty", () => {
     expect(groupIssues([])).toEqual([
       ["done", []],
+      ["wont_do", []],
       ["needs_attention", []],
       ["in_progress", []],
       ["todo", []],
@@ -36,17 +37,20 @@ describe("issue status groups", () => {
   });
 
   test("places visible issues into their status while retaining empty groups", () => {
-    const todo = issue("todo-1", "todo");
     const done = issue("done-1", "done");
+    const wontDo = issue("wont-do-1", "wont_do");
+    const todo = issue("todo-1", "todo");
 
-    expect(groupIssues([todo, done])).toEqual([
+    expect(groupIssues([todo, done, wontDo])).toEqual([
       ["done", [done]],
+      ["wont_do", [wontDo]],
       ["needs_attention", []],
       ["in_progress", []],
       ["todo", [todo]],
     ]);
     expect(ISSUE_STATUSES).toEqual([
       "done",
+      "wont_do",
       "needs_attention",
       "in_progress",
       "todo",
@@ -55,10 +59,11 @@ describe("issue status groups", () => {
 
   test("loads only valid saved collapsed statuses", () => {
     const storage = {
-      getItem: () => JSON.stringify(["todo", "done", "todo", "unknown"]),
+      getItem: () =>
+        JSON.stringify(["todo", "wont_do", "done", "todo", "unknown"]),
     };
 
-    expect(readCollapsedStatuses(storage)).toEqual(["todo", "done"]);
+    expect(readCollapsedStatuses(storage)).toEqual(["todo", "wont_do", "done"]);
   });
 
   test("treats malformed or unavailable storage as all groups expanded", () => {
@@ -78,14 +83,14 @@ describe("issue status groups", () => {
 
   test("saves collapsed statuses and tolerates blocked storage", () => {
     let saved: string | null = null;
-    writeCollapsedStatuses(["todo", "done"], {
+    writeCollapsedStatuses(["todo", "wont_do", "done"], {
       setItem: (_key, value) => {
         saved = value;
       },
     });
 
     expect(saved).not.toBeNull();
-    expect(JSON.parse(saved!)).toEqual(["done", "todo"]);
+    expect(JSON.parse(saved!)).toEqual(["done", "wont_do", "todo"]);
     expect(() => writeCollapsedStatuses(["done"], null)).not.toThrow();
     expect(() =>
       writeCollapsedStatuses(["done"], {

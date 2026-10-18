@@ -12,9 +12,9 @@ thread and allow the human to send a reply to that thread. Use the matching T3 p
 icon beside project names: preserve explicit emoji, monogram, and Lucide overrides, or
 load the project favicon through Factory. Icon loading must not delay the issue list.
 
-Show status groups in order: Done, Needs attention, In progress, To do. Each header toggles
+Show status groups in order: Done, Won’t do, Needs attention, In progress, To do. Each header toggles
 its issue rows and shows the visible issue count; remember collapsed groups in this browser
-across reloads. Keep all four headers visible, including empty and collapsed groups. Drag
+across reloads. Keep all five headers visible, including empty and collapsed groups. Drag
 an issue to reorder it within a group or drop onto any status, including collapsed groups;
 persist issue order across reloads. Filtered
 views preserve the relative order of hidden issues. Status moves retain the completion
@@ -48,8 +48,10 @@ Thread messages stay scoped to authenticated humans; credentials never reach the
 - Needs attention: no associated thread is working and a thread has stopped. This does not
   assert that the result is ready for review.
 - Done: one or more linked PRs exist and all are merged. Closed without merging does not count.
+- Won’t do: the human has decided the issue will not be finished. This status is manual and
+  remains until the human moves it elsewhere, regardless of T3 activity or PR events.
 - Done remains Done when threads receive messages or resume work after the merge.
-- A newly linked or reopened PR reopens the issue. The human can also move it manually.
+- A newly linked or reopened PR reopens a Done issue. The human can also move it manually.
 - Issues without PRs can be completed manually. PR-backed issues require all linked PRs to be
   merged before they can be marked Done. Manual moves back remain until relevant new activity.
 - Failed or unavailable T3/GitHub observations preserve the last known state and expose the

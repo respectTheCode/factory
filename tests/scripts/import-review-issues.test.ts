@@ -79,7 +79,10 @@ function readIssueTables(databasePath: string) {
 
 function createReviewSnapshot(
   directory: string,
-  { legacyOrderIndex = false }: { legacyOrderIndex?: boolean } = {},
+  {
+    legacyOrderIndex = false,
+    wontDo = false,
+  }: { legacyOrderIndex?: boolean; wontDo?: boolean } = {},
 ) {
   const databasePath = join(directory, "review.sqlite");
   const application = createFactoryApplication({ databasePath });
@@ -183,6 +186,11 @@ function createReviewSnapshot(
     const migratedStore = createIssueStore({ databasePath });
     migratedStore.close();
   }
+  if (wontDo) {
+    const wontDoStore = createIssueStore({ databasePath });
+    wontDoStore.update({ id: fixture!.issueId, status: "wont_do" });
+    wontDoStore.close();
+  }
   return fixture!;
 }
 
@@ -246,6 +254,27 @@ test("imports a legacy-migrated issue store and leaves target state byte-for-byt
   expect(counts).toEqual({ issues: 3, threads: 1, pullRequests: 1 });
   expect(readIssueTables(target.databasePath)).toEqual(expectedIssueRows);
   expect(readState(target.databasePath)).toBe(legacyState);
+});
+
+test("imports Won't do as a valid persisted issue status", () => {
+  const directory = temporaryDirectory();
+  const review = createReviewSnapshot(directory, { wontDo: true });
+  const target = createTargetSnapshot(directory, review.projectId);
+  const expectedIssueRows = readIssueTables(review.databasePath);
+
+  const counts = importReviewIssues({
+    sourceDatabasePath: review.databasePath,
+    targetDatabasePath: target.databasePath,
+  });
+
+  expect(counts).toEqual({ issues: 3, threads: 1, pullRequests: 1 });
+  expect(readIssueTables(target.databasePath)).toEqual(expectedIssueRows);
+  const targetStore = createIssueStore({ databasePath: target.databasePath });
+  try {
+    expect(targetStore.detail(review.issueId)?.issue.status).toBe("wont_do");
+  } finally {
+    targetStore.close();
+  }
 });
 
 test("rejects a nonempty target before changing its issue rows or legacy state", () => {

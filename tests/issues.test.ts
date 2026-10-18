@@ -150,6 +150,176 @@ describe("Factory issue store", () => {
     }
   });
 
+  test("adds Won't do without losing issue order, observations, links, receipts, or legacy state", () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "factory-issues-status-migration-"),
+    );
+    directories.push(directory);
+    const databasePath = join(directory, "factory.sqlite");
+    const application = createFactoryApplication({ databasePath });
+    let store = createIssueStore({ databasePath });
+    const project = application.createProject({ name: "Migration project" });
+    application.createTask({ name: "Historical task", projectId: project.id });
+    const linked = store.create({
+      projectId: project.id,
+      title: "Linked issue",
+      branches: ["feature/migration"],
+      pullRequestUrls: [prOne],
+    });
+    const other = store.create({ projectId: project.id, title: "Other issue" });
+    store.move({ id: other.id, status: "in_progress" });
+    const observedThread = thread({
+      sourceId: "m4",
+      threadId: "thread-migration",
+      branch: "feature/migration",
+      updatedAt: "2026-10-16T10:00:00.000Z",
+    });
+    store.observeThreads({ projectId: project.id, threads: [observedThread] });
+    store.reconcileProject({
+      projectId: project.id,
+      pullRequests: [pullRequest(prOne, "open")],
+      pullRequestPassComplete: true,
+    });
+    expect(
+      store.discoverThreads({
+        projectId: project.id,
+        freshSourceIds: ["m4"],
+        notBefore: "2026-10-15T00:00:00.000Z",
+        threads: [observedThread],
+      }),
+    ).toEqual([]);
+
+    const capture = () => {
+      const database = new Database(databasePath, { readonly: true });
+      try {
+        return {
+          issues: database
+            .query(
+              `SELECT id, simple_id, project_id, title, description, labels_json,
+                      branches_json, pull_request_urls_json, status, manual_status,
+                      order_index, created_at, updated_at
+                 FROM factory_issues ORDER BY id`,
+            )
+            .all(),
+          threads: database
+            .query(
+              `SELECT issue_id, source_id, thread_id, title, branch, repository,
+                      state, current, updated_at, event_fingerprint
+                 FROM factory_issue_threads ORDER BY issue_id, source_id, thread_id`,
+            )
+            .all(),
+          pullRequests: database
+            .query(
+              `SELECT issue_id, url, state, merged, updated_at, merged_at,
+                      event_fingerprint
+                 FROM factory_issue_pull_requests ORDER BY issue_id, url`,
+            )
+            .all(),
+          receipts: database
+            .query(
+              `SELECT project_id, source_id, thread_id, issue_id, branch,
+                      discovered_at
+                 FROM factory_issue_discovery_receipts
+                ORDER BY project_id, source_id, thread_id`,
+            )
+            .all(),
+          legacyState: (
+            database
+              .query("SELECT state FROM factory_state WHERE id = 1")
+              .get() as { state: string }
+          ).state,
+          threadForeignKeys: database
+            .query("PRAGMA foreign_key_list(factory_issue_threads)")
+            .all(),
+          pullRequestForeignKeys: database
+            .query("PRAGMA foreign_key_list(factory_issue_pull_requests)")
+            .all(),
+        };
+      } finally {
+        database.close();
+      }
+    };
+    const before = capture();
+    const listOrderBefore = store
+      .list({ projectId: project.id })
+      .map(({ id }) => id);
+
+    store.close();
+    application.close();
+    const legacy = new Database(databasePath);
+    legacy.exec("PRAGMA foreign_keys = OFF");
+    legacy.exec("BEGIN IMMEDIATE");
+    try {
+      legacy.exec(`
+        CREATE TABLE factory_issues_legacy (
+          id TEXT PRIMARY KEY,
+          simple_id TEXT NOT NULL UNIQUE,
+          project_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL,
+          labels_json TEXT NOT NULL,
+          branches_json TEXT NOT NULL,
+          pull_request_urls_json TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('todo', 'in_progress', 'needs_attention', 'done')),
+          manual_status TEXT CHECK (manual_status IS NULL OR manual_status IN ('todo', 'in_progress', 'needs_attention', 'done')),
+          order_index INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO factory_issues_legacy
+          (id, simple_id, project_id, title, description, labels_json,
+           branches_json, pull_request_urls_json, status, manual_status,
+           order_index, created_at, updated_at)
+        SELECT id, simple_id, project_id, title, description, labels_json,
+               branches_json, pull_request_urls_json, status, manual_status,
+               order_index, created_at, updated_at
+          FROM factory_issues;
+        DROP TABLE factory_issues;
+        ALTER TABLE factory_issues_legacy RENAME TO factory_issues;
+      `);
+      legacy.exec("COMMIT");
+    } catch (error) {
+      legacy.exec("ROLLBACK");
+      throw error;
+    } finally {
+      legacy.close();
+    }
+
+    store = createIssueStore({ databasePath });
+    try {
+      expect(capture()).toEqual(before);
+      expect(store.list({ projectId: project.id }).map(({ id }) => id)).toEqual(
+        [other.id, linked.id],
+      );
+      expect(store.list({ projectId: project.id }).map(({ id }) => id)).toEqual(
+        listOrderBefore,
+      );
+      expect(store.detail(linked.id)).toMatchObject({
+        issue: {
+          pullRequestUrls: [prOne],
+          status: "in_progress",
+        },
+        threads: [expect.objectContaining({ threadId: "thread-migration" })],
+      });
+      expect(
+        store.discoverThreads({
+          projectId: project.id,
+          freshSourceIds: ["m4"],
+          notBefore: "2026-10-15T00:00:00.000Z",
+          threads: [observedThread],
+        }),
+      ).toEqual([]);
+      const check = new Database(databasePath, { readonly: true });
+      try {
+        expect(check.query("PRAGMA foreign_key_check").all()).toEqual([]);
+      } finally {
+        check.close();
+      }
+    } finally {
+      store.close();
+    }
+  });
+
   test("persists manual order and appends issues when their status changes", () => {
     const directory = mkdtempSync(join(tmpdir(), "factory-issues-order-"));
     directories.push(directory);
@@ -470,6 +640,102 @@ describe("Factory issue store", () => {
       });
       reconcile(store);
       expect(store.detail(issue.id)?.issue.status).toBe("done");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("keeps Won't do through reloads, new thread and PR activity, and merge reconciliation until manually reopened", () => {
+    const directory = mkdtempSync(join(tmpdir(), "factory-issues-wont-do-"));
+    directories.push(directory);
+    const databasePath = join(directory, "factory.sqlite");
+    let store = createIssueStore({ databasePath });
+    const issue = store.create({
+      projectId,
+      title: "Intentionally not doing this",
+      branches: ["feature/wont-do"],
+      pullRequestUrls: [prOne],
+    });
+    const firstThread = thread({
+      threadId: "thread-wont-do",
+      branch: "feature/wont-do",
+    });
+    store.observeThreads({ projectId, threads: [firstThread] });
+    reconcile(store, [pullRequest(prOne, "open")]);
+    store.move({ id: issue.id, status: "wont_do" });
+    store.close();
+
+    store = createIssueStore({ databasePath });
+    try {
+      expect(store.detail(issue.id)?.issue.status).toBe("wont_do");
+      store.observeThreads({
+        projectId,
+        threads: [
+          thread({
+            ...firstThread,
+            updatedAt: "2026-10-16T10:10:00.000Z",
+          }),
+        ],
+      });
+      store.update({ id: issue.id, pullRequestUrls: [prOne, prTwo] });
+      reconcile(store, [
+        pullRequest(prOne, "open"),
+        pullRequest(prTwo, "open"),
+      ]);
+      expect(store.detail(issue.id)?.issue.status).toBe("wont_do");
+
+      reconcile(store, [
+        pullRequest(prOne, "closed", {
+          mergedAt: "2026-10-16T11:00:00.000Z",
+          updatedAt: "2026-10-16T11:00:00.000Z",
+        }),
+        pullRequest(prTwo, "closed", {
+          updatedAt: "2026-10-16T11:00:00.000Z",
+        }),
+      ]);
+      reconcile(store, [
+        pullRequest(prOne, "closed", {
+          mergedAt: "2026-10-16T11:00:00.000Z",
+          updatedAt: "2026-10-16T11:00:00.000Z",
+        }),
+        pullRequest(prTwo, "open", {
+          updatedAt: "2026-10-16T11:10:00.000Z",
+        }),
+      ]);
+      expect(store.detail(issue.id)?.issue.status).toBe("wont_do");
+
+      reconcile(store, [
+        pullRequest(prOne, "closed", {
+          mergedAt: "2026-10-16T11:00:00.000Z",
+          updatedAt: "2026-10-16T11:00:00.000Z",
+        }),
+        pullRequest(prTwo, "closed", {
+          mergedAt: "2026-10-16T11:20:00.000Z",
+          updatedAt: "2026-10-16T11:20:00.000Z",
+        }),
+      ]);
+      expect(store.detail(issue.id)?.issue.status).toBe("wont_do");
+
+      store.move({ id: issue.id, status: "todo" });
+      store.observeThreads({
+        projectId,
+        threads: [
+          thread({
+            ...firstThread,
+            updatedAt: "2026-10-16T10:20:00.000Z",
+          }),
+        ],
+      });
+      reconcile(store, [
+        pullRequest(prOne, "closed", {
+          mergedAt: "2026-10-16T11:00:00.000Z",
+          updatedAt: "2026-10-16T11:00:00.000Z",
+        }),
+        pullRequest(prTwo, "open", {
+          updatedAt: "2026-10-16T11:30:00.000Z",
+        }),
+      ]);
+      expect(store.detail(issue.id)?.issue.status).toBe("in_progress");
     } finally {
       store.close();
     }

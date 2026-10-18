@@ -50,10 +50,11 @@ type EditValues = {
 type MessageDraft = { text: string; requestId?: string };
 
 const STATUS_LABEL: Record<IssueStatus, string> = {
-  todo: "To do",
-  in_progress: "In progress",
-  needs_attention: "Needs attention",
   done: "Done",
+  wont_do: "Won’t do",
+  needs_attention: "Needs attention",
+  in_progress: "In progress",
+  todo: "To do",
 };
 const REFRESH_INTERVAL_MS = 15_000;
 const THREAD_MESSAGE_LIMIT = 5;

@@ -1554,7 +1554,13 @@ function createRouter(
             branches: z.array(z.string().max(500)).max(50).optional(),
             pullRequestUrls: z.array(z.string().url()).max(50).optional(),
             status: z
-              .enum(["todo", "in_progress", "needs_attention", "done"])
+              .enum([
+                "todo",
+                "in_progress",
+                "needs_attention",
+                "done",
+                "wont_do",
+              ])
               .optional(),
           }),
         )
@@ -1579,7 +1585,13 @@ function createRouter(
         .input(
           z.object({
             id: z.string().trim().min(1),
-            status: z.enum(["todo", "in_progress", "needs_attention", "done"]),
+            status: z.enum([
+              "todo",
+              "in_progress",
+              "needs_attention",
+              "done",
+              "wont_do",
+            ]),
             beforeId: z.string().trim().min(1).optional(),
           }),
         )

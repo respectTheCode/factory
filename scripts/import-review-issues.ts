@@ -10,6 +10,7 @@ const ISSUE_STATUSES = new Set([
   "in_progress",
   "needs_attention",
   "done",
+  "wont_do",
 ]);
 
 const TABLES = {
@@ -462,7 +463,7 @@ function assertTargetProjects(
   }
 }
 
-/** Import only the four Factory issue tables from offline SQLite snapshots. */
+/** Import only the Factory issue tables from offline SQLite snapshots. */
 export function importReviewIssues({
   sourceDatabasePath,
   targetDatabasePath,
