@@ -94,6 +94,11 @@ export type IssueMoveInput = {
   beforeId?: string;
 };
 
+export type IssueMergeInput = {
+  sourceId: string;
+  targetId: string;
+};
+
 export type IssueThreadObservation = {
   sourceId: string;
   threadId: string;
@@ -164,6 +169,7 @@ export type IssueStore = {
   create(input: IssueCreateInput): Issue;
   update(input: IssueUpdateInput): Issue;
   move(input: IssueMoveInput): Issue;
+  merge(input: IssueMergeInput): Issue;
   remove(id: string): { id: string };
   discoverThreads(input: {
     projectId: string;
@@ -455,6 +461,32 @@ function statusAfterPullRequestEvent(
     return derived;
   }
   return "in_progress";
+}
+
+function mergedDescription(target: IssueRow, source: IssueRow): string {
+  const sections = [
+    {
+      description: target.description.trim(),
+      heading: `### Description from ${target.simpleId} — ${target.title}`,
+    },
+    {
+      description: source.description.trim(),
+      heading: `### Description from ${source.simpleId} — ${source.title}`,
+    },
+  ]
+    .filter((section) => section.description.length > 0)
+    .map(({ description, heading }) => `${heading}\n\n${description}`);
+  return sections.join("\n\n");
+}
+
+function threadFingerprint(thread: IssueThreadRow): string {
+  return digest({
+    branch: thread.branch,
+    current: thread.current,
+    state: thread.state,
+    title: thread.title,
+    updatedAt: thread.updatedAt,
+  });
 }
 
 function withTransaction<T>(database: Database, operation: () => T): T {
@@ -900,6 +932,319 @@ export function createIssueStore({
         writeStatusOrder(database, input.status, targetIds);
       });
       return get(input.id);
+    },
+
+    merge(input) {
+      if (input.sourceId === input.targetId) {
+        throw new Error("An issue cannot be merged into itself.");
+      }
+
+      const targetId = input.targetId;
+      const sourceId = input.sourceId;
+      withTransaction(database, () => {
+        const target = readIssueRow(database, targetId);
+        const source = readIssueRow(database, sourceId);
+        if (!source) throw new Error(`Issue ${sourceId} does not exist.`);
+        if (!target) throw new Error(`Issue ${targetId} does not exist.`);
+        if (source.projectId !== target.projectId) {
+          throw new Error("Issues can only be merged within the same project.");
+        }
+
+        const labels = cleanList([
+          ...parseJsonList(target.labelsJson),
+          ...parseJsonList(source.labelsJson),
+        ]);
+        const branches = cleanList([
+          ...parseJsonList(target.branchesJson),
+          ...parseJsonList(source.branchesJson),
+        ]);
+        const targetUrls = parseJsonList(target.pullRequestUrlsJson);
+        const sourceUrls = parseJsonList(source.pullRequestUrlsJson);
+        const pullRequestUrls = [...new Set([...targetUrls, ...sourceUrls])];
+        const description = mergedDescription(target, source);
+        if (
+          labels.length > 50 ||
+          labels.some((label) => label.length > 100) ||
+          branches.length > 50 ||
+          branches.some((branch) => branch.length > 500) ||
+          pullRequestUrls.length > 50 ||
+          description.length > 20_000
+        ) {
+          throw new Error(
+            "These issues contain more combined labels, branches, pull requests, or description text than Factory supports. Remove some data before merging.",
+          );
+        }
+
+        const targetThreadByIdentity = new Map(
+          readThreadRows(database, targetId).map((thread) => [
+            JSON.stringify([thread.sourceId, thread.threadId]),
+            thread,
+          ]),
+        );
+        let hasAddedThreadAssociation = false;
+        let hasNewThreadEvent = false;
+        const sourceThreads = readThreadRows(database, sourceId);
+        for (const thread of sourceThreads) {
+          const identity = JSON.stringify([thread.sourceId, thread.threadId]);
+          const existing = targetThreadByIdentity.get(identity);
+          const sourceIsNewer =
+            existing === undefined ||
+            Date.parse(thread.updatedAt) > Date.parse(existing.updatedAt);
+          if (sourceIsNewer) {
+            const fingerprint = threadFingerprint(thread);
+            hasNewThreadEvent ||= thread.eventFingerprint !== fingerprint;
+            if (Date.parse(thread.updatedAt) > Date.parse(target.updatedAt)) {
+              hasNewThreadEvent ||= true;
+            }
+            hasAddedThreadAssociation ||= existing === undefined;
+            database
+              .query(
+                `INSERT INTO factory_issue_threads
+                   (issue_id, source_id, thread_id, title, branch, repository,
+                    state, current, updated_at, event_fingerprint)
+                 VALUES ($issueId, $sourceId, $threadId, $title, $branch,
+                    $repository, $state, $current, $updatedAt, $fingerprint)
+                 ON CONFLICT(issue_id, source_id, thread_id) DO UPDATE SET
+                    title = excluded.title, branch = excluded.branch,
+                    repository = excluded.repository, state = excluded.state,
+                    current = excluded.current, updated_at = excluded.updated_at,
+                    event_fingerprint = excluded.event_fingerprint`,
+              )
+              .run({
+                $branch: thread.branch,
+                $current: thread.current,
+                $fingerprint: fingerprint,
+                $issueId: targetId,
+                $repository: thread.repository,
+                $sourceId: thread.sourceId,
+                $state: thread.state,
+                $threadId: thread.threadId,
+                $title: thread.title,
+                $updatedAt: thread.updatedAt,
+              });
+            targetThreadByIdentity.set(identity, {
+              ...thread,
+              issueId: targetId,
+              eventFingerprint: fingerprint,
+            });
+          }
+          database
+            .query(
+              `DELETE FROM factory_issue_threads
+                WHERE issue_id = $issueId AND source_id = $sourceId
+                  AND thread_id = $threadId`,
+            )
+            .run({
+              $issueId: sourceId,
+              $sourceId: thread.sourceId,
+              $threadId: thread.threadId,
+            });
+        }
+
+        const readPullRequestRows = (issueId: string): PullRequestRow[] =>
+          database
+            .query(
+              `SELECT issue_id AS issueId, url, state, merged,
+                      updated_at AS updatedAt, merged_at AS mergedAt,
+                      event_fingerprint AS eventFingerprint
+                 FROM factory_issue_pull_requests WHERE issue_id = $issueId`,
+            )
+            .all({ $issueId: issueId }) as PullRequestRow[];
+        const targetPullRequests = new Map(
+          readPullRequestRows(targetId).map((pullRequest) => [
+            pullRequest.url,
+            pullRequest,
+          ]),
+        );
+        const previousTargetPullRequests = new Map(targetPullRequests);
+        let pullRequestChanged = false;
+        let pullRequestStateChanged = false;
+        let reopenedPullRequest = false;
+        const sourcePullRequests = readPullRequestRows(sourceId);
+        for (const pullRequest of sourcePullRequests) {
+          const previous = targetPullRequests.get(pullRequest.url);
+          const sourceIsNewer =
+            previous === undefined ||
+            Date.parse(pullRequest.updatedAt) >
+              Date.parse(previous.updatedAt) ||
+            (pullRequest.updatedAt === previous.updatedAt &&
+              pullRequest.merged === 1 &&
+              previous.merged !== 1);
+          if (sourceIsNewer) {
+            database
+              .query(
+                `INSERT INTO factory_issue_pull_requests
+                   (issue_id, url, state, merged, updated_at, merged_at,
+                    event_fingerprint)
+                 VALUES ($issueId, $url, $state, $merged, $updatedAt,
+                    $mergedAt, $eventFingerprint)
+                 ON CONFLICT(issue_id, url) DO UPDATE SET
+                    state = excluded.state, merged = excluded.merged,
+                    updated_at = excluded.updated_at,
+                    merged_at = excluded.merged_at,
+                    event_fingerprint = excluded.event_fingerprint`,
+              )
+              .run({
+                $eventFingerprint: pullRequest.eventFingerprint,
+                $issueId: targetId,
+                $merged: pullRequest.merged,
+                $mergedAt: pullRequest.mergedAt,
+                $state: pullRequest.state,
+                $updatedAt: pullRequest.updatedAt,
+                $url: pullRequest.url,
+              });
+            targetPullRequests.set(pullRequest.url, {
+              ...pullRequest,
+              issueId: targetId,
+            });
+            const previousTarget = previousTargetPullRequests.get(
+              pullRequest.url,
+            );
+            pullRequestChanged ||=
+              previousTarget === undefined ||
+              previousTarget.eventFingerprint !== pullRequest.eventFingerprint;
+            if (previousTarget) {
+              pullRequestStateChanged ||=
+                previousTarget.state !== pullRequest.state ||
+                previousTarget.merged !== pullRequest.merged;
+              reopenedPullRequest ||=
+                previousTarget.state === "closed" &&
+                pullRequest.state === "open";
+            }
+          }
+        }
+
+        const newlyLinkedPullRequest = sourceUrls.some(
+          (url) => !targetUrls.includes(url),
+        );
+        const effectivePullRequests = [...targetPullRequests.values()];
+        const allPullRequestsMerged =
+          pullRequestUrls.length > 0 &&
+          effectivePullRequests.length === pullRequestUrls.length &&
+          effectivePullRequests.every(
+            (pullRequest) => pullRequest.merged === 1,
+          );
+        const targetIsWontDo =
+          target.status === "wont_do" || target.manualStatus === "wont_do";
+        if (
+          targetIsWontDo &&
+          pullRequestUrls.some((url) => {
+            const pullRequest = targetPullRequests.get(url);
+            return (
+              !pullRequest ||
+              (pullRequest.state !== "closed" && pullRequest.merged !== 1)
+            );
+          })
+        ) {
+          throw new Error(
+            "An issue can be marked Won’t do only when every Pull Request is confirmed closed or merged.",
+          );
+        }
+
+        const targetThreads = [...targetThreadByIdentity.values()];
+        const hasFreshWorkingThread = targetThreads.some(
+          (thread) => thread.state === "working" && thread.current === 1,
+        );
+        let nextStatus = target.status;
+        let nextManualStatus = target.manualStatus;
+        if (targetIsWontDo) {
+          nextStatus = "wont_do";
+          nextManualStatus = "wont_do";
+        } else if (target.status === "done") {
+          if (newlyLinkedPullRequest || pullRequestStateChanged) {
+            nextStatus = allPullRequestsMerged
+              ? "done"
+              : statusAfterPullRequestEvent(
+                  target.status,
+                  pullRequestUrls,
+                  effectivePullRequests,
+                  targetThreads,
+                );
+            if (!allPullRequestsMerged && nextStatus === "done") {
+              nextStatus = "in_progress";
+            }
+            if (!allPullRequestsMerged) nextManualStatus = null;
+          }
+        } else {
+          const manualExpired =
+            nextManualStatus !== null &&
+            nextManualStatus !== "done" &&
+            nextManualStatus !== "wont_do" &&
+            (pullRequestChanged || hasNewThreadEvent);
+          const shouldReconcile = nextManualStatus === null || manualExpired;
+          if (manualExpired) nextManualStatus = null;
+          if (shouldReconcile) {
+            if (allPullRequestsMerged) {
+              nextStatus = "done";
+            } else if (hasFreshWorkingThread) {
+              nextStatus = "in_progress";
+            } else if (newlyLinkedPullRequest || reopenedPullRequest) {
+              nextStatus = statusAfterPullRequestEvent(
+                target.status,
+                pullRequestUrls,
+                effectivePullRequests,
+                targetThreads,
+              );
+            } else if (
+              hasAddedThreadAssociation ||
+              hasNewThreadEvent ||
+              pullRequestChanged
+            ) {
+              nextStatus = statusFromObservations(
+                target.status,
+                pullRequestUrls,
+                effectivePullRequests,
+                targetThreads,
+              );
+            }
+          }
+        }
+
+        const now = clock().toISOString();
+        database
+          .query(
+            `UPDATE factory_issues SET description = $description,
+               labels_json = $labels, branches_json = $branches,
+               pull_request_urls_json = $pullRequests, status = $status,
+               manual_status = $manualStatus, updated_at = $updatedAt
+             WHERE id = $id`,
+          )
+          .run({
+            $branches: JSON.stringify(branches),
+            $description: description,
+            $id: targetId,
+            $labels: JSON.stringify(labels),
+            $manualStatus: nextManualStatus,
+            $pullRequests: JSON.stringify(pullRequestUrls),
+            $status: nextStatus,
+            $updatedAt: now,
+          });
+
+        database
+          .query(
+            `UPDATE factory_issue_discovery_receipts SET issue_id = $targetId
+              WHERE issue_id = $sourceId`,
+          )
+          .run({ $sourceId: sourceId, $targetId: targetId });
+        database.query("DELETE FROM factory_issues WHERE id = $id").run({
+          $id: sourceId,
+        });
+
+        if (nextStatus !== target.status) {
+          appendToStatusOrder(database, targetId, target.status, nextStatus);
+        }
+        if (
+          nextStatus === target.status ||
+          (source.status !== target.status && source.status !== nextStatus)
+        ) {
+          writeStatusOrder(
+            database,
+            source.status,
+            readIssueIdsForStatus(database, source.status),
+          );
+        }
+      });
+      return get(targetId);
     },
 
     remove(id) {

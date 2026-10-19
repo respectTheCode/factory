@@ -1612,6 +1612,30 @@ function createRouter(
             });
           }
         }),
+      merge: humanProcedure()
+        .input(
+          z.object({
+            sourceId: z.string().trim().min(1),
+            targetId: z.string().trim().min(1),
+          }),
+        )
+        .use(serializedMutation)
+        .mutation(({ input }) => {
+          try {
+            return issueStore.merge(input);
+          } catch (error) {
+            const message =
+              error instanceof Error
+                ? error.message
+                : "Issues could not be merged.";
+            throw new TRPCError({
+              code: message.includes("does not exist")
+                ? "NOT_FOUND"
+                : "BAD_REQUEST",
+              message,
+            });
+          }
+        }),
       remove: humanProcedure()
         .input(z.object({ id: z.string().trim().min(1) }))
         .use(serializedMutation)

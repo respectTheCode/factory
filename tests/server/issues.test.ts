@@ -1702,4 +1702,84 @@ describe("Factory issue routes", () => {
       await server.stop();
     }
   });
+
+  test("merges issues through the authenticated human endpoint", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "factory-issues-merge-rpc-"));
+    directories.push(directory);
+    const server = createFactoryServer({
+      databasePath: join(directory, "factory.sqlite"),
+      port: 0,
+      operator: { name: "test-operator", secret: "test-operator-secret" },
+    });
+    const socket = await openAuthenticatedSocket(server);
+    let requestId = 1;
+    try {
+      const project = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: { input: { name: "Merge App" }, path: "projects.create" },
+        }),
+      );
+      const target = data<{ id: string; simpleId: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { projectId: project.id, title: "Keep this" },
+            path: "issues.create",
+          },
+        }),
+      );
+      const source = data<{ id: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: {
+              description: "Source detail",
+              labels: ["merge-me"],
+              projectId: project.id,
+              title: "Remove this",
+            },
+            path: "issues.create",
+          },
+        }),
+      );
+
+      const merged = data<{
+        id: string;
+        labels: string[];
+        simpleId: string;
+        title: string;
+      }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { sourceId: source.id, targetId: target.id },
+            path: "issues.merge",
+          },
+        }),
+      );
+      expect(merged).toMatchObject({
+        id: target.id,
+        labels: ["merge-me"],
+        simpleId: target.simpleId,
+        title: "Keep this",
+      });
+
+      const listed = data<Array<{ id: string }>>(
+        await request(socket, {
+          id: requestId++,
+          method: "query",
+          params: { input: { projectId: project.id }, path: "issues.list" },
+        }),
+      );
+      expect(listed.map(({ id }) => id)).toEqual([target.id]);
+    } finally {
+      socket.close();
+      await server.stop();
+    }
+  });
 });

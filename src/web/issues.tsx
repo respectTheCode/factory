@@ -20,6 +20,7 @@ import type {
 } from "../issues";
 import type { FactoryRouter } from "../server";
 import { issueHasUnresolvedPullRequests } from "./issue-completion";
+import { issueMergeCandidates, issueMergeConfirmation } from "./issue-merge";
 import {
   groupIssues,
   ISSUE_STATUSES,
@@ -190,6 +191,10 @@ export function IssuesPage({
   const [editValues, setEditValues] = useState<EditValues | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveBusy, setSaveBusy] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeTargetId, setMergeTargetId] = useState("");
+  const [mergeError, setMergeError] = useState<string | null>(null);
+  const [mergeBusy, setMergeBusy] = useState(false);
   const [messageDrafts, setMessageDrafts] = useState<
     Record<string, MessageDraft>
   >({});
@@ -214,6 +219,7 @@ export function IssuesPage({
   const activeIssueIdRef = useRef(activeIssueId);
   const activeSends = useRef(new Set<string>());
   const moveBusyRef = useRef(false);
+  const mergeBusyRef = useRef(false);
   const issueDrag = useRef<{
     id: string;
     startX: number;
@@ -549,6 +555,9 @@ export function IssuesPage({
 
   const selectIssue = (issue: Issue) => {
     setActiveIssueId(issue.id);
+    setMergeOpen(false);
+    setMergeTargetId("");
+    setMergeError(null);
     setEditorMode(null);
     setEditValues(null);
     setSaveError(null);
@@ -585,6 +594,7 @@ export function IssuesPage({
 
   const startEdit = () => {
     if (!detailIssue) return;
+    setMergeOpen(false);
     setEditorMode("edit");
     setEditValues(issueEditValues(detailIssue));
     setSaveError(null);
@@ -661,6 +671,52 @@ export function IssuesPage({
     }
   };
 
+  const mergeIssue = async () => {
+    if (!client || !canMutate || !detailIssue || mergeBusyRef.current) return;
+    const target = issueMergeCandidates(issues ?? [], detailIssue).find(
+      (issue) => issue.id === mergeTargetId,
+    );
+    if (!target) {
+      setMergeError("Choose another issue in this project to keep.");
+      return;
+    }
+    if (!window.confirm(issueMergeConfirmation(detailIssue, target))) return;
+
+    mergeBusyRef.current = true;
+    setMergeBusy(true);
+    setMergeError(null);
+    try {
+      const survivor = await client.issues.merge.mutate({
+        sourceId: detailIssue.id,
+        targetId: target.id,
+      });
+      setIssues((current) =>
+        current
+          ? current
+              .filter((issue) => issue.id !== detailIssue.id)
+              .map((issue) => (issue.id === survivor.id ? survivor : issue))
+          : [survivor],
+      );
+      listGeneration.current += 1;
+      detailGeneration.current += 1;
+      activeIssueIdRef.current = survivor.id;
+      setActiveIssueId(survivor.id);
+      setDetail(null);
+      setDetailLoading(false);
+      setDetailError(null);
+      setMergeOpen(false);
+      setMergeTargetId("");
+      setMobileDetailOpen(true);
+      void refreshIssues();
+      void refreshDetail(survivor.id);
+    } catch (error) {
+      setMergeError(errorText(error));
+    } finally {
+      mergeBusyRef.current = false;
+      setMergeBusy(false);
+    }
+  };
+
   const updateMessageDraft = (key: string, text: string) => {
     setMessageDrafts((current) => ({ ...current, [key]: { text } }));
     setMessageErrors((current) => {
@@ -712,6 +768,9 @@ export function IssuesPage({
 
   const issueForPanel = detailIssue;
   const detailForPanel = detail?.issue.id === issueForPanel?.id ? detail : null;
+  const mergeCandidates = issueForPanel
+    ? issueMergeCandidates(issues ?? [], issueForPanel)
+    : [];
   const selectedProject = projects.find(
     (project) => project.id === issueForPanel?.projectId,
   );
@@ -1106,6 +1165,87 @@ export function IssuesPage({
                     </button>
                   )}
                 </div>
+                {canMutate && (
+                  <div className="issue-merge-controls">
+                    {mergeOpen ? (
+                      <>
+                        <label className="issue-field">
+                          <span>Keep this issue</span>
+                          <select
+                            disabled={mergeBusy}
+                            onChange={(event) => {
+                              setMergeTargetId(event.target.value);
+                              setMergeError(null);
+                            }}
+                            value={mergeTargetId}
+                          >
+                            <option value="">
+                              Choose an issue in this project
+                            </option>
+                            {mergeCandidates.map((candidate) => (
+                              <option key={candidate.id} value={candidate.id}>
+                                {candidate.simpleId} · {candidate.title}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {mergeCandidates.length === 0 && (
+                          <p className="issue-muted">
+                            No other issues in this project.
+                          </p>
+                        )}
+                        <p className="issue-muted">
+                          The selected issue keeps its title and ID. This issue
+                          will be removed after its details, links, and activity
+                          are combined.
+                        </p>
+                        {mergeError && (
+                          <p className="issue-form-error" role="alert">
+                            {mergeError}
+                          </p>
+                        )}
+                        <div className="issue-merge-actions">
+                          <button
+                            className="secondary"
+                            disabled={mergeBusy}
+                            onClick={() => {
+                              setMergeOpen(false);
+                              setMergeError(null);
+                            }}
+                            type="button"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            className="issues-primary-button"
+                            disabled={
+                              mergeBusy ||
+                              !mergeTargetId ||
+                              mergeCandidates.length === 0
+                            }
+                            onClick={() => void mergeIssue()}
+                            type="button"
+                          >
+                            {mergeBusy ? "Merging…" : "Merge issue"}
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <button
+                        className="secondary"
+                        disabled={mergeBusy}
+                        onClick={() => {
+                          setMergeOpen(true);
+                          setMergeTargetId("");
+                          setMergeError(null);
+                        }}
+                        type="button"
+                      >
+                        Merge issue
+                      </button>
+                    )}
+                  </div>
+                )}
                 <div className="issue-detail-section">
                   <h3>Description</h3>
                   {issueForPanel.description ? (

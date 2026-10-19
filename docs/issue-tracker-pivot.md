@@ -41,6 +41,15 @@ Match threads by project repository and branch within their configured T3 source
 persist when thread metadata changes. Multiple branches, threads, and PRs are supported.
 Thread messages stay scoped to authenticated humans; credentials never reach the browser.
 
+Humans can merge an issue into another issue in the same Project from its detail panel.
+The confirmation identifies the issue being removed and the issue being kept. Keep the
+destination's ID and title; combine labels, branches, PR links and evidence, descriptions
+with source attribution, and T3 thread associations. Move discovery receipts to the
+destination so subsequent discovery and restarts do not recreate the removed issue.
+Apply the existing status rules to the combined evidence, preserving manual choices when
+the merge adds no relevant new evidence. A merge is atomic; invalid destinations leave
+both issues unchanged.
+
 ## Status rules
 
 - To do: no work has started, or a manual move places the issue here.

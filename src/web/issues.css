@@ -83,6 +83,7 @@
 .issue-back-button,
 .issue-editor-actions button,
 .issue-reply-form button,
+.issue-merge-actions button,
 .issues-error button,
 .issue-no-results button {
   align-items: center;
@@ -839,6 +840,21 @@
   margin-top: 12px;
 }
 
+.issue-merge-controls {
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 0;
+}
+
+.issue-merge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .issue-detail-section {
   border-bottom: 1px solid var(--rule);
   padding: 14px 0;
@@ -1349,6 +1365,11 @@
 
   .issue-detail-actions button {
     flex: 1 1 auto;
+  }
+
+  .issue-merge-actions button {
+    flex: 1 1 auto;
+    min-height: 44px;
   }
 
   .issue-reply-form {

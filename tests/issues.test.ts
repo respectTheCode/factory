@@ -448,6 +448,268 @@ describe("Factory issue store", () => {
     }
   });
 
+  test("merges issue data and observations into the kept issue across restarts", () => {
+    const directory = mkdtempSync(join(tmpdir(), "factory-issues-merge-"));
+    directories.push(directory);
+    const databasePath = join(directory, "factory.sqlite");
+    let store = createIssueStore({ databasePath });
+    try {
+      const target = store.create({
+        branches: ["feature/keep"],
+        description: "Keep description",
+        labels: ["shared", "keep"],
+        projectId,
+        pullRequestUrls: [prOne],
+        title: "Kept title",
+      });
+      const targetThread = thread({
+        branch: "feature/keep",
+        current: false,
+        threadId: "thread-keep",
+        updatedAt: "2026-10-16T10:00:00.000Z",
+      });
+      store.observeThreads({ projectId, threads: [targetThread] });
+
+      const [sourceId] = store.discoverThreads({
+        freshSourceIds: ["source-a"],
+        notBefore: "2026-10-15T00:00:00.000Z",
+        projectId,
+        threads: [
+          thread({
+            branch: "feature/source",
+            threadId: "thread-source",
+            title: "Source activity",
+            updatedAt: "2026-10-16T10:30:00.000Z",
+          }),
+        ],
+      });
+      expect(sourceId).toBeDefined();
+      const source = store.update({
+        branches: ["feature/source"],
+        description: "Source description",
+        id: sourceId!,
+        labels: ["shared", "source"],
+        pullRequestUrls: [prTwo],
+      });
+
+      reconcile(store, [
+        pullRequest(prOne, "closed", {
+          mergedAt: "2026-10-16T11:00:00.000Z",
+          updatedAt: "2026-10-16T11:00:00.000Z",
+        }),
+        pullRequest(prTwo, "open", { updatedAt: "2026-10-16T11:30:00.000Z" }),
+      ]);
+      expect(store.update({ id: target.id, status: "done" }).status).toBe(
+        "done",
+      );
+
+      const survivor = store.merge({
+        sourceId: source.id,
+        targetId: target.id,
+      });
+      expect(survivor).toMatchObject({
+        branches: ["feature/keep", "feature/source"],
+        id: target.id,
+        labels: ["shared", "keep", "source"],
+        pullRequestUrls: [prOne, prTwo],
+        simpleId: target.simpleId,
+        status: "in_progress",
+        title: "Kept title",
+      });
+      expect(survivor.description).toContain(
+        `Description from ${target.simpleId} — Kept title`,
+      );
+      expect(survivor.description).toContain("Keep description");
+      expect(survivor.description).toContain(
+        `Description from ${source.simpleId} — ${source.title}`,
+      );
+      expect(survivor.description).toContain("Source description");
+      expect(survivor.pullRequests).toEqual([
+        expect.objectContaining({ url: prOne, state: "merged", merged: true }),
+        expect.objectContaining({ url: prTwo, state: "open", merged: false }),
+      ]);
+      expect(
+        store
+          .detail(target.id)
+          ?.threads.map(({ threadId }) => threadId)
+          .sort(),
+      ).toEqual(["thread-keep", "thread-source"]);
+      expect(store.list({ projectId }).map(({ id }) => id)).toEqual([
+        target.id,
+      ]);
+
+      store.close();
+      const database = new Database(databasePath, { readonly: true });
+      try {
+        expect(
+          database
+            .query(
+              `SELECT issue_id AS issueId FROM factory_issue_discovery_receipts
+                 WHERE project_id = $projectId AND thread_id = $threadId`,
+            )
+            .get({ $projectId: projectId, $threadId: "thread-source" }),
+        ).toEqual({ issueId: target.id });
+      } finally {
+        database.close();
+      }
+
+      store = createIssueStore({ databasePath });
+      expect(
+        store.discoverThreads({
+          freshSourceIds: ["source-a"],
+          notBefore: "2026-10-15T00:00:00.000Z",
+          projectId,
+          threads: [
+            thread({
+              branch: "feature/source",
+              threadId: "thread-source",
+              title: "Source activity",
+              updatedAt: "2026-10-16T10:30:00.000Z",
+            }),
+          ],
+        }),
+      ).toEqual([]);
+      expect(store.list({ projectId }).map(({ id }) => id)).toEqual([
+        target.id,
+      ]);
+      expect(store.detail(target.id)?.threads).toContainEqual(
+        expect.objectContaining({ threadId: "thread-source" }),
+      );
+      reconcile(store, [
+        pullRequest(prOne, "closed", {
+          mergedAt: "2026-10-16T11:00:00.000Z",
+          updatedAt: "2026-10-16T11:00:00.000Z",
+        }),
+        pullRequest(prTwo, "open", { updatedAt: "2026-10-16T11:30:00.000Z" }),
+      ]);
+      expect(store.detail(target.id)?.issue.status).toBe("in_progress");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("preserves a kept manual status through unchanged transferred thread evidence", () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "factory-issues-merge-manual-status-"),
+    );
+    directories.push(directory);
+    const databasePath = join(directory, "factory.sqlite");
+    let store = createIssueStore({ databasePath });
+    try {
+      const target = store.create({ projectId, title: "Manual To do" });
+      store.update({ id: target.id, status: "todo" });
+      const [sourceId] = store.discoverThreads({
+        freshSourceIds: ["source-a"],
+        notBefore: "2026-10-15T00:00:00.000Z",
+        projectId,
+        threads: [
+          thread({
+            branch: "feature/source",
+            threadId: "thread-source",
+            updatedAt: "2026-10-16T10:00:00.000Z",
+          }),
+        ],
+      });
+      expect(sourceId).toBeDefined();
+      reconcile(store, [], true, ["source-a"]);
+      expect(
+        store.merge({ sourceId: sourceId!, targetId: target.id }).status,
+      ).toBe("todo");
+
+      store.close();
+      store = createIssueStore({ databasePath });
+      reconcile(store, [], true, ["source-a"]);
+      expect(store.detail(target.id)?.issue.status).toBe("todo");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("reopens a Done issue for a new PR despite a stale working thread", () => {
+    const store = makeStore();
+    try {
+      const target = store.create({
+        projectId,
+        pullRequestUrls: [prOne],
+        title: "Previously done",
+      });
+      store.observeThreads({
+        projectId,
+        threads: [
+          thread({
+            current: false,
+            threadId: "stale-working-thread",
+            updatedAt: "2026-10-16T10:00:00.000Z",
+          }),
+        ],
+      });
+      const source = store.create({
+        projectId,
+        pullRequestUrls: [prTwo],
+        title: "New PR",
+      });
+      reconcile(store, [
+        pullRequest(prOne, "closed", {
+          mergedAt: "2026-10-16T11:00:00.000Z",
+        }),
+        pullRequest(prTwo, "open", { updatedAt: "2026-10-16T12:00:00.000Z" }),
+      ]);
+      store.update({ id: target.id, status: "done" });
+
+      expect(
+        store.merge({ sourceId: source.id, targetId: target.id }).status,
+      ).toBe("in_progress");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("rejects invalid and oversized merges without partial changes", () => {
+    const store = makeStore();
+    try {
+      const target = store.create({ projectId, title: "Target" });
+      const source = store.create({ projectId, title: "Source" });
+      const otherProjectIssue = store.create({
+        projectId: "project-2",
+        title: "Other project issue",
+      });
+      const oversizedTarget = store.create({
+        labels: Array.from({ length: 30 }, (_, index) => `target-${index}`),
+        projectId,
+        title: "Large target",
+      });
+      const oversizedSource = store.create({
+        labels: Array.from({ length: 30 }, (_, index) => `source-${index}`),
+        projectId,
+        title: "Large source",
+      });
+      const before = store.list();
+
+      expect(() =>
+        store.merge({ sourceId: target.id, targetId: target.id }),
+      ).toThrow("cannot be merged into itself");
+      expect(() =>
+        store.merge({ sourceId: "missing-source", targetId: target.id }),
+      ).toThrow("does not exist");
+      expect(() =>
+        store.merge({ sourceId: source.id, targetId: "missing-target" }),
+      ).toThrow("does not exist");
+      expect(() =>
+        store.merge({ sourceId: otherProjectIssue.id, targetId: target.id }),
+      ).toThrow("same project");
+      expect(() =>
+        store.merge({
+          sourceId: oversizedSource.id,
+          targetId: oversizedTarget.id,
+        }),
+      ).toThrow("Factory supports");
+
+      expect(store.list()).toEqual(before);
+    } finally {
+      store.close();
+    }
+  });
+
   test("derives working and attention from every associated branch thread", () => {
     const store = makeStore();
     try {
