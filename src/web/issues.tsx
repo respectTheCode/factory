@@ -59,12 +59,8 @@ const STATUS_LABEL: Record<IssueStatus, string> = {
 const REFRESH_INTERVAL_MS = 15_000;
 const THREAD_MESSAGE_LIMIT = 5;
 
-function isManualTerminalStatus(status: IssueStatus): boolean {
-  return status === "done" || status === "wont_do";
-}
-
-function terminalStatusEvidenceError(status: IssueStatus): string {
-  return `All linked pull requests must be confirmed closed or merged before this issue can be marked ${STATUS_LABEL[status]}.`;
+function wontDoEvidenceError(): string {
+  return "All linked pull requests must be confirmed closed or merged before this issue can be marked Won’t do.";
 }
 
 function statusTone(status: IssueStatus): string {
@@ -402,10 +398,10 @@ export function IssuesPage({
     if (!issue) return;
     if (
       issue.status !== status &&
-      isManualTerminalStatus(status) &&
+      status === "wont_do" &&
       issueHasUnresolvedPullRequests(issue.pullRequestUrls, issue.pullRequests)
     ) {
-      setMoveError(terminalStatusEvidenceError(status));
+      setMoveError(wontDoEvidenceError());
       return;
     }
     if (status === issue.status && beforeId === id) return;
@@ -614,13 +610,13 @@ export function IssuesPage({
     }
     if (
       editorMode === "edit" &&
-      isManualTerminalStatus(editValues.status) &&
+      editValues.status === "wont_do" &&
       issueHasUnresolvedPullRequests(
         parseEntries(editValues.pullRequestUrls),
         detailIssue?.pullRequests ?? [],
       )
     ) {
-      setSaveError(terminalStatusEvidenceError(editValues.status));
+      setSaveError(wontDoEvidenceError());
       return;
     }
     setSaveBusy(true);
@@ -1511,7 +1507,7 @@ function IssueEditor({
         >
           {ISSUE_STATUSES.map((status) => {
             const needsResolvedPullRequests =
-              isManualTerminalStatus(status) && hasUnresolvedPullRequests;
+              status === "wont_do" && hasUnresolvedPullRequests;
             return (
               <option
                 disabled={needsResolvedPullRequests}
@@ -1527,8 +1523,8 @@ function IssueEditor({
         <small>
           {hasPullRequests
             ? hasUnresolvedPullRequests
-              ? "Confirm every linked pull request is closed or merged before marking this issue Done or Won’t do."
-              : "All linked pull requests are confirmed closed or merged. This issue can be marked Done or Won’t do."
+              ? "You can mark this issue Done at any time. A later pull request state change can update its status. Every linked pull request must be closed or merged before marking it Won’t do."
+              : "All linked pull requests are closed or merged. You can mark this issue Done or Won’t do."
             : "Issues without linked pull requests can be marked Done or Won’t do manually."}
         </small>
       </label>

@@ -316,7 +316,7 @@ function appendToStatusOrder(
   writeStatusOrder(database, nextStatus, nextIds);
 }
 
-function assertTerminalStatusAllowed(
+function assertWontDoStatusAllowed(
   database: Database,
   issueId: string,
   pullRequestUrls: string[],
@@ -343,7 +343,7 @@ function assertTerminalStatusAllowed(
     )
   ) {
     throw new Error(
-      "An issue with linked Pull Requests can be marked done or won't do only after every Pull Request is confirmed closed or merged.",
+      "An issue with linked Pull Requests can be marked won't do only after every Pull Request is confirmed closed or merged.",
     );
   }
 }
@@ -733,8 +733,8 @@ export function createIssueStore({
           input.pullRequestUrls === undefined
             ? previousUrls
             : cleanPullRequestUrls(input.pullRequestUrls);
-        if (input.status === "done" || input.status === "wont_do") {
-          assertTerminalStatusAllowed(database, input.id, [
+        if (input.status === "wont_do") {
+          assertWontDoStatusAllowed(database, input.id, [
             ...new Set([...previousUrls, ...nextUrls]),
           ]);
         }
@@ -838,11 +838,8 @@ export function createIssueStore({
 
         const changesStatus = row.status !== input.status;
         const pullRequestUrls = parseJsonList(row.pullRequestUrlsJson);
-        if (
-          changesStatus &&
-          (input.status === "done" || input.status === "wont_do")
-        ) {
-          assertTerminalStatusAllowed(database, input.id, pullRequestUrls);
+        if (changesStatus && input.status === "wont_do") {
+          assertWontDoStatusAllowed(database, input.id, pullRequestUrls);
         }
 
         const targetIds = readIssueIdsForStatus(
@@ -1077,16 +1074,26 @@ export function createIssueStore({
             if (!next.includes(url)) next.push(url);
           }
           if (next.length === existing.length) return;
+          const nextStatus =
+            issue.status === "done" ? "in_progress" : issue.status;
+          const nextManualStatus =
+            issue.manualStatus === "done" ? null : issue.manualStatus;
           database
             .query(
               `UPDATE factory_issues SET pull_request_urls_json = $urls,
+                 status = $status, manual_status = $manualStatus,
                  updated_at = $updatedAt WHERE id = $id`,
             )
             .run({
+              $manualStatus: nextManualStatus,
+              $status: nextStatus,
               $id: issueId,
               $updatedAt: updatedAt,
               $urls: JSON.stringify(next),
             });
+          if (nextStatus !== issue.status) {
+            appendToStatusOrder(database, issueId, issue.status, nextStatus);
+          }
         };
 
         const recordReceipt = (
@@ -1331,15 +1338,31 @@ export function createIssueStore({
               const urls = parseJsonList(issue.pullRequestUrlsJson);
               if (!urls.includes(linkedUrl)) {
                 urls.push(linkedUrl);
+                const nextStatus =
+                  issue.status === "done" ? "in_progress" : issue.status;
+                const nextManualStatus =
+                  issue.manualStatus === "done" ? null : issue.manualStatus;
                 database
                   .query(
-                    "UPDATE factory_issues SET pull_request_urls_json = $urls, updated_at = $updatedAt WHERE id = $id",
+                    `UPDATE factory_issues SET pull_request_urls_json = $urls,
+                       status = $status, manual_status = $manualStatus,
+                       updated_at = $updatedAt WHERE id = $id`,
                   )
                   .run({
                     $id: issueId,
+                    $manualStatus: nextManualStatus,
+                    $status: nextStatus,
                     $updatedAt: now,
                     $urls: JSON.stringify(urls),
                   });
+                if (nextStatus !== issue.status) {
+                  appendToStatusOrder(
+                    database,
+                    issueId,
+                    issue.status,
+                    nextStatus,
+                  );
+                }
                 newlyLinkedPullRequestUrls.add(linkedUrl);
               }
             }
@@ -1397,6 +1420,7 @@ export function createIssueStore({
           let newPullRequest = false;
           let reopenedPullRequest = false;
           let pullRequestChanged = false;
+          let pullRequestStateChanged = false;
           for (const snapshot of snapshots) {
             if (!snapshot?.state || !snapshot.updatedAt) continue;
             const url = parseGitHubPullRequestUrl(snapshot.url).url;
@@ -1405,6 +1429,13 @@ export function createIssueStore({
             if (!previous) {
               newPullRequest = true;
               pullRequestChanged = true;
+            }
+            if (
+              previous &&
+              (previous.state !== snapshot.state ||
+                previous.merged !== Number(merged))
+            ) {
+              pullRequestStateChanged = true;
             }
             if (
               previous &&
@@ -1489,13 +1520,17 @@ export function createIssueStore({
               });
           }
 
-          const linkedPullRequestEvent = newPullRequest || reopenedPullRequest;
+          const linkedPullRequestEvent =
+            reopenedPullRequest ||
+            (newPullRequest && issue.manualStatus !== "done");
           const isWontDo =
             issue.status === "wont_do" || issue.manualStatus === "wont_do";
           const manualExpired =
             !isWontDo &&
             issue.manualStatus !== null &&
-            (pullRequestChanged ||
+            ((issue.manualStatus === "done"
+              ? pullRequestStateChanged
+              : pullRequestChanged) ||
               (issue.manualStatus !== "done" && newThreadEvent));
           const wasDone = issue.status === "done";
           let nextStatus = issue.status;
@@ -1504,7 +1539,7 @@ export function createIssueStore({
             nextStatus = "wont_do";
             nextManualStatus = "wont_do";
           } else if (wasDone) {
-            if (linkedPullRequestEvent) {
+            if (linkedPullRequestEvent || pullRequestStateChanged) {
               nextStatus = allPullRequestsMerged ? "done" : "in_progress";
               if (!allPullRequestsMerged) nextManualStatus = null;
             }

@@ -16,7 +16,7 @@ describe("issue completion evidence", () => {
     expect(issueHasUnresolvedPullRequests([], [])).toBe(false);
   });
 
-  test("blocks new, unavailable, and open PRs when checking either terminal status", () => {
+  test("identifies new, unavailable, and open PRs as unresolved", () => {
     const url = "https://github.com/org/repo/pull/3";
     expect(issueHasUnresolvedPullRequests([url], [])).toBe(true);
     expect(

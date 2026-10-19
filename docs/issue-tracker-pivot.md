@@ -53,9 +53,11 @@ Thread messages stay scoped to authenticated humans; credentials never reach the
   remains until the human moves it elsewhere, regardless of T3 activity or PR events.
 - Done remains Done when threads receive messages or resume work after the merge.
 - A newly linked or reopened PR reopens a Done issue. The human can also move it manually.
-- The human can mark an issue Done or Won’t do when it has no PRs or every linked PR is
-  confirmed closed or merged. Open PRs block both manual terminal statuses; unavailable or
-  missing PR evidence must resolve first. Manual moves back remain until relevant new activity.
+- The human can mark an issue Done regardless of linked PR state, including open PRs or
+  unavailable evidence. Unchanged observations preserve that choice; a later PR state change
+  can update the issue status again. Manual moves back remain until relevant new activity.
+- Won’t do requires no PRs or every linked PR confirmed closed or merged. Open PRs and
+  unavailable or missing PR evidence block this manual status.
 - Failed or unavailable T3/GitHub observations preserve the last known state and expose the
   connection problem. A lost connection is not a stopped thread or a merged PR.
 

@@ -379,7 +379,7 @@ describe("Factory issue store", () => {
     }
   });
 
-  test("keeps status and persisted order unchanged when Done evidence is incomplete", () => {
+  test("allows Done moves with open PRs without changing other issues", () => {
     const store = makeStore();
     try {
       const first = store.create({ projectId, title: "First" });
@@ -390,22 +390,9 @@ describe("Factory issue store", () => {
       });
       const last = store.create({ projectId, title: "Last" });
       reconcile(store, [pullRequest(prOne, "open")]);
-      const before = store.list({ projectId }).map(({ id, status }) => ({
-        id,
-        status,
-      }));
-
-      expect(() => store.move({ id: linked.id, status: "done" })).toThrow(
-        "every Pull Request is confirmed closed or merged",
-      );
-      expect(
-        store.list({ projectId }).map(({ id, status }) => ({ id, status })),
-      ).toEqual(before);
-      expect(before.map(({ id }) => id)).toContain(first.id);
-      expect(before.map(({ id }) => id)).toContain(last.id);
-      expect(before.find(({ id }) => id === linked.id)?.status).not.toBe(
-        "done",
-      );
+      expect(store.move({ id: linked.id, status: "done" }).status).toBe("done");
+      expect(store.detail(first.id)?.issue.status).toBe("todo");
+      expect(store.detail(last.id)?.issue.status).toBe("todo");
     } finally {
       store.close();
     }
@@ -769,7 +756,45 @@ describe("Factory issue store", () => {
     }
   });
 
-  test("blocks terminal transitions until every linked PR is confirmed closed", () => {
+  test("manual Done survives PR baselines and refreshes until a PR state changes", () => {
+    const store = makeStore();
+    try {
+      const issue = store.create({
+        projectId,
+        title: "Manual Done with an unknown PR",
+        pullRequestUrls: [prOne],
+      });
+      expect(store.detail(issue.id)?.issue.pullRequests).toEqual([
+        expect.objectContaining({ url: prOne, state: "unavailable" }),
+      ]);
+
+      expect(store.update({ id: issue.id, status: "done" }).status).toBe(
+        "done",
+      );
+      const openSnapshot = pullRequest(prOne, "open", {
+        updatedAt: "2026-10-16T11:00:00.000Z",
+      });
+      reconcile(store, [openSnapshot]);
+      expect(store.detail(issue.id)?.issue.status).toBe("done");
+
+      reconcile(store, [openSnapshot]);
+      expect(store.detail(issue.id)?.issue.status).toBe("done");
+
+      reconcile(store, [
+        pullRequest(prOne, "open", { updatedAt: "2026-10-16T12:00:00.000Z" }),
+      ]);
+      expect(store.detail(issue.id)?.issue.status).toBe("done");
+
+      reconcile(store, [
+        pullRequest(prOne, "closed", { updatedAt: "2026-10-16T13:00:00.000Z" }),
+      ]);
+      expect(store.detail(issue.id)?.issue.status).toBe("in_progress");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("only blocks Won't do until every linked PR is confirmed closed", () => {
     const store = makeStore();
     try {
       const issue = store.create({
@@ -778,18 +803,19 @@ describe("Factory issue store", () => {
         pullRequestUrls: [prOne],
       });
 
-      const expectBlocked = () => {
-        for (const status of ["done", "wont_do"] as const) {
-          expect(() => store.update({ id: issue.id, status })).toThrow(
-            "every Pull Request is confirmed closed or merged",
-          );
-          expect(() => store.move({ id: issue.id, status })).toThrow(
-            "every Pull Request is confirmed closed or merged",
-          );
-        }
+      const expectWontDoBlocked = () => {
+        expect(() => store.update({ id: issue.id, status: "wont_do" })).toThrow(
+          "every Pull Request is confirmed closed or merged",
+        );
+        expect(() => store.move({ id: issue.id, status: "wont_do" })).toThrow(
+          "every Pull Request is confirmed closed or merged",
+        );
       };
 
-      expectBlocked();
+      expect(store.update({ id: issue.id, status: "done" }).status).toBe(
+        "done",
+      );
+      expectWontDoBlocked();
       expect(store.detail(issue.id)?.issue.pullRequests).toEqual([
         expect.objectContaining({ url: prOne, state: "unavailable" }),
       ]);
@@ -799,20 +825,12 @@ describe("Factory issue store", () => {
           id: issue.id,
           title: "Must roll back",
           pullRequestUrls: [],
-          status: "done",
-        }),
-      ).toThrow("every Pull Request is confirmed closed or merged");
-      expect(() =>
-        store.update({
-          id: issue.id,
-          title: "Must also roll back",
-          pullRequestUrls: [],
           status: "wont_do",
         }),
       ).toThrow("every Pull Request is confirmed closed or merged");
       expect(store.detail(issue.id)?.issue).toMatchObject({
         pullRequestUrls: [prOne],
-        status: "todo",
+        status: "done",
         title: "PR-backed manual completion",
       });
 
@@ -828,18 +846,13 @@ describe("Factory issue store", () => {
         id,
         status,
       }));
-      expectBlocked();
+      expectWontDoBlocked();
       expect(
         store.list({ projectId }).map(({ id, status }) => ({ id, status })),
       ).toEqual(before);
-      for (const status of ["done", "wont_do"] as const) {
-        expect(() =>
-          store.update({ id: issue.id, pullRequestUrls: [], status }),
-        ).toThrow("every Pull Request is confirmed closed or merged");
-      }
       expect(store.detail(issue.id)?.issue).toMatchObject({
         pullRequestUrls: [prOne],
-        status: "in_progress",
+        status: "done",
       });
 
       reconcile(store, [pullRequest(prOne, "closed")]);
@@ -847,13 +860,21 @@ describe("Factory issue store", () => {
         store.update({
           id: issue.id,
           pullRequestUrls: [prOne, prTwo],
-          status: "done",
+          status: "wont_do",
         }),
       ).toThrow("every Pull Request is confirmed closed or merged");
       expect(store.detail(issue.id)?.issue).toMatchObject({
         pullRequestUrls: [prOne],
         status: "in_progress",
       });
+
+      expect(
+        store.update({
+          id: issue.id,
+          pullRequestUrls: [prOne, prTwo],
+          status: "done",
+        }).status,
+      ).toBe("done");
 
       const mixedDoneIssue = store.create({
         projectId,
@@ -1001,6 +1022,7 @@ describe("Factory issue store", () => {
       ]);
       expect(store.detail(issue.id)?.issue.status).toBe("done");
 
+      store.update({ id: issue.id, status: "done" });
       store.observeThreads({
         projectId,
         threads: [
@@ -1011,6 +1033,7 @@ describe("Factory issue store", () => {
           }),
         ],
       });
+      expect(store.detail(issue.id)?.issue.status).toBe("in_progress");
       reconcile(store, [
         pullRequest(prOne, "closed", { mergedAt: "2026-10-16T11:00:00.000Z" }),
         pullRequest(prTwo, "open"),
@@ -1021,8 +1044,8 @@ describe("Factory issue store", () => {
         prTwo,
       ]);
 
-      expect(() => store.update({ id: issue.id, status: "done" })).toThrow(
-        "every Pull Request is confirmed closed or merged",
+      expect(store.update({ id: issue.id, status: "done" }).status).toBe(
+        "done",
       );
       reconcile(store, [
         pullRequest(prOne, "closed", { mergedAt: "2026-10-16T11:00:00.000Z" }),

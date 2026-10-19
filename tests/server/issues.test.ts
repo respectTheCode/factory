@@ -278,6 +278,7 @@ function unmergedGitHubReader(): GitHubStatusReader {
 }
 
 function sourceActivityReader(input: {
+  activityAt?: string;
   projectId: string;
   threads: Array<{
     id: string;
@@ -289,24 +290,25 @@ function sourceActivityReader(input: {
     title: string;
   }>;
 }): T3ActivityReader {
+  const activityAt = input.activityAt ?? fixedNow;
   return {
     async readShell() {
       return {
-        fetchedAt: fixedNow,
+        fetchedAt: activityAt,
         ok: true,
         projects: [
           {
             createdAt: "2026-10-16T10:00:00.000Z",
             id: input.projectId,
             title: input.projectId,
-            updatedAt: fixedNow,
+            updatedAt: activityAt,
             workspaceRoot: "/work/app",
           },
         ],
         sourceDigest: `shell-${input.projectId}`,
         sourceSequence: 3,
         sourceStream: "shell",
-        sourceUpdatedAt: fixedNow,
+        sourceUpdatedAt: activityAt,
         status: "ok",
         threads: input.threads.map((thread) => ({
           branch: thread.branch,
@@ -340,7 +342,7 @@ function sourceActivityReader(input: {
             updatedAt: "2026-10-16T11:01:00.000Z",
           },
           title: thread.title,
-          updatedAt: "2026-10-16T11:01:00.000Z",
+          updatedAt: activityAt,
           worktreePath: "/work/app",
         })),
       } as never;
@@ -384,6 +386,7 @@ describe("Factory issue routes", () => {
         source(
           "auto-discovery",
           sourceActivityReader({
+            activityAt: new Date().toISOString(),
             projectId: "t3-project-auto-discovery",
             threads: [
               {
@@ -1249,7 +1252,7 @@ describe("Factory issue routes", () => {
     }
   });
 
-  test("requires confirmed closed PRs for manual terminal status changes", async () => {
+  test("allows manual Done with open PRs but requires closed PRs for Won't do", async () => {
     const directory = mkdtempSync(join(tmpdir(), "factory-issues-done-rpc-"));
     directories.push(directory);
     const server = createFactoryServer({
@@ -1309,29 +1312,47 @@ describe("Factory issue routes", () => {
         method: "query",
         params: { input: { id: openIssue.id }, path: "issues.detail" },
       });
-      for (const status of ["done", "wont_do"] as const) {
-        const updateResult = await request(socket, {
+      const openDone = data<{ status: string }>(
+        await request(socket, {
           id: requestId++,
           method: "mutation",
           params: {
-            input: { id: openIssue.id, status },
+            input: { id: openIssue.id, status: "done" },
             path: "issues.update",
           },
-        });
-        expect(updateResult.error?.data?.code).toBe("BAD_REQUEST");
-        expect(updateResult.error?.message).toContain(
-          "every Pull Request is confirmed closed or merged",
-        );
-        const moveResult = await request(socket, {
+        }),
+      );
+      expect(openDone.status).toBe("done");
+      await request(socket, {
+        id: requestId++,
+        method: "mutation",
+        params: {
+          input: { id: openIssue.id, status: "todo" },
+          path: "issues.update",
+        },
+      });
+      const movedDone = data<{ status: string }>(
+        await request(socket, {
           id: requestId++,
           method: "mutation",
           params: {
-            input: { id: openIssue.id, status },
+            input: { id: openIssue.id, status: "done" },
             path: "issues.move",
           },
+        }),
+      );
+      expect(movedDone.status).toBe("done");
+      for (const path of ["issues.update", "issues.move"] as const) {
+        const result = await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { id: openIssue.id, status: "wont_do" },
+            path,
+          },
         });
-        expect(moveResult.error?.data?.code).toBe("BAD_REQUEST");
-        expect(moveResult.error?.message).toContain(
+        expect(result.error?.data?.code).toBe("BAD_REQUEST");
+        expect(result.error?.message).toContain(
           "every Pull Request is confirmed closed or merged",
         );
       }
@@ -1373,18 +1394,30 @@ describe("Factory issue routes", () => {
           },
         }),
       );
-      for (const status of ["done", "wont_do"] as const) {
-        for (const path of ["issues.update", "issues.move"] as const) {
-          const result = await request(socket, {
-            id: requestId++,
-            method: "mutation",
-            params: { input: { id: unresolvedIssue.id, status }, path },
-          });
-          expect(result.error?.data?.code).toBe("BAD_REQUEST");
-          expect(result.error?.message).toContain(
-            "every Pull Request is confirmed closed or merged",
-          );
-        }
+      const unknownDone = data<{ status: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { id: unresolvedIssue.id, status: "done" },
+            path: "issues.update",
+          },
+        }),
+      );
+      expect(unknownDone.status).toBe("done");
+      for (const path of ["issues.update", "issues.move"] as const) {
+        const result = await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { id: unresolvedIssue.id, status: "wont_do" },
+            path,
+          },
+        });
+        expect(result.error?.data?.code).toBe("BAD_REQUEST");
+        expect(result.error?.message).toContain(
+          "every Pull Request is confirmed closed or merged",
+        );
       }
     } finally {
       socket.close();
@@ -1540,7 +1573,7 @@ describe("Factory issue routes", () => {
     }
   });
 
-  test("rejects invalid move anchors and unconfirmed Done moves atomically", async () => {
+  test("rejects invalid move anchors and preserves the Won't do guard", async () => {
     const directory = mkdtempSync(
       join(tmpdir(), "factory-issues-move-guard-rpc-"),
     );
@@ -1622,17 +1655,23 @@ describe("Factory issue routes", () => {
       expect(invalidAnchor.error?.data?.code).toBe("BAD_REQUEST");
       expect(invalidAnchor.error?.message).toContain("destination status");
 
-      const unconfirmedDone = await request(socket, {
-        id: requestId++,
-        method: "mutation",
-        params: {
-          input: { id: linked.id, status: "done" },
-          path: "issues.move",
-        },
-      });
-      expect(unconfirmedDone.error?.data?.code).toBe("BAD_REQUEST");
-      expect(unconfirmedDone.error?.message).toContain(
-        "every Pull Request is confirmed closed or merged",
+      const manualDone = data<{ id: string; status: string }>(
+        await request(socket, {
+          id: requestId++,
+          method: "mutation",
+          params: {
+            input: { id: linked.id, status: "done" },
+            path: "issues.move",
+          },
+        }),
+      );
+      expect(manualDone).toMatchObject({ id: linked.id, status: "done" });
+      const beforeWontDo = data<Array<{ id: string; status: string }>>(
+        await request(socket, {
+          id: requestId++,
+          method: "query",
+          params: { input: { projectId: project.id }, path: "issues.list" },
+        }),
       );
       const unconfirmedWontDo = await request(socket, {
         id: requestId++,
@@ -1654,12 +1693,10 @@ describe("Factory issue routes", () => {
           params: { input: { projectId: project.id }, path: "issues.list" },
         }),
       );
-      expect(after).toEqual(before);
+      expect(after).toEqual(beforeWontDo);
       expect(before.map(({ id }) => id)).toContain(first.id);
       expect(before.map(({ id }) => id)).toContain(last.id);
-      expect(before.find(({ id }) => id === linked.id)?.status).not.toBe(
-        "done",
-      );
+      expect(after.find(({ id }) => id === linked.id)?.status).toBe("done");
     } finally {
       socket.close();
       await server.stop();
